@@ -73,6 +73,7 @@ type
     FInterruptsQuiet: Boolean;
     FFrame: TArray<Cardinal>;
     FFrameWidth, FFrameHeight: Integer;
+    FNativeFrameWidth, FNativeFrameHeight: Integer;
     // Pictures asked for (BuildFrame) and built (Compose: on the GS worker's
     // thread with the raster Async, in order with the drawing).
     FFramesQueued, FFramesBuilt: Int64;
@@ -89,6 +90,8 @@ type
     class procedure CircuitPages(const D: TPS2GSDisplay; N: Integer; var Pages: TPS2GSPages); static;
     class procedure CircuitsRead(const D: TPS2GSDisplay; out Read1, Read2: Boolean); static;
     procedure Compose(const D: TPS2GSDisplay; Memory: TPS2GSMemory; Number: Int64);
+    procedure ComposePixels(const D: TPS2GSDisplay; Memory: TPS2GSMemory; Number: Int64; Scale: Integer;
+      const High1, High2: TArray<Cardinal>);
     procedure SyncFrame;
     function GetFrame: TArray<Cardinal>;
     function GetFrameWidth: Integer;
@@ -120,6 +123,8 @@ type
     function WriteInterrupts: Boolean;
     // Host-to-local transfer data (IMAGE mode), 128 bits at a time.
     procedure WriteImage(const Data: TPS2Reg128);
+    // Nonaliasing IMAGE data: returns the accepted prefix, zero for scalar.
+    function WriteImageRun(Data: PByte; Count: Integer): Integer;
     // Local-to-host transfer (BUSDIR=1): next 128 bits.
     function ReadImage(out Data: TPS2Reg128): Boolean;
     // VBlank start: CSR.VSINT and the interrupt; builds the output picture.
@@ -136,6 +141,9 @@ type
     property Frame: TArray<Cardinal> read GetFrame;
     property FrameWidth: Integer read GetFrameWidth;
     property FrameHeight: Integer read GetFrameHeight;
+    // Metadata of the frame being delivered; safe inside OnFrame (no wait).
+    property NativeFrameWidth: Integer read FNativeFrameWidth;
+    property NativeFrameHeight: Integer read FNativeFrameHeight;
     // Each picture once built, on the thread that built it (the GS worker's
     // with the raster Async, else the emulation thread). Pixels are not to be
     // changed.
@@ -198,6 +206,8 @@ begin
     FComposer.Finish;
   FFrameWidth := 640;
   FFrameHeight := 448;
+  FNativeFrameWidth := FFrameWidth;
+  FNativeFrameHeight := FFrameHeight;
   SetLength(FFrame, FFrameWidth * FFrameHeight);
   FillChar(FFrame[0], Length(FFrame) * 4, 0);
 end;
@@ -345,6 +355,11 @@ begin
   Result := FRaster.ReadImage(Data);
 end;
 
+function TPS2GS.WriteImageRun(Data: PByte; Count: Integer): Integer;
+begin
+  Result := FRaster.WriteImageRun(Data, Count);
+end;
+
 procedure TPS2GS.VBlank;
 begin
   if Assigned(FBeforeAccess) then
@@ -369,7 +384,8 @@ end;
 class procedure TPS2GS.CircuitSize(const D: TPS2GSDisplay; N: Integer; out W, H, DX, DY, MagH: Integer);
 begin
   var R := D.DISPLAY1;
-  if N = 2 then R := D.DISPLAY2;
+  if N = 2 then
+    R := D.DISPLAY2;
   DX := Integer(R and $FFF);
   DY := Integer((R shr 12) and $7FF);
   MagH := Integer((R shr 23) and $F) + 1;
@@ -398,7 +414,8 @@ begin
   var W, H, X, Y, M: Integer;
   CircuitSize(D, N, W, H, X, Y, M);
   var FB := D.DISPFB1;
-  if N = 2 then FB := D.DISPFB2;
+  if N = 2 then
+    FB := D.DISPFB2;
   var DBX := Integer((FB shr 32) and $7FF);
   var DBY := Integer((FB shr 43) and $7FF);
   AddRectPages(Pages, Cardinal(FB and $1FF) * 32, Cardinal((FB shr 9) and $3F), Cardinal((FB shr 15) and $1F), DBX, DBY,
@@ -409,9 +426,11 @@ class procedure TPS2GS.ReadCircuit(const D: TPS2GSDisplay; Memory: TPS2GSMemory;
   out Pixels: TArray<Cardinal>);
 begin
   SetLength(Pixels, W * H);
-  if H = 0 then Exit;
+  if H = 0 then
+    Exit;
   var FB := D.DISPFB1;
-  if N = 2 then FB := D.DISPFB2;
+  if N = 2 then
+    FB := D.DISPFB2;
   var FBP := Cardinal(FB and $1FF) * 2048;
   var FBW := Cardinal((FB shr 9) and $3F) * 64;
   var PSM := Integer((FB shr 15) and $1F);
@@ -481,8 +500,41 @@ begin
     CircuitPages(D, 1, Pages);
   if Read2 then
     CircuitPages(D, 2, Pages);
+  var Scale := FRaster.FrameScale;
+  if Scale > 1 then
+  begin
+    SyncFrame;
+    if FComposer <> nil then
+      FComposer.Finish;
+  end;
   Inc(FFramesQueued);
   var Number := FrameNumber;
+  if Scale > 1 then
+  begin
+    // Native memory remains coherent for guest reads; display pixels come
+    // from the retained high-resolution targets, not that native resolve.
+    var Memory := FRaster.MemoryFor(Pages);
+    var P1, P2: TArray<Cardinal>;
+    for var N := 1 to 2 do
+      if ((N = 1) and Read1) or ((N = 2) and Read2) then
+      begin
+        var W, H, X, Y, M: Integer;
+        CircuitSize(D, N, W, H, X, Y, M);
+        var FB := D.DISPFB1;
+        if N = 2 then
+          FB := D.DISPFB2;
+        var Pixels: TArray<Cardinal>;
+        FRaster.ReadHLECircuit(N, Cardinal(FB and $1FF) * 32, Cardinal((FB shr 9) and $3F),
+          Cardinal((FB shr 15) and $1F), Integer((FB shr 32) and $7FF), Integer((FB shr 43) and $7FF),
+          W, H, Pixels);
+        if N = 1 then
+          P1 := Pixels
+        else
+          P2 := Pixels;
+      end;
+    ComposePixels(D, Memory, Number, Scale, P1, P2);
+    Exit;
+  end;
   // No GS worker: the picture now, here. (After pictures still being built
   // from snapshots.)
   if not FRaster.Async then
@@ -512,18 +564,50 @@ begin
 end;
 
 procedure TPS2GS.Compose(const D: TPS2GSDisplay; Memory: TPS2GSMemory; Number: Int64);
+begin
+  ComposePixels(D, Memory, Number, 1, nil, nil);
+end;
+
+procedure TPS2GS.ComposePixels(const D: TPS2GSDisplay; Memory: TPS2GSMemory; Number: Int64; Scale: Integer;
+  const High1, High2: TArray<Cardinal>);
 var
   Pixels: TArray<Cardinal>;
+
+  procedure Circuit(N, W, H: Integer; const High: TArray<Cardinal>; out Result: TArray<Cardinal>);
+  begin
+    if Length(High) = W * H * Scale * Scale then
+    begin
+      Result := High;
+      Exit;
+    end;
+    var Native: TArray<Cardinal>;
+    ReadCircuit(D, Memory, N, W, H, Native);
+    if Scale = 1 then
+    begin
+      Result := Native;
+      Exit;
+    end;
+    // CPU-written or reinterpreted surfaces have only native detail.
+    SetLength(Result, W * H * Scale * Scale);
+    for var Y := 0 to H * Scale - 1 do
+      for var X := 0 to W * Scale - 1 do
+        Result[Y * W * Scale + X] := Native[(Y div Scale) * W + X div Scale];
+  end;
+
 begin
   // Circuit 2 (background) then circuit 1, blended per PMODE.
   var PMODE := D.PMODE;
   var En1 := (PMODE and 1) <> 0;
   var En2 := (PMODE and 2) <> 0;
-  var W := FFrameWidth;
-  var H := FFrameHeight;
+  var W := FNativeFrameWidth;
+  var H := FNativeFrameHeight;
   if not En1 and not En2 then
-    // (Black, the size as it was.)
-    SetLength(Pixels, W * H)
+  begin
+    // Black, the size as it was.
+    W := W * Scale;
+    H := H * Scale;
+    SetLength(Pixels, W * H);
+  end
   else
   begin
     var P1, P2: TArray<Cardinal>;
@@ -567,14 +651,25 @@ begin
     var FrontPSM := Integer((D.DISPFB1 shr 15) and $1F);
     var OpaqueFront := En1 and (OX1 = 0) and (OY1 = 0) and (W1 = W) and (H1 = H) and
       ((AlphaFixed and (ALP >= 128)) or (not AlphaFixed and (FrontPSM in [PSMCT32, PSMCT24])));
-    if En1 then ReadCircuit(D, Memory, 1, W1, H1, P1);
+    if En1 then
+      Circuit(1, W1, H1, High1, P1);
     if En2 and not OpaqueFront then
       // Identical source rectangles remain identical even when the circuits
       // have different output offsets or magnification.
       if En1 and (D.DISPFB1 = D.DISPFB2) and (W1 = W2) and (H1 = H2) then
         P2 := P1
       else
-        ReadCircuit(D, Memory, 2, W2, H2, P2);
+        Circuit(2, W2, H2, High2, P2);
+    W := W * Scale;
+    H := H * Scale;
+    W1 := W1 * Scale;
+    H1 := H1 * Scale;
+    W2 := W2 * Scale;
+    H2 := H2 * Scale;
+    OX1 := OX1 * Scale;
+    OY1 := OY1 * Scale;
+    OX2 := OX2 * Scale;
+    OY2 := OY2 * Scale;
     SetLength(Pixels, W * H);
     if OpaqueFront then
       for var I := 0 to Length(Pixels) - 1 do
@@ -627,6 +722,8 @@ begin
   FFrame := Pixels;
   FFrameWidth := W;
   FFrameHeight := H;
+  FNativeFrameWidth := W div Scale;
+  FNativeFrameHeight := H div Scale;
   // (After the picture: the emulation thread reads it once it sees this.)
   TInterlocked.Exchange(FFramesBuilt, FFramesBuilt + 1);
   if Assigned(FOnFrame) then

@@ -2047,9 +2047,12 @@ begin
   SetLength(Result, 40);
   FillChar(Result[0], Length(Result), 0);
   var Mode: Cardinal := 0;
-  if (E.Mode and AttrReadable) <> 0 then Mode := Mode or StatRead;
-  if (E.Mode and AttrWritable) <> 0 then Mode := Mode or StatWrite;
-  if (E.Mode and AttrExecutable) <> 0 then Mode := Mode or StatExecute;
+  if (E.Mode and AttrReadable) <> 0 then
+    Mode := Mode or StatRead;
+  if (E.Mode and AttrWritable) <> 0 then
+    Mode := Mode or StatWrite;
+  if (E.Mode and AttrExecutable) <> 0 then
+    Mode := Mode or StatExecute;
   Mode := Mode or (E.Mode and (StatPS1 or StatPDAExec or StatDupProhibit));
   if E.IsDirectory then
     Mode := Mode or StatDir

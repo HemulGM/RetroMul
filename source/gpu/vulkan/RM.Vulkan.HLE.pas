@@ -400,7 +400,122 @@ type
     property Stats: TVulkanHLEStats read FStats;
   end;
 
+// CompareMem's result, with AVX2 for large ranges where the host has it.
+function VulkanHLEEqualBytes(P1, P2: Pointer; Size: NativeInt): Boolean;
+
 implementation
+
+{$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+var
+  CompareAVX2: Boolean;
+
+function HostCompareAVX2: Boolean;
+asm
+  .NOFRAME
+  mov r10, rbx
+  xor eax, eax
+  cpuid
+  cmp eax, 7
+  jb @@No
+  mov eax, 1
+  cpuid
+  and ecx, $1C000000
+  cmp ecx, $1C000000
+  jne @@No
+  xor ecx, ecx
+  xgetbv
+  and eax, 6
+  cmp eax, 6
+  jne @@No
+  mov eax, 7
+  xor ecx, ecx
+  cpuid
+  shr ebx, 5
+  and ebx, 1
+  mov eax, ebx
+  jmp @@Done
+@@No:
+  xor eax, eax
+@@Done:
+  mov rbx, r10
+end;
+
+function EqualBytesAVX2(P1, P2: Pointer; Size: NativeInt): Boolean;
+asm
+  .NOFRAME
+  test r8, r8
+  jle @@Yes
+  cmp rcx, rdx
+  je @@Yes
+@@Blocks:
+  cmp r8, 128
+  jl @@Vectors
+  vmovdqu ymm0, [rcx]
+  vpxor ymm0, ymm0, [rdx]
+  vmovdqu ymm1, [rcx + 32]
+  vpxor ymm1, ymm1, [rdx + 32]
+  vpor ymm0, ymm0, ymm1
+  vmovdqu ymm2, [rcx + 64]
+  vpxor ymm2, ymm2, [rdx + 64]
+  vpor ymm0, ymm0, ymm2
+  vmovdqu ymm3, [rcx + 96]
+  vpxor ymm3, ymm3, [rdx + 96]
+  vpor ymm0, ymm0, ymm3
+  vptest ymm0, ymm0
+  jnz @@No
+  add rcx, 128
+  add rdx, 128
+  sub r8, 128
+  jmp @@Blocks
+@@Vectors:
+  cmp r8, 32
+  jl @@Words
+  vmovdqu ymm0, [rcx]
+  vpxor ymm0, ymm0, [rdx]
+  vptest ymm0, ymm0
+  jnz @@No
+  add rcx, 32
+  add rdx, 32
+  sub r8, 32
+  jmp @@Vectors
+@@Words:
+  cmp r8, 8
+  jl @@Bytes
+  mov r9, [rcx]
+  cmp r9, [rdx]
+  jne @@No
+  add rcx, 8
+  add rdx, 8
+  sub r8, 8
+  jmp @@Words
+@@Bytes:
+  test r8, r8
+  jz @@Yes
+  mov r9b, [rcx]
+  cmp r9b, [rdx]
+  jne @@No
+  inc rcx
+  inc rdx
+  dec r8
+  jmp @@Bytes
+@@Yes:
+  mov eax, 1
+  vzeroupper
+  ret
+@@No:
+  xor eax, eax
+  vzeroupper
+end;
+{$ENDIF}
+
+function VulkanHLEEqualBytes(P1, P2: Pointer; Size: NativeInt): Boolean;
+begin
+  {$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+  if CompareAVX2 and (Size >= 128) then
+    Exit(EqualBytesAVX2(P1, P2, Size));
+  {$ENDIF}
+  Result := CompareMem(P1, P2, Size);
+end;
 
 const
   // Release submits no fewer vertices.
@@ -469,8 +584,9 @@ begin
   begin
     FSlots[I].Cmd := Compute.CreateCommands;
     FSlots[I].Vertices := Compute.CreateBuffer(HLEVertexCapacity * Int64(VertexSize), vbkShared,
-        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-    FSlots[I].Upload := Compute.CreateBuffer(HLEUploadCapacity, vbkUpload, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    FSlots[I].Upload := Compute.CreateBuffer(HLEUploadCapacity, vbkUpload,
+      VK_BUFFER_USAGE_TRANSFER_SRC_BIT or VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
   end;
   // Also the frames shown at the scale.
   FReadback := Compute.CreateBuffer(Max(HLEUploadCapacity, FrameWidth * FrameHeight * 4 * FScale * FScale), vbkReadback,
@@ -1337,7 +1453,7 @@ begin
   begin
     Inc(FStats.TextureCheckBytes, B.Size);
     if (B.Data = nil) or (Off + B.Size > Length(T.Source)) or ((B.Size > 0) and
-      not CompareMem(B.Data, @T.Source[Off], B.Size)) then
+      not VulkanHLEEqualBytes(B.Data, @T.Source[Off], B.Size)) then
       Exit(False);
     Inc(Off, B.Size);
   end;
@@ -1679,5 +1795,10 @@ begin
   Inc(FStats.Presents);
   FStats.PresentSeconds := FStats.PresentSeconds + Watch.Elapsed.TotalSeconds;
 end;
+
+{$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+initialization
+  CompareAVX2 := HostCompareAVX2;
+{$ENDIF}
 
 end.

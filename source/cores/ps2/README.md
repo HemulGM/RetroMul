@@ -11,7 +11,7 @@ of the picture wrongly.
 | Unit | Contents |
 | --- | --- |
 | `PS2.Types`, `PS2.Scheduler` | Constants, 128-bit registers, checked arithmetic helpers, the event scheduler in EE cycles |
-| `PS2.EE.CPU`, `PS2.EE.Bus` | R5900 block interpreter (MMI, COP0, FPU with the PS2 float range, COP2 macro mode) and its experimental recompiler (`PS2.EE.Jit.inc`), EE memory map, INTC |
+| `PS2.EE.CPU`, `PS2.EE.Bus` | R5900 block interpreter (MMI, COP0, FPU with the PS2 float range, COP2 macro mode) and its experimental recompiler, EE memory map, INTC |
 | `PS2.Timers`, `PS2.DMAC`, `PS2.SIF` | EE timers, DMA controller (chain/interleave/MFIFO, stall control through D_STADR), SIF registers and the SIF command/RPC protocol |
 | `PS2.GS`, `PS2.GS.Memory`, `PS2.GS.Raster`, `PS2.GIF` | GS registers, swizzled local memory, software rasterizer (on the emulation thread or in band threads, its front end optionally on a thread of its own), GIF paths (VU1 kicks and PATH2 optionally on a thread of their own) |
 | `PS2.VU`, `PS2.VU.Float`, `PS2.VIF` | VU0/VU1 micro mode, the PS2 float product and sum for one or four fields (SSE2 on Win64, checked against the one-field routines by `tests/cores/ps2/vufloat/build.ps1`), VIF0/VIF1 command processing, interrupt-bit/STOP/force-break stalls with the FIFO held (8/16 quadwords), VU busy windows |
@@ -592,8 +592,10 @@ display reads, reset, snapshots and mode changes still drain pending work.
 This is not a complete or consistently faster GPU renderer. It does not require
 JIT. GS saves contain the same VRAM and state in either mode.
 
-Regenerate its embedded SPIR-V with `source/cores/ps2/shaders/build.ps1`
-(Vulkan SDK `glslc` required). Application builds use the checked-in include.
+The sprite and triangle kernels are Pascal shaders in `source/gpu/shaders`.
+`PS2.GS.PascalShaders` compiles the embedded source once per kernel with
+PasToSPIRV. The triangle shader and resolve shader share the push layout;
+the one-pass and ordered two-pass paths still use the same draw sequence.
 `tests/cores/ps2/gpu/build.ps1` compares 256 isolated draws and a dependent
 256-draw sequence, with and without textures, against the CPU over all
 4 MiB of VRAM. It checks batch capacity/reuse, texture feedback fallback,
@@ -631,6 +633,35 @@ threads, and needs a device with a graphics queue and dual-source blending
 says why). The display's reads go to the worker, which stores only the
 targets they meet.
 
+HLE has the same opt-in enhancement settings as PSP: `Video/Resolution`
+(1, 2, 3, 4, 6 or 8 times native), `Video/TextureScale` (0 off, or 2 to 6)
+and `Video/TextureFilter` (`xbrz`, `hybrid`, `bicubic`). They apply after
+stopping and starting the game. Software and Vulkan LLE remain native; the
+existing `Video/Scale` and `Video/Filter` still control screen presentation.
+The default is native resolution with texture scaling off.
+
+Scaled targets retain their subpixel detail for display and render-to-texture
+copies. Guest colour and depth reads resolve to native pixels; the GS still
+has 4 MiB of memory and snapshots keep the same layout. CPU-written or
+reinterpreted display surfaces fall back to native detail. Both display
+circuits, their offsets and PMODE blending are composed at the chosen scale.
+Field line doubling is based on native height, not the enlarged image height.
+
+Texture scaling uses the shared `RM.Vulkan.TexScale` implementation. Frequently
+changing textures become unscaled, small ramps/tables and incompatible mip
+extents stay native, and scaled textures are limited to 1024 texels per side.
+Render-target textures use their internal-resolution image instead. Higher
+resolution and texture scaling cost GPU memory, bandwidth and upload time;
+they do not guarantee faster emulation.
+
+The HLE vertex, fragment, ordered blend and upload shaders are also Pascal
+sources. Application builds embed the same source as the tests through
+`source/gpu/shaders/PS2GS.Pascal.rc`. PasToSPIRV compiles the upload variant
+for the renderer's immutable internal scale. No offline shader compiler is
+needed. `tests/cores/ps2/hle/build.ps1` checks real subpixel rendering, all
+three texture filters against the shared CPU scaler, native memory coherence,
+display composition and configuration keys.
+
 GS buffers are render targets (RGBA8 images; 24-bit frames keep alpha 0x80,
 16-bit ones bit 15 as 0 or 255), their depth buffers the targets' depth
 images. A target's rows map to GS memory a page row at a time, so targets are
@@ -644,6 +675,28 @@ neither the D24 nor the D32 depth conversion formula changes.
 without a Vulkan device: all base/page pair layouts, crops, VRAM wrap,
 untouched bytes and aliased source/destination against the former loops.
 Its executable also accepts `-bench` for alternating scalar/paired timings.
+
+Target loads skip the work GS memory does not ask for, with unchanged results:
+- Large targets (and all at a raised resolution) load on the GPU: the raw GS
+  bytes are staged and `PS2.GS.HLEUpload.comp` unswizzles them in integer
+  arithmetic. 24/16-bit depth values have at most 24 significant bits, so their
+  normalized single is built exactly from integer bits; D32 inputs and D24
+  depth images keep the CPU conversion.
+- CPU reloads at 1x take only page-row bands that differ from the shadow.
+  Depth bands resolved from the image since its last load (or all, when GS
+  memory changed outside the rows held) are converted again, because equal
+  shadow bytes do not prove the image holds their exact normalized values.
+- 32/24-bit colour rows move eight pixels (four adjacent word pairs of one GS
+  block) at a time; 24/16-bit depth normalizes four pixels at a time with the
+  same integer -> double -> division -> single steps per pixel.
+- A state's coherence covers the page rows its scissor allows, not the whole
+  target: only other targets whose drawn rows meet them go back to GS memory
+  (no longer all of them); the others become stale there. At 1x a target is no
+  taller than the scissor needs. Results stay the HLE's, not bit-identical to
+  the former flush order; check them against the software renderer.
+- Shadow and texture source comparisons use AVX2 where the host has it, and a
+  single-pass batch continues across draws differing only in vertex-only or
+  already-resolved fields (context, IIP, FST, ZTE, frame-format flags).
 
 Textures are decoded on the CPU (CLUT, TEXA, mipmap levels) and compared with
 the GS blocks they came from (a large one that primitives read little of in
@@ -677,10 +730,8 @@ of a channel, destination alpha (32-bit frames weigh Ad / 255 instead of
 Ad / 128), weights above one and COLCLAMP off; DATE with depth writes and an
 alpha test in any case; dithering, and buffers read through another format
 (texture shuffles, depth as colour, palettized views of colour) other than by
-storing them and decoding GS memory. Resolution scaling is not offered yet. Shaders
-are in `source/cores/ps2/shaders` (`PS2.GS.HLE.*`); `shaders/build.ps1 -Only HLE`
-regenerates their includes. `PS2_GSVULKAN=hle` selects it in the test
-runner, `PS2_HLEVALIDATE=1` the Khronos validation layer.
+storing them and decoding GS memory. `PS2_GSVULKAN=hle` selects the renderer
+in the test runner; `PS2_HLEVALIDATE=1` enables the Khronos validation layer.
 ## BIOS boot (in progress)
 
 With a BIOS image in `TPS2ConsoleConfig.BIOS` the console boots it instead

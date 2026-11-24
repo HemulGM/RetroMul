@@ -136,6 +136,7 @@ type
   public
     constructor Create(VIF: TPS2VIF);
     function Push(Channel: Integer; Data: PByte; Count: Integer): Integer; override;
+    function Pull(Channel: Integer; Data: PByte; Count: Integer): Integer; override;
     procedure Tag(Channel: Integer; const Tag: TPS2Reg128); override;
     function TakeBusyCycles: Int64; override;
   end;
@@ -573,7 +574,8 @@ begin
     Mask := S.MASK and $FF;
     // Only mask rows actually selected by this write cycle need agree.
     for var Row := 1 to Min(WL - 1, 3) do
-      if ((S.MASK shr (Row * 8)) and $FF) <> Mask then Exit;
+      if ((S.MASK shr (Row * 8)) and $FF) <> Mask then
+        Exit;
   end;
   case Kind of
     $C, $E: if Mask <> 0 then Exit;
@@ -582,23 +584,28 @@ begin
   else
     Exit;
   end;
-  if (S.CycleWritten < 0) or (S.CycleWritten >= WL) then Exit;
+  if (S.CycleWritten < 0) or (S.CycleWritten >= WL) then
+    Exit;
   var N := Min(Count div WordsPerVector, Integer(S.NUM) - S.UnpackCount);
-  if N < 2 then Exit;
+  if N < 2 then
+    Exit;
   var At := (Cardinal(S.UnpackAddr) * 16) and FDataMask;
-  if Cardinal(N * 16) > FDataMask + 1 - At then Exit;
+  if Cardinal(N * 16) > FDataMask + 1 - At then
+    Exit;
   var Target := PPS2Reg128(FData + At);
   // Preserve the word-at-a-time semantics when source and destination alias.
   var SourceEnd := NativeUInt(Data) + NativeUInt(N * WordsPerVector * 4);
   var TargetEnd := NativeUInt(Target) + NativeUInt(N * 16);
-  if (NativeUInt(Data) < TargetEnd) and (NativeUInt(Target) < SourceEnd) then Exit;
+  if (NativeUInt(Data) < TargetEnd) and (NativeUInt(Target) < SourceEnd) then
+    Exit;
   var Unsigned := (S.CODE and $4000) <> 0;
   case Kind of
     $C: Move(Data^, Target^, N * 16);
     $8:
       begin
         var W: Cardinal := 0;
-        if Mask <> 0 then W := S.Row[3];
+        if Mask <> 0 then
+          W := S.Row[3];
         for var I := 0 to N - 1 do
         begin
           Target.UW[0] := Data[0];
@@ -655,9 +662,11 @@ begin
   // For 32-bit elements the last vector remains in UnpackWords as usual.
   if (Kind and 3) = 0 then
   begin
-    if Kind = $C then Inc(Data, N * WordsPerVector);
+    if Kind = $C then
+      Inc(Data, N * WordsPerVector);
     Dec(Data, WordsPerVector);
-    for var K := 0 to WordsPerVector - 1 do S.UnpackWords[K] := Data[K];
+    for var K := 0 to WordsPerVector - 1 do
+      S.UnpackWords[K] := Data[K];
   end;
   Inc(S.UnpackAddr, N);
   Inc(S.UnpackCount, N);
@@ -694,7 +703,8 @@ begin
   if (S.MODE = 0) and (CL = WL) then
   begin
     Result := UnpackContiguous(Data, Count, Words);
-    if Result > 0 then Exit;
+    if Result > 0 then
+      Exit;
   end;
   while (Result + Words <= Count) and (S.UnpackCount < Integer(S.NUM)) and
     not ((WL > CL) and (CL > 0) and (S.CycleWritten >= CL)) do
@@ -981,6 +991,29 @@ begin
     if ((S.Command = $50) or (S.Command = $51)) and (S.Remaining > 1) and (S.HeldCount = 0) and
       not CaptureUnfinished and not Stalled and not S.WaitVU and PS2VIFRuns then
     begin
+      if (FDirectWords = 0) and (FGIF <> nil) then
+      begin
+        var Quads := Min((Count - Result) div 4, (S.Remaining - 1) div 4);
+        if (Quads >= 2) and (NativeUInt(Quads) <= High(NativeUInt) div SizeOf(TPS2Reg128)) then
+        begin
+          var Source := NativeUInt(Data + Result);
+          var Bytes := NativeUInt(Quads) * SizeOf(TPS2Reg128);
+          if (Source <= High(NativeUInt) - Bytes) and
+            ((Source + Bytes <= NativeUInt(Self)) or (Source >= NativeUInt(Self) + NativeUInt(InstanceSize))) then
+          begin
+            var Taken := FGIF.TransferDirectRun(Data + Result, Quads);
+            if Taken > 0 then
+            begin
+              // Keep even the private staging value as repeated calls leave it.
+              Move((Data + Result + (Taken - 1) * 4)^, FDirectBuf, SizeOf(FDirectBuf));
+              FDirectSent := True;
+              Inc(Words, Taken * 4);
+              Inc(Result, Taken * 4);
+              Dec(S.Remaining, Taken * 4);
+            end;
+          end;
+        end;
+      end;
       while (Result < Count) and (S.Remaining > 1) do
       begin
         if (FDirectWords = 0) and (FGIF <> nil) and (Count - Result >= 4) and (S.Remaining > 4) then
@@ -1207,6 +1240,22 @@ end;
 function TPS2VIFPort.Push(Channel: Integer; Data: PByte; Count: Integer): Integer;
 begin
   Result := FVIF.FeedQuads(PCardinal(Data), Count);
+end;
+
+function TPS2VIFPort.Pull(Channel: Integer; Data: PByte; Count: Integer): Integer;
+begin
+  Result := 0;
+  if FVIF.FIndex <> 1 then
+    Exit;
+  // Reverse VIF1 DMA returns the GS local-to-host stream.
+  var Value: TPS2Reg128;
+  while Result < Count do
+  begin
+    if not FVIF.FGIF.GS.ReadImage(Value) then
+      Break;
+    PPS2Reg128(Data)[Result] := Value;
+    Inc(Result);
+  end;
 end;
 
 procedure TPS2VIFPort.Tag(Channel: Integer; const Tag: TPS2Reg128);

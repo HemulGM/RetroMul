@@ -992,6 +992,7 @@
         <DCCReference Include="..\..\source\cores\psp\PSP.Crypto.Keys.pas"/>
         <DCCReference Include="..\..\source\cores\psp\PSP.Crypto.Kirk.pas"/>
         <DCCReference Include="..\..\source\gpu\shaders\PSP.GE.PascalShaders.pas"/>
+        <DCCReference Include="..\..\source\gpu\shaders\PS2.GS.PascalShaders.pas"/>
         <DCCReference Include="..\..\source\cores\saturn\Saturn.Console.pas"/>
         <DCCReference Include="..\..\source\cores\saturn\Saturn.Emulation.pas"/>
         <DCCReference Include="..\..\source\cores\saturn\Saturn.Firmware.pas"/>
@@ -1097,6 +1098,7 @@
         <None Include="..\..\source\cores\cps\CPS.RomData.inc"/>
         <None Include="..\..\source\cores\sms\SMS.Region.inc"/>
         <RcCompile Include="..\..\source\gpu\shaders\PSPGE.Pascal.rc"/>
+        <RcCompile Include="..\..\source\gpu\shaders\PS2GS.Pascal.rc"/>
         <None Include="..\..\source\gpu\shaders\PSPGEHLEBlend.pasm"/>
         <None Include="..\..\source\gpu\shaders\PSPGEHLEBlendFrag.pasm"/>
         <None Include="..\..\source\gpu\shaders\PSPGEHLEClut.pasm"/>

@@ -14,7 +14,8 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Math, System.SyncObjs, Core.Snapshots, PS2.Types, PS2.GS.Memory;
+  System.SysUtils, System.Classes, System.Math, System.SyncObjs, Core.Snapshots, PS2.Types, PS2.GS.Memory,
+  RM.Vulkan.TexScale;
 
 const
   GSRegPRIM = $00;
@@ -369,6 +370,8 @@ type
     FBands: TPS2GSBands;
     FAccelerator: TPS2GSAccelerator;
     FVulkan, FHLE: Boolean;
+    FHLEResolution, FHLETextureScale: Integer;
+    FHLETextureFilter: TTexScaleFilter;
     FVulkanError: string;
     // Something queued since the last Sync; the 8 KiB pages queued
     // primitives write and read as texture, and the buffer (base, width,
@@ -485,6 +488,8 @@ type
     procedure Reset;
     procedure WriteRegister(Index: Integer; Value: UInt64);
     procedure WriteImage(const Data: TPS2Reg128);
+    // Only the shadow progress is combined; the worker retains every quad.
+    function WriteImageRun(Data: PByte; Count: Integer): Integer;
     function ReadImage(out Data: TPS2Reg128): Boolean;
     procedure ClearSignal;
     procedure ClearFinish;
@@ -507,6 +512,11 @@ type
     procedure QueueRead(const Pages: TPS2GSPages; const Read: TPS2GSRead);
     // Waits until the reads queued have run.
     procedure FinishReads;
+    // Host-only HLE options: never serialized into guest snapshots.
+    procedure ConfigureHLE(Resolution, TextureScale: Integer; TextureFilter: TTexScaleFilter);
+    function FrameScale: Integer;
+    function ReadHLECircuit(Circuit: Integer; BP, BW, PSM: Cardinal; X, Y, W, H: Integer;
+      out Pixels: TArray<Cardinal>): Boolean;
     // Band threads drawing (0 or 1: none, everything drawn at once on the
     // caller's thread). The memory and timing are the same either way.
     property Threads: Integer read FThreads write SetThreads;
@@ -680,6 +690,7 @@ type
     destructor Destroy; override;
     procedure PutRegister(Index: Integer; Value: UInt64);
     procedure PutImage(const Data: TPS2Reg128);
+    procedure PutImages(Data: PByte; Count: Integer);
     // Read after what is queued (Need: see FReadNeed), handed over at once.
     procedure PutRead(const Read: TPS2GSRead; Need: Int64; const Pages: TPS2GSPages);
     // Waits until Inner has taken everything queued (Synced: and drawn it,
@@ -857,6 +868,7 @@ end;
 constructor TPS2GSRaster.Create;
 begin
   inherited Create;
+  FHLEResolution := 1;
   FMemory := TPS2GSMemory.Create;
   FOwnsMemory := True;
   FDrawer := TPS2GSDrawer.Create(Self, 0, 1, False);
@@ -880,6 +892,9 @@ end;
 
 procedure TPS2GSRaster.CopyStateFrom(Source: TPS2GSRaster);
 begin
+  FHLEResolution := Source.FHLEResolution;
+  FHLETextureScale := Source.FHLETextureScale;
+  FHLETextureFilter := Source.FHLETextureFilter;
   Regs := Source.Regs;
   SigLblId := Source.SigLblId;
   FSignal := Source.FSignal;
@@ -1062,7 +1077,8 @@ end;
 
 procedure TPS2GSRaster.SetHLE(Value: Boolean);
 begin
-  if Value = FHLE then Exit;
+  if Value = FHLE then
+    Exit;
   if FWorker <> nil then
   begin
     // (The worker's raster draws: no band threads or Vulkan LLE there.)
@@ -1090,7 +1106,7 @@ begin
   FXferGPURevision := -1;
   if Value then
     try
-      FAccelerator := TPS2GSHLE.Create(FMemory, @FClut[0]);
+      FAccelerator := TPS2GSHLE.Create(FMemory, @FClut[0], FHLEResolution, FHLETextureScale, FHLETextureFilter);
     except
       on E: Exception do
       begin
@@ -1108,9 +1124,56 @@ begin
     Result := TPS2GSHLE(R.FAccelerator).Renderer.Describe;
 end;
 
+procedure TPS2GSRaster.ConfigureHLE(Resolution, TextureScale: Integer; TextureFilter: TTexScaleFilter);
+begin
+  Resolution := EnsureRange(Resolution, 1, 8);
+  TextureScale := EnsureRange(TextureScale, 0, TexScaleMax);
+  if TextureScale = 1 then
+    TextureScale := 0;
+  if (FHLEResolution = Resolution) and (FHLETextureScale = TextureScale) and
+    (FHLETextureFilter = TextureFilter) then
+    Exit;
+  if FWorker <> nil then
+  begin
+    var Inner := Drawing(True);
+    Inner.ConfigureHLE(Resolution, TextureScale, TextureFilter);
+    FHLEResolution := Resolution;
+    FHLETextureScale := TextureScale;
+    FHLETextureFilter := TextureFilter;
+    FHLE := Inner.FHLE;
+    FVulkanError := Inner.FVulkanError;
+    Exit;
+  end;
+  var Active := FHLE;
+  SetHLE(False);
+  FHLEResolution := Resolution;
+  FHLETextureScale := TextureScale;
+  FHLETextureFilter := TextureFilter;
+  if Active then
+    SetHLE(True);
+end;
+
+function TPS2GSRaster.FrameScale: Integer;
+begin
+  Result := 1;
+  if FHLE then
+    Result := FHLEResolution;
+end;
+
+function TPS2GSRaster.ReadHLECircuit(Circuit: Integer; BP, BW, PSM: Cardinal; X, Y, W, H: Integer;
+  out Pixels: TArray<Cardinal>): Boolean;
+begin
+  Result := False;
+  Pixels := nil;
+  var R := Drawing;
+  if R.FHLE and (R.FAccelerator <> nil) then
+    Result := TPS2GSHLE(R.FAccelerator).Renderer.ReadCircuit(Circuit, BP, BW, PSM, X, Y, W, H, Pixels);
+end;
+
 procedure TPS2GSRaster.SetVulkan(Value: Boolean);
 begin
-  if Value = FVulkan then Exit;
+  if Value = FVulkan then
+    Exit;
   if Value and FHLE then
     SetHLE(False);
   if FWorker <> nil then
@@ -1586,8 +1649,10 @@ begin
         begin
           var Q0 := C.V[0].Q;
           var Q1 := C.V[1].Q;
-          if Q0 = 0 then Q0 := 1;
-          if Q1 = 0 then Q1 := 1;
+          if Q0 = 0 then
+            Q0 := 1;
+          if Q1 = 0 then
+            Q1 := 1;
           A := C.V[0].S / Q0 * (1 shl C.D.TW) * 16;
           B := C.V[1].S / Q1 * (1 shl C.D.TW) * 16;
           TA := C.V[0].T / Q0 * (1 shl C.D.TH) * 16;
@@ -1628,10 +1693,14 @@ begin
           end
           else
           begin
-            if U < ULo then ULo := U;
-            if U > UHi then UHi := U;
-            if V < VLo then VLo := V;
-            if V > VHi then VHi := V;
+            if U < ULo then
+              ULo := U;
+            if U > UHi then
+              UHi := U;
+            if V < VLo then
+              VLo := V;
+            if V > VHi then
+              VHi := V;
           end;
         end;
       end;
@@ -1802,8 +1871,10 @@ begin
   begin
     var Q0 := C.V[0].Q;
     var Q1 := C.V[1].Q;
-    if Q0 = 0 then Q0 := 1;
-    if Q1 = 0 then Q1 := 1;
+    if Q0 = 0 then
+      Q0 := 1;
+    if Q1 = 0 then
+      Q1 := 1;
     A := C.V[0].S / Q0 * (1 shl C.D.TW) * 16;
     B := C.V[1].S / Q1 * (1 shl C.D.TW) * 16;
     TA := C.V[0].T / Q0 * (1 shl C.D.TH) * 16;
@@ -2282,10 +2353,14 @@ begin
       end
       else
       begin
-        if X0 < FMarkX0 then FMarkX0 := X0;
-        if Y0 < FMarkY0 then FMarkY0 := Y0;
-        if X1 > FMarkX1 then FMarkX1 := X1;
-        if Y1 > FMarkY1 then FMarkY1 := Y1;
+        if X0 < FMarkX0 then
+          FMarkX0 := X0;
+        if Y0 < FMarkY0 then
+          FMarkY0 := Y0;
+        if X1 > FMarkX1 then
+          FMarkX1 := X1;
+        if Y1 > FMarkY1 then
+          FMarkY1 := Y1;
       end;
       FMarkEntry := FWorker.Written;
     end;
@@ -2330,7 +2405,8 @@ begin
   begin
     // GPU acceptance publishes CPU bands first. A fallback can instead
     // join the software queue after publishing pending GPU writes.
-    if FPending and (FAccelerator = nil) then Sync;
+    if FPending and (FAccelerator = nil) then
+      Sync;
     var Before := FDrawer.PixelsDrawn;
     FRoute := rtNone;
     FDrawer.Draw(FCommand);
@@ -2349,7 +2425,8 @@ end;
 function TPS2GSRaster.QueueFallback(Drawer: TPS2GSDrawer): Boolean;
 begin
   Result := (Drawer = FDrawer) and (FAccelerator <> nil) and Queueing;
-  if not Result then Exit;
+  if not Result then
+    Exit;
   if FRoute = rtNone then
     FRoute := rtUnsupported;
   // Only the emulation thread touches the GPU. Workers receive ordinary
@@ -2410,8 +2487,10 @@ begin
     FClutUse[FClutSlot] := FBands.Position + 1;
   end;
   {$IFDEF GS_RACECHECK}
-  if FCommand.Op <> coDraw then RaceBarrier(FBands.Position);
-  if FCommand.Op = coSoloDraw then RaceBarrier(FBands.Position + 1);
+  if FCommand.Op <> coDraw then
+    RaceBarrier(FBands.Position);
+  if FCommand.Op = coSoloDraw then
+    RaceBarrier(FBands.Position + 1);
   RaceDescribe(FBands.Position, Format('%d op%d fbp %x/%d/%x tbp %x/%d/%x tme %d zbp %x/%x zmsk %d', [Ord(FCommand.Kind), Ord(FCommand.Op), FCommand.D.FBP, FCommand.D.FBW, FCommand.D.FPSM, FCommand.D.TBP, FCommand.D.TBW, FCommand.D.TPSM, Ord(FCommand.D.TME), FCommand.D.ZBP, FCommand.D.ZPSM, Ord(FCommand.D.ZMSK)]));
   {$ENDIF}
   Inc(QueuedOps[Ord(FCommand.Op)]);
@@ -3244,10 +3323,14 @@ begin
       B := (B0 * Integer((T shr 16) and $FF)) shr 7;
       if TCC then
         A := (A0 * Integer(T shr 24)) shr 7;
-      if R > 255 then R := 255;
-      if G > 255 then G := 255;
-      if B > 255 then B := 255;
-      if A > 255 then A := 255;
+      if R > 255 then
+        R := 255;
+      if G > 255 then
+        G := 255;
+      if B > 255 then
+        B := 255;
+      if A > 255 then
+        A := 255;
     end
     else
     begin
@@ -3270,11 +3353,14 @@ end;
 function BlendTerm(SelA, S, D, SelB, C, SelD: Integer): Integer; inline;
 begin
   var VA := 0;
-  if SelA = 0 then VA := S else if SelA = 1 then VA := D;
+  if SelA = 0 then
+    VA := S else if SelA = 1 then VA := D;
   var VB := 0;
-  if SelB = 0 then VB := S else if SelB = 1 then VB := D;
+  if SelB = 0 then
+    VB := S else if SelB = 1 then VB := D;
   var VD := 0;
-  if SelD = 0 then VD := S else if SelD = 1 then VD := D;
+  if SelD = 0 then
+    VD := S else if SelD = 1 then VD := D;
   Result := Integer(Sar((VA - VB) * C, 7)) + VD;
 end;
 
@@ -3400,10 +3486,14 @@ begin
           end;
         end;
     end;
-    if R > 255 then R := 255;
-    if G > 255 then G := 255;
-    if B > 255 then B := 255;
-    if A > 255 then A := 255;
+    if R > 255 then
+      R := 255;
+    if G > 255 then
+      G := 255;
+    if B > 255 then
+      B := 255;
+    if A > 255 then
+      A := 255;
     if FD.FGE then
     begin
       R := (F * R + (255 - F) * FD.FogR) shr 8;
@@ -3575,10 +3665,14 @@ begin
           end;
         end;
     end;
-    if R > 255 then R := 255;
-    if G > 255 then G := 255;
-    if B > 255 then B := 255;
-    if A > 255 then A := 255;
+    if R > 255 then
+      R := 255;
+    if G > 255 then
+      G := 255;
+    if B > 255 then
+      B := 255;
+    if A > 255 then
+      A := 255;
   end;
   if FD.FGE then
   begin
@@ -3825,10 +3919,14 @@ begin
   var PX1 := Integer(Sar(Max(X0, X1) + 15, 4));
   var PY0 := Integer(Sar(Min(Y0, Y1) + 15, 4));
   var PY1 := Integer(Sar(Max(Y0, Y1) + 15, 4));
-  if PX0 < FD.SX0 then PX0 := FD.SX0;
-  if PY0 < FD.SY0 then PY0 := FD.SY0;
-  if PX1 > FD.SX1 + 1 then PX1 := FD.SX1 + 1;
-  if PY1 > FD.SY1 + 1 then PY1 := FD.SY1 + 1;
+  if PX0 < FD.SX0 then
+    PX0 := FD.SX0;
+  if PY0 < FD.SY0 then
+    PY0 := FD.SY0;
+  if PX1 > FD.SX1 + 1 then
+    PX1 := FD.SX1 + 1;
+  if PY1 > FD.SY1 + 1 then
+    PY1 := FD.SY1 + 1;
   if (PX0 >= PX1) or (PY0 >= PY1) then
     Exit;
   if FCountOnly then
@@ -3845,8 +3943,10 @@ begin
     end;
   if Self = FOwner.FDrawer then
   begin
-    if FOwner.QueueFallback(Self) then Exit;
-    if FOwner.FAccelerator <> nil then FOwner.Sync;
+    if FOwner.QueueFallback(Self) then
+      Exit;
+    if FOwner.FAccelerator <> nil then
+      FOwner.Sync;
   end;
   // Texture coordinates along the edges (in 1/16 texels).
   var U0, U1, TV0, TV1: Double;
@@ -3861,8 +3961,10 @@ begin
   begin
     var Q0 := V0.Q;
     var Q1 := V1.Q;
-    if Q0 = 0 then Q0 := 1;
-    if Q1 = 0 then Q1 := 1;
+    if Q0 = 0 then
+      Q0 := 1;
+    if Q1 = 0 then
+      Q1 := 1;
     U0 := V0.S / Q0 * (1 shl FD.TW) * 16;
     U1 := V1.S / Q1 * (1 shl FD.TW) * 16;
     TV0 := V0.T / Q0 * (1 shl FD.TH) * 16;
@@ -4002,10 +4104,14 @@ begin
   var MaxX := Sar(Max(X0, Max(X1, X2)), 4);
   var MinY := Sar(Min(Y0, Min(Y1, Y2)) + 15, 4);
   var MaxY := Sar(Max(Y0, Max(Y1, Y2)), 4);
-  if MinX < SX0 then MinX := SX0;
-  if MinY < SY0 then MinY := SY0;
-  if MaxX > SX1 then MaxX := SX1;
-  if MaxY > SY1 then MaxY := SY1;
+  if MinX < SX0 then
+    MinX := SX0;
+  if MinY < SY0 then
+    MinY := SY0;
+  if MaxX > SX1 then
+    MaxX := SX1;
+  if MaxY > SY1 then
+    MaxY := SY1;
   if (MinX > MaxX) or (MinY > MaxY) then
     Exit;
   var Sign: Int64 := 1;
@@ -4031,19 +4137,22 @@ begin
       1: if -Q0 > KL then KL := -Q0;
       -1: if Q0 < KR then KR := Q0;
     else
-      if C0.E < 0 then Inside := False;
+      if C0.E < 0 then
+        Inside := False;
     end;
     case C1.Kind of
       1: if -Q1 > KL then KL := -Q1;
       -1: if Q1 < KR then KR := Q1;
     else
-      if C1.E < 0 then Inside := False;
+      if C1.E < 0 then
+        Inside := False;
     end;
     case C2.Kind of
       1: if -Q2 > KL then KL := -Q2;
       -1: if Q2 < KR then KR := Q2;
     else
-      if C2.E < 0 then Inside := False;
+      if C2.E < 0 then
+        Inside := False;
     end;
     if Inside and (KL <= KR) then
       Inc(Result, KR - KL + 1);
@@ -4087,10 +4196,14 @@ begin
   var PX1 := Integer(Sar(Max(X0, X1) + 15, 4));
   var PY0 := Integer(Sar(Min(Y0, Y1) + 15, 4));
   var PY1 := Integer(Sar(Max(Y0, Y1) + 15, 4));
-  if PX0 < SX0 then PX0 := SX0;
-  if PY0 < SY0 then PY0 := SY0;
-  if PX1 > SX1 + 1 then PX1 := SX1 + 1;
-  if PY1 > SY1 + 1 then PY1 := SY1 + 1;
+  if PX0 < SX0 then
+    PX0 := SX0;
+  if PY0 < SY0 then
+    PY0 := SY0;
+  if PX1 > SX1 + 1 then
+    PX1 := SX1 + 1;
+  if PY1 > SY1 + 1 then
+    PY1 := SY1 + 1;
   if (PX0 >= PX1) or (PY0 >= PY1) then
     Exit(0);
   Result := Int64(PX1 - PX0) * (PY1 - PY0);
@@ -4201,10 +4314,23 @@ begin
   var MaxX := Sar(Max(X0, Max(X1, X2)), 4);
   var MinY := Sar(Min(Y0, Min(Y1, Y2)) + 15, 4);
   var MaxY := Sar(Max(Y0, Max(Y1, Y2)), 4);
-  if MinX < FD.SX0 then MinX := FD.SX0;
-  if MinY < FD.SY0 then MinY := FD.SY0;
-  if MaxX > FD.SX1 then MaxX := FD.SX1;
-  if MaxY > FD.SY1 then MaxY := FD.SY1;
+  if not FCountOnly and (Self = FOwner.FDrawer) and (FOwner.FAccelerator <> nil) and
+    (FOwner.FrameScale > 1) and (FOwner.PrimLog = nil) and (FOwner.WatchX < 0) then
+  begin
+    // Scaled triangles cover pixel cells even when no native samples lie inside.
+    MinX := Sar(Min(X0, Min(X1, X2)) + 8, 4);
+    MaxX := Sar(Max(X0, Max(X1, X2)) + 8, 4);
+    MinY := Sar(Min(Y0, Min(Y1, Y2)) + 8, 4);
+    MaxY := Sar(Max(Y0, Max(Y1, Y2)) + 8, 4);
+  end;
+  if MinX < FD.SX0 then
+    MinX := FD.SX0;
+  if MinY < FD.SY0 then
+    MinY := FD.SY0;
+  if MaxX > FD.SX1 then
+    MaxX := FD.SX1;
+  if MaxY > FD.SY1 then
+    MaxY := FD.SY1;
   if (MinX > MaxX) or (MinY > MaxY) then
     Exit;
   var Sign: Int64 := 1;
@@ -4221,9 +4347,12 @@ begin
   var Bias0: Int64 := 0;
   var Bias1: Int64 := 0;
   var Bias2: Int64 := 0;
-  if not ((A0 > 0) or ((A0 = 0) and (B0 > 0))) then Bias0 := -1;
-  if not ((A1 > 0) or ((A1 = 0) and (B1 > 0))) then Bias1 := -1;
-  if not ((A2 > 0) or ((A2 = 0) and (B2 > 0))) then Bias2 := -1;
+  if not ((A0 > 0) or ((A0 = 0) and (B0 > 0))) then
+    Bias0 := -1;
+  if not ((A1 > 0) or ((A1 = 0) and (B1 > 0))) then
+    Bias1 := -1;
+  if not ((A2 > 0) or ((A2 = 0) and (B2 > 0))) then
+    Bias2 := -1;
   var CountCoverage := FCountOnly;
   if not CountCoverage and (Self = FOwner.FDrawer) and (FOwner.FAccelerator <> nil) and
     (FOwner.PrimLog = nil) and (FOwner.WatchX < 0) then
@@ -4245,7 +4374,8 @@ begin
     var PX := Int64(MinX) * 16;
     for var Y := MinY to MaxY do
     begin
-      if not InBand(Y) then Continue;
+      if not InBand(Y) then
+        Continue;
       var PY := Int64(Y) * 16;
       var E0 := A0 * (PX - X1) + B0 * (PY - Y1) + Bias0;
       var E1 := A1 * (PX - X2) + B1 * (PY - Y2) + Bias1;
@@ -4291,7 +4421,8 @@ begin
         Integer(MaxX + 1), Integer(MaxY + 1));
     if not Accelerated then
     begin
-      if FOwner.QueueFallback(Self) then Exit;
+      if FOwner.QueueFallback(Self) then
+        Exit;
       FOwner.Sync;
     end;
   end;
@@ -4324,7 +4455,8 @@ begin
   finally
     FAccelerating := False;
     FZPassed := False;
-    if Accelerated then FOwner.FAccelerator.EndTriangle;
+    if Accelerated then
+      FOwner.FAccelerator.EndTriangle;
   end;
 end;
 
@@ -4385,7 +4517,8 @@ begin
       var TexClut := Regs[GSRegTEXCLUT];
       var CY := Integer((TexClut shr 12) and $3FF);
       var PH := 32;
-      if CPSM in [PSMCT16, PSMCT16S] then PH := 64;
+      if CPSM in [PSMCT16, PSMCT16S] then
+        PH := 64;
       var BW := Integer(TexClut and $3F);
       GPUFirst := Integer(CBP shr 5) + (CY div PH) * BW;
       GPULast := Integer((CBP + 31) shr 5) + (CY div PH) * BW +
@@ -4418,7 +4551,8 @@ begin
     C.XferX := Prev;
     C.XferRegs[0] := Tex0;
     C.XferRegs[1] := Regs[GSRegTEXCLUT];
-    {$IFDEF GS_RACECHECK}if C.Op = coSoloClut then RaceBarrier(FBands.Position); RaceBarrier(FBands.Position + 1); RaceDescribe(FBands.Position, Format('clut p%d-%d w%x cbp %x csm %d', [P0, P1, FWritten[0], CBP, CSM]));{$ENDIF}
+    {$IFDEF GS_RACECHECK}if C.Op = coSoloClut then
+                           RaceBarrier(FBands.Position); RaceBarrier(FBands.Position + 1); RaceDescribe(FBands.Position, Format('clut p%d-%d w%x cbp %x csm %d', [P0, P1, FWritten[0], CBP, CSM]));{$ENDIF}
     var Solo := C.Op = coSoloClut;
     FBands.Publish;
     FClutUse[FClutSlot] := FBands.Position;
@@ -4621,7 +4755,8 @@ begin
   var Y := Integer((Pos shr 48) and $7FF);
   var W := Integer(Reg and $FFF);
   var H := Integer((Reg shr 32) and $FFF);
-  if (W <= 0) or (H <= 0) then Exit;
+  if (W <= 0) or (H <= 0) then
+    Exit;
   if (X + W > 2048) or (Y + H > 2048) then
     FAccelerator.WritePages(0, 511)
   else
@@ -4652,6 +4787,67 @@ begin
     FXferBits := FXferBits shr Bits;
     Dec(FXferBitCount, Bits);
   end;
+end;
+
+function TPS2GSRaster.WriteImageRun(Data: PByte; Count: Integer): Integer;
+begin
+  Result := 0;
+  if (Count < 2) or (FWorker = nil) then
+    Exit;
+  if not FXferActive then
+  begin
+    FWorker.PutImages(Data, Count);
+    FXferAreaEntry := FWorker.Written;
+    Exit(Count);
+  end;
+  var Bits := TransferBits(Cardinal((Regs[GSRegBITBLTBUF] shr 56) and $3F));
+  var Width := Integer(Regs[GSRegTRXREG] and $FFF);
+  var Height := Integer((Regs[GSRegTRXREG] shr 32) and $FFF);
+  if (Width <= 0) or (Height <= 0) or (FXferX < 0) or (FXferX >= Width) or
+    (FXferY < 0) or (FXferY >= Height) then
+    Exit;
+  var Remaining := Int64(Height - FXferY) * Width - FXferX;
+  var Available: Int64;
+  if Bits = 24 then
+  begin
+    if not (FXferBitCount in [0, 8, 16]) or (FXferBits shr FXferBitCount <> 0) then
+      Exit;
+    // Only complete input words: a partial final word keeps FeedWord.
+    Available := (Remaining * 24 + 23 - FXferBitCount) div 128;
+  end
+  else
+  begin
+    if (FXferBitCount <> 0) or (FXferBits <> 0) then
+      Exit;
+    Available := Remaining div (128 div Bits);
+  end;
+  if Available < 2 then
+    Exit;
+  Result := Count;
+  if Available < Result then
+    Result := Integer(Available);
+  var Pixels: Integer;
+  var TailCount := 0;
+  var Tail: UInt64 := 0;
+  if Bits = 24 then
+  begin
+    var InputBits := FXferBitCount + Result * 128;
+    Pixels := InputBits div 24;
+    TailCount := InputBits mod 24;
+    if TailCount <> 0 then
+      Tail := PPS2Reg128(Data)[Result - 1].UW[3] shr (32 - TailCount);
+  end
+  else
+    Pixels := Result * (128 div Bits);
+  FWorker.PutImages(Data, Result);
+  FXferAreaEntry := FWorker.Written;
+  FXferBitCount := TailCount;
+  FXferBits := Tail;
+  Inc(FXferPixels, Pixels);
+  Inc(FXferX, Pixels);
+  Inc(FXferY, FXferX div Width);
+  FXferX := FXferX mod Width;
+  FXferActive := FXferY < Height;
 end;
 
 procedure TPS2GSRaster.WriteImage(const Data: TPS2Reg128);
@@ -4699,7 +4895,8 @@ begin
         (FXferRunCount + Count <= XferRunMax) then
       begin
         CheckGPUTransfer;
-        if FXferRunCount = 0 then BeginTransferRun;
+        if FXferRunCount = 0 then
+          BeginTransferRun;
         case Bits of
           32: for var K := 0 to 3 do FXferRing[(FXferRingPos + K) and XferRingMask] := Data.UW[K];
           16: for var K := 0 to 7 do FXferRing[(FXferRingPos + K) and XferRingMask] := Data.UH[K];
@@ -4714,7 +4911,8 @@ begin
         Inc(FXferY, FXferX div Width);
         FXferX := FXferX mod Width;
         FXferActive := FXferY < Height;
-        if not FXferActive or (FXferRunCount = XferRunMax) then FlushTransfer;
+        if not FXferActive or (FXferRunCount = XferRunMax) then
+          FlushTransfer;
         Exit;
       end;
     end;
@@ -5481,6 +5679,29 @@ begin
   FDrained := 0;
   if FWrite - FPublishedHere >= 64 then
     Publish;
+end;
+
+procedure TPS2GSWorker.PutImages(Data: PByte; Count: Integer);
+begin
+  // The same entries and publication boundaries as repeated PutImage.
+  while Count > 0 do
+  begin
+    var E := Slot;
+    var N := Min(Count, 64 - Integer(FWrite - FPublishedHere));
+    N := Min(N, RingSize - Integer(FWrite and RingMask));
+    N := Min(N, RingSize - Integer(FWrite - FConsumedSeen));
+    for var I := 0 to N - 1 do
+    begin
+      E[I].Kind := EntryImage;
+      E[I].Data := PPS2Reg128(Data)[I];
+    end;
+    Inc(FWrite, N);
+    FDrained := 0;
+    if FWrite - FPublishedHere >= 64 then
+      Publish;
+    Inc(Data, N * SizeOf(TPS2Reg128));
+    Dec(Count, N);
+  end;
 end;
 
 procedure TPS2GSWorker.PutRead(const Read: TPS2GSRead; Need: Int64; const Pages: TPS2GSPages);

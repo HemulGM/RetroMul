@@ -47,6 +47,10 @@ function PS2RegisterMathNative(Kind: TPS2RegisterMath): Pointer;
 // rounding to nearest have fast paths, others the exact routine at once).
 function PS2RegisterMathNativeFor(Kind: TPS2RegisterMath; Mode: TRoundingMode): Pointer;
 function PS2RegisterMathModel(Kind: TPS2RegisterMath): Pointer;
+// MIN/MAX use the exact raw-bit PS2FloatKey ordering, never host MINPS/MAXPS.
+// Register ABI/model signature is the same as the existing vector routines.
+function PS2RegisterSelectNative(Maximum: Boolean): Pointer;
+function PS2RegisterSelectModel(Maximum: Boolean): Pointer;
 // Whether the AVX-512 forms of the rounding-to-nearest fast paths are used
 // (AVX-512F/DQ/VL and the OS's ZMM state; tests may turn them off).
 function PS2VectorAVX512: Boolean;
@@ -102,12 +106,14 @@ end;
 procedure PS2Clip3(const A, B: TPS2Reg128; out Bits: Cardinal);
 begin
   var Limit := B.UW[3] and $7FFFFFFF;
-  if Limit and $7F800000 = 0 then Limit := 0;
+  if Limit and $7F800000 = 0 then
+    Limit := 0;
   var Result: Cardinal := 0;
   for var K := 0 to 2 do
   begin
     var V := A.UW[K];
-    if (V and $7F800000) = 0 then Continue;
+    if (V and $7F800000) = 0 then
+      Continue;
     if (V and $7FFFFFFF) > Limit then
       Result := Result or (Cardinal(1) shl (K * 2 + Integer(V shr 31)));
   end;
@@ -1337,6 +1343,46 @@ asm
   jmp RegisterAddExact
 end;
 
+function MinRegisters(Context: Pointer): NativeUInt;
+asm
+  .NOFRAME
+  movdqa xmm2, xmm0
+  psrad xmm2, 31
+  psrld xmm2, 1
+  pxor xmm0, xmm2                    // signed PS2FloatKey(A)
+  movdqa xmm2, xmm1
+  psrad xmm2, 31
+  psrld xmm2, 1
+  pxor xmm1, xmm2                    // signed PS2FloatKey(B)
+  pminsd xmm0, xmm1
+  movdqa xmm2, xmm0
+  psrad xmm2, 31
+  psrld xmm2, 1
+  pxor xmm0, xmm2                    // same involution restores the raw value
+  xor eax, eax
+  ret
+end;
+
+function MaxRegisters(Context: Pointer): NativeUInt;
+asm
+  .NOFRAME
+  movdqa xmm2, xmm0
+  psrad xmm2, 31
+  psrld xmm2, 1
+  pxor xmm0, xmm2
+  movdqa xmm2, xmm1
+  psrad xmm2, 31
+  psrld xmm2, 1
+  pxor xmm1, xmm2
+  pmaxsd xmm0, xmm1
+  movdqa xmm2, xmm0
+  psrad xmm2, 31
+  psrld xmm2, 1
+  pxor xmm0, xmm2
+  xor eax, eax
+  ret
+end;
+
 function MulRegisters(Context: Pointer): NativeUInt;
 asm
   .NOFRAME
@@ -1660,9 +1706,12 @@ begin
   for var K := 0 to 3 do
   begin
     var V := EEFloatIn(A.UW[K]) * Scale;
-    if V >= 2147483647.0 then R.UW[K] := $7FFFFFFF
-    else if V <= -2147483648.0 then R.UW[K] := $80000000
-    else R.SW[K] := Trunc(V);
+    if V >= 2147483647.0 then
+      R.UW[K] := $7FFFFFFF
+    else if V <= -2147483648.0 then
+      R.UW[K] := $80000000
+    else
+      R.SW[K] := Trunc(V);
   end;
 end;
 
@@ -1701,8 +1750,10 @@ begin
   Result := 0;
   for var K := 0 to 3 do
   begin
-    if Flags and (Cardinal(1) shl K) <> 0 then Result := Result or (NativeUInt(1) shl (15 - K));
-    if Flags and (Cardinal(16) shl K) <> 0 then Result := Result or (NativeUInt(1) shl (11 - K));
+    if Flags and (Cardinal(1) shl K) <> 0 then
+      Result := Result or (NativeUInt(1) shl (15 - K));
+    if Flags and (Cardinal(16) shl K) <> 0 then
+      Result := Result or (NativeUInt(1) shl (11 - K));
   end;
 end;
 
@@ -1718,6 +1769,48 @@ begin
   var Flags: Cardinal;
   PS2Mul4(A, B, R, Flags);
   Result := RegisterOU(Flags);
+end;
+
+function ModelMinRegisters(const A, B: TPS2Reg128; Context: Pointer; out R: TPS2Reg128): NativeUInt;
+begin
+  for var K := 0 to 3 do
+    if PS2FloatKey(A.UW[K]) <= PS2FloatKey(B.UW[K]) then
+      R.UW[K] := A.UW[K]
+    else
+      R.UW[K] := B.UW[K];
+  Result := 0;
+end;
+
+function ModelMaxRegisters(const A, B: TPS2Reg128; Context: Pointer; out R: TPS2Reg128): NativeUInt;
+begin
+  for var K := 0 to 3 do
+    if PS2FloatKey(A.UW[K]) >= PS2FloatKey(B.UW[K]) then
+      R.UW[K] := A.UW[K]
+    else
+      R.UW[K] := B.UW[K];
+  Result := 0;
+end;
+
+function PS2RegisterSelectNative(Maximum: Boolean): Pointer;
+begin
+  Result := nil;
+  {$IFDEF PS2_VU_SSE}
+  // Reuse the existing conservative native-vector availability gate. AVX2
+  // hosts have the SSE4.1 signed min/max operations; old backends stay scalar.
+  if VectorAVX2 then
+    if Maximum then
+      Result := @MaxRegisters
+    else
+      Result := @MinRegisters;
+  {$ENDIF}
+end;
+
+function PS2RegisterSelectModel(Maximum: Boolean): Pointer;
+begin
+  if Maximum then
+    Result := @ModelMaxRegisters
+  else
+    Result := @ModelMinRegisters;
 end;
 
 function PS2RegisterMathNative(Kind: TPS2RegisterMath): Pointer;
@@ -1749,9 +1842,12 @@ begin
         case Mode of
           rmTruncate: Result := @MulRegistersRZ;
           rmNearest:
-            if VectorAVX512 then Result := @MulRegistersRN512
-            else if VectorFMA then Result := @MulRegistersRN
-            else Result := @RegisterMulExact;
+            if VectorAVX512 then
+              Result := @MulRegistersRN512
+            else if VectorFMA then
+              Result := @MulRegistersRN
+            else
+              Result := @RegisterMulExact;
         else
           Result := @RegisterMulExact;
         end;

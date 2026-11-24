@@ -574,6 +574,7 @@
         <DCCReference Include="..\..\source\media\audio\codecs\atrac3\Audio.ATRAC3.Decoder.pas"/>
         <DCCReference Include="..\..\source\media\audio\codecs\atrac3\Audio.ATRAC3.pas"/>
         <DCCReference Include="..\..\source\cores\ps2\PS2.Types.pas"/>
+        <DCCReference Include="..\..\source\gpu\shaders\PS2.GS.PascalShaders.pas"/>
         <DCCReference Include="..\..\source\cores\ps2\PS2.Scheduler.pas"/>
         <DCCReference Include="..\..\source\cores\ps2\PS2.ELF.pas"/>
         <DCCReference Include="..\..\source\cores\ps2\PS2.EE.CPU.pas"/>
@@ -1664,7 +1665,11 @@
     </ProjectExtensions>
     <ItemGroup>
         <RcCompile Include="..\..\source\gpu\shaders\PSPGE.Pascal.rc"/>
+        <RcCompile Include="..\..\source\gpu\shaders\PS2GS.Pascal.rc"/>
     </ItemGroup>
+    <PropertyGroup Condition="'$(Base)'!=''">
+        <DCC_UnitSearchPath>..\..\source\platforms\ps2;..\..\source\cores\ps2;..\..\source\media\dvd;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+    </PropertyGroup>
     <Import Project="$(BDS)\Bin\CodeGear.Delphi.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Delphi.Targets')"/>
     <Import Project="$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj" Condition="Exists('$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj')"/>
     <Import Project="$(MSBuildProjectName).deployproj" Condition="Exists('$(MSBuildProjectName).deployproj')"/>

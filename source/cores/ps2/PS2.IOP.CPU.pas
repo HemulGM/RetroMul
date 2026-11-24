@@ -633,22 +633,26 @@ end;
 
 procedure OpBEQ(C: TIOPCPU; Op: Cardinal);
 begin
-  if C.R[OpRs(Op)] = C.R[OpRt(Op)] then C.Jump(BranchTarget(C, Op));
+  if C.R[OpRs(Op)] = C.R[OpRt(Op)] then
+    C.Jump(BranchTarget(C, Op));
 end;
 
 procedure OpBNE(C: TIOPCPU; Op: Cardinal);
 begin
-  if C.R[OpRs(Op)] <> C.R[OpRt(Op)] then C.Jump(BranchTarget(C, Op));
+  if C.R[OpRs(Op)] <> C.R[OpRt(Op)] then
+    C.Jump(BranchTarget(C, Op));
 end;
 
 procedure OpBLEZ(C: TIOPCPU; Op: Cardinal);
 begin
-  if Integer(C.R[OpRs(Op)]) <= 0 then C.Jump(BranchTarget(C, Op));
+  if Integer(C.R[OpRs(Op)]) <= 0 then
+    C.Jump(BranchTarget(C, Op));
 end;
 
 procedure OpBGTZ(C: TIOPCPU; Op: Cardinal);
 begin
-  if Integer(C.R[OpRs(Op)]) > 0 then C.Jump(BranchTarget(C, Op));
+  if Integer(C.R[OpRs(Op)]) > 0 then
+    C.Jump(BranchTarget(C, Op));
 end;
 
 procedure OpADDI(C: TIOPCPU; Op: Cardinal);

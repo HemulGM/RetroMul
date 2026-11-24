@@ -43,7 +43,7 @@ type
       Slot: Cardinal;
       Mode: Cardinal;
     end;
-    // The triangle kernel's (PS2.GS.Triangle.comp): a cluster's tile-aligned
+    // The triangle kernels' shared push block: a cluster's tile-aligned
     // bounds, first state slot, phase (0 A, 1 B), its table and entries in
     // the tile buffer, its first entry in the results, entries, tiles across,
     // where the coverage masks start in the results.
@@ -53,7 +53,7 @@ type
     end;
   private
     FCompute: TVulkanCompute;
-    FKernel, FTriangleKernel: TVulkanKernel;
+    FKernel, FTriangleKernel, FTriangleShadeKernel: TVulkanKernel;
     FRAM, FState, FCoordinates, FFragments, FTiles, FResults: TVulkanBuffer;
     FDraws: Int64;
     FTexturedDraws: Int64;
@@ -128,14 +128,13 @@ type
 
 var
   // Clusters with a tile meeting at least this many draws take two passes
-  // (see PS2.GS.Triangle.comp; tests set it to try both).
+  // (tests set it to exercise both paths).
   PS2GSTwoPhaseDraws: Integer = 8;
 
 implementation
 
-const
-{$I shaders\PS2.GS.Sprite.inc}
-{$I shaders\PS2.GS.Triangle.inc}
+uses
+  PS2.GS.PascalShaders;
 
 constructor TPS2GSGpu.Create(RAM: Pointer; Clut: PWord);
 begin
@@ -149,7 +148,7 @@ begin
   FState := FCompute.CreateBuffer(BatchSize * 384 * SizeOf(Cardinal), True);
   FCoordinates := FCompute.CreateBuffer(BatchSize * 4096 * SizeOf(Integer), True);
   FFragments := FCompute.CreateBuffer(FragmentCapacity * 11 * SizeOf(Cardinal), True);
-  FKernel := FCompute.CreateKernel(PS2SpriteSPIRV, 4, SizeOf(TPush));
+  FKernel := FCompute.CreateKernel(PS2GSKernelCode(TPS2GSKernel.LLESprite), 4, SizeOf(TPush));
   FCompute.Bind(FKernel, [FRAM, FState, FCoordinates, FFragments]);
   {$IFDEF CPUX64}
   // (The triangle kernel's edge functions take 64-bit integers.)
@@ -159,8 +158,12 @@ begin
     FLodBuffer := FCompute.CreateBuffer(LodCapacity * SizeOf(Cardinal), True);
     // (Each entry's 64 depths and colours, then each entry's coverage mask.)
     FResults := FCompute.CreateBuffer(UInt64(ClusterEntries) * 130 * SizeOf(Cardinal), False);
-    FTriangleKernel := FCompute.CreateKernel(PS2TriangleSPIRV, 6, SizeOf(TTrianglePush));
+    FTriangleKernel := FCompute.CreateKernel(PS2GSKernelCode(TPS2GSKernel.LLETriangleResolve),
+      6, SizeOf(TTrianglePush));
     FCompute.Bind(FTriangleKernel, [FRAM, FState, FTiles, FLodBuffer, FCoordinates, FResults]);
+    FTriangleShadeKernel := FCompute.CreateKernel(PS2GSKernelCode(TPS2GSKernel.LLETriangleShade),
+      6, SizeOf(TTrianglePush));
+    FCompute.Bind(FTriangleShadeKernel, [FRAM, FState, FTiles, FLodBuffer, FCoordinates, FResults]);
   end;
   {$ENDIF}
   TakeHalf;
@@ -182,7 +185,8 @@ end;
 procedure TPS2GSGpu.NextHalf;
 begin
   FCompute.Submit;
-  if FRecorded then Inc(FSubmissions);
+  if FRecorded then
+    Inc(FSubmissions);
   FRecorded := False;
   TakeHalf;
 end;
@@ -197,7 +201,8 @@ end;
 
 procedure TPS2GSGpu.Sync;
 begin
-  if not FPending then Exit;
+  if not FPending then
+    Exit;
   FlushNative;
   FCompute.Finish;
   FPending := False;
@@ -211,8 +216,10 @@ end;
 // Same truncation and finite-range handling as the software sprite path.
 function TextureCoordinate(D: Double): Integer;
 begin
-  if not (D > -$1000000) then Exit(-$1000000);
-  if D > $1000000 then Exit($1000000);
+  if not (D > -$1000000) then
+    Exit(-$1000000);
+  if D > $1000000 then
+    Exit($1000000);
   Result := Trunc(D);
 end;
 
@@ -220,7 +227,8 @@ end;
 // conversion/rounding of LOD never depends on GPU floating-point controls.
 function MipCode(const D: TPS2GSDraw; Lod: Single): Cardinal;
 begin
-  if not D.TME then Exit(0);
+  if not D.TME then
+    Exit(0);
   var L0 := 0;
   var L1 := 0;
   var Weight := 0;
@@ -235,10 +243,12 @@ begin
       else
       begin
         L0 := Min(Trunc(Lod), D.MXL);
-        if L0 < D.MXL then Weight := Round((Lod - L0) * 16);
+        if L0 < D.MXL then
+          Weight := Round((Lod - L0) * 16);
       end;
       L1 := L0;
-      if Weight > 0 then L1 := L0 + 1;
+      if Weight > 0 then
+        L1 := L0 + 1;
     end;
   end;
   Result := Cardinal(L0 or (L1 shl 3) or (Weight shl 6) or (Ord(Linear) shl 11));
@@ -252,18 +262,21 @@ begin
     Exit(False);
   end;
   for var P := First to Last do
-    if (Bits[(P and 511) shr 5] and (Cardinal(1) shl (P and 31))) <> 0 then Exit(True);
+    if (Bits[(P and 511) shr 5] and (Cardinal(1) shl (P and 31))) <> 0 then
+      Exit(True);
   Result := False;
 end;
 
 procedure TPS2GSGpu.ReadPages(First, Last: Integer);
 begin
-  if FPending and MeetsRange(FWrites, First, Last) then Sync;
+  if FPending and MeetsRange(FWrites, First, Last) then
+    Sync;
 end;
 
 procedure TPS2GSGpu.WritePages(First, Last: Integer);
 begin
-  if FPending and (MeetsRange(FWrites, First, Last) or MeetsRange(FReads, First, Last)) then Sync;
+  if FPending and (MeetsRange(FWrites, First, Last) or MeetsRange(FReads, First, Last)) then
+    Sync;
 end;
 
 procedure TPS2GSGpu.AccessPages(const Reads, Writes: TPS2GSPages);
@@ -281,7 +294,10 @@ end;
 // The rows of a frame page: 64 in the 16-bit formats, else 32.
 function FrameRows(PSM: Cardinal): Integer; inline;
 begin
-  if PSM in [PSMCT16, PSMCT16S, PSMZ16, PSMZ16S] then Result := 64 else Result := 32;
+  if PSM in [PSMCT16, PSMCT16S, PSMZ16, PSMZ16S] then
+    Result := 64
+  else
+    Result := 32;
 end;
 
 function Palettized(const D: TPS2GSDraw): Boolean; inline;
@@ -298,25 +314,35 @@ begin
   // The pages of the draw's rectangle and of its textures' extents, as the
   // software path tracks them (not every page up to the last).
   AddRectPages(Writes, D.FBP, D.FBW, D.FPSM, X0, Y0, X1 - 1, Y1 - 1);
-  if not D.ZMSK then AddRectPages(Writes, D.ZBP, D.FBW, D.ZPSM, X0, Y0, X1 - 1, Y1 - 1);
-  if D.ZTST >= 2 then AddRectPages(Reads, D.ZBP, D.FBW, D.ZPSM, X0, Y0, X1 - 1, Y1 - 1);
-  if not D.TME then Exit;
+  if not D.ZMSK then
+    AddRectPages(Writes, D.ZBP, D.FBW, D.ZPSM, X0, Y0, X1 - 1, Y1 - 1);
+  if D.ZTST >= 2 then
+    AddRectPages(Reads, D.ZBP, D.FBW, D.ZPSM, X0, Y0, X1 - 1, Y1 - 1);
+  if not D.TME then
+    Exit;
   var Last := 0;
-  if D.UseLod and (D.MMIN >= 2) then Last := D.MXL;
+  if D.UseLod and (D.MMIN >= 2) then
+    Last := D.MXL;
   for var L := 0 to Last do
   begin
-    if (Levels and (Cardinal(1) shl L)) = 0 then Continue;
+    if (Levels and (Cardinal(1) shl L)) = 0 then
+      Continue;
     var BP := D.TBP; var BW := D.TBW;
     if L > 0 then begin BP := D.LevelTBP[L]; BW := D.LevelTBW[L]; end;
     var W := Max(1, (1 shl D.TW) shr L);
     var H := Max(1, (1 shl D.TH) shr L);
-    if D.WMS = 2 then W := (Max(D.MINU, D.MAXU) shr L) + 1;
-    if D.WMT = 2 then H := (Max(D.MINV, D.MAXV) shr L) + 1;
-    if D.WMS = 3 then W := (D.MINU or D.MAXU) + 1;
-    if D.WMT = 3 then H := (D.MINV or D.MAXV) + 1;
+    if D.WMS = 2 then
+      W := (Max(D.MINU, D.MAXU) shr L) + 1;
+    if D.WMT = 2 then
+      H := (Max(D.MINV, D.MAXV) shr L) + 1;
+    if D.WMS = 3 then
+      W := (D.MINU or D.MAXU) + 1;
+    if D.WMT = 3 then
+      H := (D.MINV or D.MAXV) + 1;
     AddRectPages(Textures, BP, BW, D.TPSM, 0, 0, W - 1, H - 1);
   end;
-  for var K := 0 to 15 do Reads[K] := Reads[K] or Textures[K];
+  for var K := 0 to 15 do
+    Reads[K] := Reads[K] or Textures[K];
 end;
 
 procedure TPS2GSGpu.TrackAccess(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; Levels: Cardinal);
@@ -358,7 +384,8 @@ begin
       var Z1 := (D.ZBP + 31) div 32 + Cardinal((MY - 1) div 32) * D.FBW + Cardinal((MX - 1) div 64);
       Conflict := (F1 >= 512) or (Z1 >= 512) or ((F1 >= Z0) and (Z1 >= F0));
     end;
-    if Conflict then FlushNative;
+    if Conflict then
+      FlushNative;
   end;
   if FUsed = FUsedEnd then
   begin
@@ -402,7 +429,8 @@ end;
 
 procedure TPS2GSGpu.FlushNative;
 begin
-  if FNativeCount = 0 then Exit;
+  if FNativeCount = 0 then
+    Exit;
   var TX0 := FNativeBounds[0] shr 3;
   var TY0 := FNativeBounds[1] shr 3;
   var TX1 := (FNativeBounds[2] + 7) shr 3;
@@ -432,7 +460,8 @@ begin
   // 16), each tile's in draw order: counted, placed, then filled draw by
   // draw. Built in cached CPU memory, then streamed once to the mapped
   // buffer (read/modify/write there is needlessly expensive).
-  if Length(FMaskScratch) < Words then SetLength(FMaskScratch, Words);
+  if Length(FMaskScratch) < Words then
+    SetLength(FMaskScratch, Words);
   FillChar(FMaskScratch[0], Tiles * 2 * SizeOf(Cardinal), 0);
   for var I := 0 to FNativeCount - 1 do
     for var Y := FNativeRectangles[I, 1] shr 3 to (FNativeRectangles[I, 3] + 7) shr 3 - 1 do
@@ -442,7 +471,8 @@ begin
   var Most: Cardinal := 0;
   for var T := 0 to Tiles - 1 do
   begin
-    if FMaskScratch[T * 2 + 1] > Most then Most := FMaskScratch[T * 2 + 1];
+    if FMaskScratch[T * 2 + 1] > Most then
+      Most := FMaskScratch[T * 2 + 1];
     FMaskScratch[T * 2] := First;
     Inc(First, FMaskScratch[T * 2 + 1]);
     FMaskScratch[T * 2 + 1] := 0;
@@ -476,7 +506,8 @@ begin
   if TwoPhases then
   begin
     Push.Mode := 0;
-    FCompute.Launch(FTriangleKernel, Push, Cardinal(Min(Entries, 32768)), Cardinal((Entries + 32767) div 32768), 1);
+    FCompute.Launch(FTriangleShadeKernel, Push, Cardinal(Min(Entries, 32768)),
+      Cardinal((Entries + 32767) div 32768), 1);
     Push.Mode := 1;
   end
   else
@@ -494,45 +525,62 @@ function TPS2GSGpu.Supports(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; Levels
 begin
   Result := False;
   if not (D.FPSM in [PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMZ16, PSMZ16S]) or
-    not (D.ZPSM in [PSMZ32, PSMZ24]) or (X0 < 0) or (Y0 < 0) or
+    (X0 < 0) or (Y0 < 0) or
     (X1 <= X0) or (Y1 <= Y0) or (X1 > 2048) or (Y1 > 2048) then Exit;
   // One invocation must own each pixel (a 16-bit one, half of a word):
   // reject zero stride, row aliases, VRAM wrapping and colour/depth
   // overlap. Bounds are deliberately broad.
-  if (D.FBW = 0) or (Cardinal(X1) > D.FBW * 64) then Exit;
+  if (D.FBW = 0) or (Cardinal(X1) > D.FBW * 64) then
+    Exit;
   var F0 := D.FBP div 32;
   var F1 := (D.FBP + 31) div 32 + Cardinal((Y1 - 1) div FrameRows(D.FPSM)) * D.FBW + Cardinal((X1 - 1) div 64);
   var Z0 := D.ZBP div 32;
   var Z1 := (D.ZBP + 31) div 32 + Cardinal((Y1 - 1) div 32) * D.FBW + Cardinal((X1 - 1) div 64);
-  if F1 >= 512 then Exit;
+  if F1 >= 512 then
+    Exit;
   if not D.ZMSK or (D.ZTST <> 1) then
-    if (Z1 >= 512) or ((F1 >= Z0) and (Z1 >= F0)) then Exit;
+  begin
+    // Unused depth state does not constrain a colour-only draw.
+    if not (D.ZPSM in [PSMZ32, PSMZ24]) then
+      Exit;
+    if (Z1 >= 512) or ((F1 >= Z0) and (Z1 >= F0)) then
+      Exit;
+  end;
   var Overlap := False;
   if D.TME then
   begin
     if (D.TW > 10) or (D.TH > 10) or (D.MXL < 0) or (D.MXL > 6) or
       not (D.TPSM in [PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMZ32, PSMZ24, PSMZ16, PSMZ16S,
         PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH]) then Exit;
-    if (D.TPSM in [PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH]) and (FHostClut = nil) then Exit;
+    if (D.TPSM in [PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH]) and (FHostClut = nil) then
+      Exit;
     var Last := 0;
-    if D.UseLod and (D.MMIN >= 2) then Last := D.MXL;
+    if D.UseLod and (D.MMIN >= 2) then
+      Last := D.MXL;
     for var L := 0 to Last do
     begin
-      if (Levels and (Cardinal(1) shl L)) = 0 then Continue;
+      if (Levels and (Cardinal(1) shl L)) = 0 then
+        Continue;
       var BP := D.TBP; var BW := D.TBW;
       if L > 0 then begin BP := D.LevelTBP[L]; BW := D.LevelTBW[L]; end;
       var W := Max(1, (1 shl D.TW) shr L);
       var H := Max(1, (1 shl D.TH) shr L);
-      if D.WMS = 2 then W := (Max(D.MINU, D.MAXU) shr L) + 1;
-      if D.WMT = 2 then H := (Max(D.MINV, D.MAXV) shr L) + 1;
-      if D.WMS = 3 then W := (D.MINU or D.MAXU) + 1;
-      if D.WMT = 3 then H := (D.MINV or D.MAXV) + 1;
+      if D.WMS = 2 then
+        W := (Max(D.MINU, D.MAXU) shr L) + 1;
+      if D.WMT = 2 then
+        H := (Max(D.MINV, D.MAXV) shr L) + 1;
+      if D.WMS = 3 then
+        W := (D.MINU or D.MAXU) + 1;
+      if D.WMT = 3 then
+        H := (D.MINV or D.MAXV) + 1;
       var PW := 64; var PH := 32;
-      if D.TPSM in [PSMCT16, PSMCT16S, PSMZ16, PSMZ16S] then PH := 64;
+      if D.TPSM in [PSMCT16, PSMCT16S, PSMZ16, PSMZ16S] then
+        PH := 64;
       if D.TPSM in [PSMT8, PSMT4] then
       begin
         PW := 128; PH := 64; BW := (BW + 1) shr 1;
-        if D.TPSM = PSMT4 then PH := 128;
+        if D.TPSM = PSMT4 then
+          PH := 128;
       end;
       var T0 := BP div 32;
       var T1 := (BP + 31) div 32 + Cardinal((H - 1) div PH) * BW + Cardinal((W - 1) div PW);
@@ -542,12 +590,14 @@ begin
     end;
   end;
   // Small draws cost more to submit than to draw on the host.
-  if not SmallAllowed and (Int64(X1 - X0) * (Y1 - Y0) < 4096) then Exit;
+  if not SmallAllowed and (Int64(X1 - X0) * (Y1 - Y0) < 4096) then
+    Exit;
   // Texture pages that may meet the targets': only where no pixel reads a
   // texel another pixel of the draw writes (OverlapAllowed). Earlier and
   // later draws on those pages are kept apart by the clusters' page checks
   // and barriers.
-  if Overlap and not (Assigned(FOverlapAllowed) and FOverlapAllowed) then Exit;
+  if Overlap and not (Assigned(FOverlapAllowed) and FOverlapAllowed) then
+    Exit;
   Result := True;
 end;
 
@@ -557,7 +607,8 @@ begin
   P[0] := D.FBP; P[1] := D.FBW; P[2] := D.FPSM; P[3] := D.FBMSK;
   P[4] := D.ZBP; P[5] := D.ZPSM; P[6] := Ord(D.ZMSK);
   P[7] := 1;
-  if D.ATE then P[7] := Cardinal(D.ATST);
+  if D.ATE then
+    P[7] := Cardinal(D.ATST);
   P[8] := Cardinal(D.AREF); P[9] := Cardinal(D.AFAIL);
   P[10] := Ord(D.DATE); P[11] := Ord(D.DATM); P[12] := Cardinal(D.ZTST);
   P[13] := Cardinal(D.BlendA); P[14] := Cardinal(D.BlendB); P[15] := Cardinal(D.BlendC);
@@ -599,7 +650,8 @@ begin
   // Where the triangle kernel runs, sprites join its ordered clusters: a
   // small one then costs no dispatch of its own.
   var Clustered := FTriangleKernel <> nil;
-  if not Supports(D, X0, Y0, X1, Y1, Levels, Clustered) then Exit;
+  if not Supports(D, X0, Y0, X1, Y1, Levels, Clustered) then
+    Exit;
   if Assigned(FBeforeDraw) or Clustered then
     BuildAccess(D, X0, Y0, X1, Y1, Levels, Reads, Writes, Textures);
   if Assigned(FBeforeDraw) and not FBeforeDraw(Reads, Writes, Palettized(D), Int64(X1 - X0) * (Y1 - Y0)) then
@@ -609,7 +661,8 @@ begin
   else
   begin
     FlushNative;
-    if FUsed = FUsedEnd then NextHalf;
+    if FUsed = FUsedEnd then
+      NextHalf;
   end;
   WriteState(D, V);
   var P := PCardinal(FState.Data) + FUsed * 384;
@@ -628,8 +681,10 @@ begin
     begin
       var Q0 := V0.Q;
       var Q1 := V.Q;
-      if Q0 = 0 then Q0 := 1;
-      if Q1 = 0 then Q1 := 1;
+      if Q0 = 0 then
+        Q0 := 1;
+      if Q1 = 0 then
+        Q1 := 1;
       U0 := V0.S / Q0 * (1 shl D.TW) * 16;
       U1 := V.S / Q1 * (1 shl D.TW) * 16;
       TV0 := V0.T / Q0 * (1 shl D.TH) * 16;
@@ -637,12 +692,16 @@ begin
     end;
     var DUDX := 0.0;
     var DVDY := 0.0;
-    if V.X <> V0.X then DUDX := (U1 - U0) / (V.X - V0.X) * 16;
-    if V.Y <> V0.Y then DVDY := (TV1 - TV0) / (V.Y - V0.Y) * 16;
+    if V.X <> V0.X then
+      DUDX := (U1 - U0) / (V.X - V0.X) * 16;
+    if V.Y <> V0.Y then
+      DVDY := (TV1 - TV0) / (V.Y - V0.Y) * 16;
     var UStart := U0 + (X0 * 16 - V0.X) * DUDX / 16;
     var Coords := PInteger(FCoordinates.Data) + FUsed * 4096;
-    for var X := X0 to X1 - 1 do Coords[X - X0] := TextureCoordinate(UStart + (X - X0) * DUDX);
-    for var Y := Y0 to Y1 - 1 do Coords[2048 + Y - Y0] := TextureCoordinate(TV0 + (Y * 16 - V0.Y) * DVDY / 16);
+    for var X := X0 to X1 - 1 do
+      Coords[X - X0] := TextureCoordinate(UStart + (X - X0) * DUDX);
+    for var Y := Y0 to Y1 - 1 do
+      Coords[2048 + Y - Y0] := TextureCoordinate(TV0 + (Y * 16 - V0.Y) * DVDY / 16);
   end;
   if Clustered then
   begin
@@ -651,7 +710,8 @@ begin
     P[60] := Cardinal(X0); P[61] := Cardinal(Y0); P[62] := Cardinal(X1); P[63] := Cardinal(Y1);
     AddToCluster(D, X0, Y0, X1, Y1, Reads, Writes, Textures);
     Inc(FDraws);
-    if D.TME then Inc(FTexturedDraws);
+    if D.TME then
+      Inc(FTexturedDraws);
     Exit(True);
   end;
   var Push: TPush;
@@ -664,7 +724,8 @@ begin
   FPending := True;
   Inc(FDraws);
   TrackAccess(D, X0, Y0, X1, Y1, Levels);
-  if D.TME then Inc(FTexturedDraws);
+  if D.TME then
+    Inc(FTexturedDraws);
   Result := True;
 end;
 // Pixels' Q to MipCode as the host decides (PixelLod, then Texel's choice in
@@ -742,15 +803,20 @@ begin
   var Count := Length(FLodTables[Table]) div 2;
   var Lo := PCardinal(@QLo)^;
   var Hi := PCardinal(@QHi)^;
-  if Lo > 0 then Dec(Lo);
-  if Hi < $7F800000 then Inc(Hi);
+  if Lo > 0 then
+    Dec(Lo);
+  if Hi < $7F800000 then
+    Inc(Hi);
   // The run holding Lo, then each run up to the one holding Hi.
   var A := 0;
   var B := Count - 1;
   while A < B do
   begin
     var M := (A + B + 1) shr 1;
-    if E[M * 2] <= Lo then A := M else B := M - 1;
+    if E[M * 2] <= Lo then
+      A := M
+    else
+      B := M - 1;
   end;
   while (A < Count) and (E[A * 2] <= Hi) do
   begin
@@ -775,9 +841,11 @@ var
 
 begin
   Result := False;
-  if FTriangleKernel = nil then Exit;
+  if FTriangleKernel = nil then
+    Exit;
   var Rounding := GetRoundMode;
-  if not (Rounding in [rmNearest, rmTruncate]) then Exit;
+  if not (Rounding in [rmNearest, rmTruncate]) then
+    Exit;
   // A per-pixel LOD takes the host's choice from a table of Q (see
   // LodTable); a constant one is chosen here.
   var Table := -1;
@@ -785,9 +853,11 @@ begin
   var Levels: Cardinal;
   if D.TME and D.UseLod and not D.LCM and not D.FST then
   begin
-    if not ((V0.Q > 0) and (V1.Q > 0) and (V2.Q > 0)) then Exit;
+    if not ((V0.Q > 0) and (V1.Q > 0) and (V2.Q > 0)) then
+      Exit;
     Table := LodTable(D, Rounding);
-    if Table < 0 then Exit;
+    if Table < 0 then
+      Exit;
     Levels := LodLevels(Table, Min(V0.Q, Min(V1.Q, V2.Q)), Max(V0.Q, Max(V1.Q, V2.Q)));
   end
   else
@@ -795,12 +865,14 @@ begin
     Mip := MipCode(D, D.K);
     Levels := (Cardinal(1) shl (Mip and 7)) or (Cardinal(1) shl ((Mip shr 3) and 7));
   end;
-  if not Supports(D, X0, Y0, X1, Y1, Levels, True) then Exit;
+  if not Supports(D, X0, Y0, X1, Y1, Levels, True) then
+    Exit;
   Vertices[0] := V0; Vertices[1] := V1; Vertices[2] := V2;
   for var K := 0 to 2 do
   begin
     var V := Vertices[K];
-    if (V.X < -65535) or (V.X > 65535) or (V.Y < -65535) or (V.Y > 65535) then Exit;
+    if (V.X < -65535) or (V.X > 65535) or (V.Y < -65535) or (V.Y > 65535) then
+      Exit;
     // (Q of one sign: the host's S/Q and T/Q arithmetic is the same either
     // way; per-pixel LOD, from |Q|, took positive ones only above.)
     if D.TME and not D.FST then
@@ -809,10 +881,12 @@ begin
   end;
   var Area := (Int64(V1.X) - V0.X) * (Int64(V2.Y) - V0.Y) -
     (Int64(V2.X) - V0.X) * (Int64(V1.Y) - V0.Y);
-  if Area = 0 then Exit;
+  if Area = 0 then
+    Exit;
   var InvArea: Double := 1.0 / Area;
   BuildAccess(D, X0, Y0, X1, Y1, Levels, Reads, Writes, Textures);
-  if Assigned(FBeforeDraw) and not FBeforeDraw(Reads, Writes, Palettized(D), Int64(X1 - X0) * (Y1 - Y0)) then Exit;
+  if Assigned(FBeforeDraw) and not FBeforeDraw(Reads, Writes, Palettized(D), Int64(X1 - X0) * (Y1 - Y0)) then
+    Exit;
   JoinCluster(D, X0, Y0, X1, Y1, Writes, Textures);
   WriteState(D, V2);
   var P := PCardinal(FState.Data) + FUsed * 384;
@@ -823,10 +897,12 @@ begin
     P[79] := FLodOffsets[Table];
   P[54] := Ord(D.IIP);
   P[55] := 0;
-  if Rounding = rmTruncate then P[55] := 3;
+  if Rounding = rmTruncate then
+    P[55] := 3;
   Move(InvArea, P[56], SizeOf(InvArea));
   P[58] := 1;
-  if Area < 0 then P[58] := $FFFFFFFF;
+  if Area < 0 then
+    P[58] := $FFFFFFFF;
   P[59] := Ord((D.ZTST >= 2) or not D.ZMSK);
   P[60] := Cardinal(X0); P[61] := Cardinal(Y0); P[62] := Cardinal(X1); P[63] := Cardinal(Y1);
   for var K := 0 to 2 do
@@ -843,22 +919,26 @@ begin
   Inc(FTriangles);
   Inc(FRasterizedTriangles);
   Inc(FDraws);
-  if D.TME then Inc(FTexturedDraws);
+  if D.TME then
+    Inc(FTexturedDraws);
   Result := True;
 end;
 
 function TPS2GSGpu.BeginTriangle(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer): Boolean;
 begin
   Result := Supports(D, X0, Y0, X1, Y1);
-  if not Result then Exit;
+  if not Result then
+    Exit;
   if Assigned(FBeforeDraw) then
   begin
     var Reads, Writes, Textures: TPages;
     BuildAccess(D, X0, Y0, X1, Y1, $7F, Reads, Writes, Textures);
-    if not FBeforeDraw(Reads, Writes, Palettized(D), Int64(X1 - X0) * (Y1 - Y0)) then Exit(False);
+    if not FBeforeDraw(Reads, Writes, Palettized(D), Int64(X1 - X0) * (Y1 - Y0)) then
+      Exit(False);
   end;
   FlushNative;
-  if FUsed = FUsedEnd then NextHalf;
+  if FUsed = FUsedEnd then
+    NextHalf;
   FTriangleState := D;
   FTriangleBounds[0] := X0; FTriangleBounds[1] := Y0;
   FTriangleBounds[2] := X1; FTriangleBounds[3] := Y1;
@@ -867,12 +947,14 @@ begin
   FFragmentCount := 0;
   Inc(FTriangles);
   Inc(FDraws);
-  if D.TME then Inc(FTexturedDraws);
+  if D.TME then
+    Inc(FTexturedDraws);
 end;
 
 procedure TPS2GSGpu.FlushFragments;
 begin
-  if FFragmentCount = 0 then Exit;
+  if FFragmentCount = 0 then
+    Exit;
   var Push := Default(TPush);
   Push.Bounds[0] := FFragmentStart;
   Push.Bounds[1] := FFragmentCount;

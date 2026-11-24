@@ -223,7 +223,8 @@ end;
 
 procedure TPS2DMAC.MarkRAM(Address, Size: Cardinal);
 begin
-  if (Address and $80000000) <> 0 then
+  // A stalled input port may return no quadwords.
+  if (Size = 0) or ((Address and $80000000) <> 0) then
     Exit;
   Address := Address and $01FFFFFF;
   if (WatchLog <> nil) and (WatchAddress >= Address) and (WatchAddress < Address + Size) then

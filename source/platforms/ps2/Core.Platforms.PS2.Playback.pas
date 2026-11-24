@@ -92,7 +92,8 @@ end;
 function TPS2AudioPlayback.QueuedFrames(const S: TPCMAudioQueueState; out Frames: UInt64): Boolean;
 begin
   Result := False;
-  if not FClockKnown or not S.PositionKnown then Exit;
+  if not FClockKnown or not S.PositionKnown then
+    Exit;
   // Unexpected device resets/counter changes retain the old block-count
   // fallback until an empty queue establishes a fresh origin. A normal
   // 32-bit wrap is a small forward delta, not a reset.
@@ -181,8 +182,10 @@ end;
 function TPS2AudioPlayback.CanAdvance: Boolean;
 begin
   Pump;
-  if FCount >= BlockFrames * 2 then Exit(False);
-  if FPriming then Exit(True);
+  if FCount >= BlockFrames * 2 then
+    Exit(False);
+  if FPriming then
+    Exit(True);
   var S := State;
   var Frames: UInt64;
   if QueuedFrames(S, Frames) then

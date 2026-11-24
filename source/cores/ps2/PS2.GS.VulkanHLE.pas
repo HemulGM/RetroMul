@@ -26,7 +26,8 @@
 // Not drawn as the GS does (yet): the destination alpha test (DATE) is not
 // applied; FBMSK masks whole channels only; destination alpha weighs as
 // Ad / 255 on 32-bit frames (the GS: Ad / 128); weights above one clamp; no
-// COLCLAMP wrapping, dithering, or resolution scaling.
+// COLCLAMP wrapping or dithering. Resolution and texture scaling are optional
+// host enhancements; guest memory remains at its native dimensions.
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
 {$POINTERMATH ON}
 {$EXCESSPRECISION OFF}
@@ -35,7 +36,9 @@ interface
 
 uses
   System.SysUtils, System.Math, System.Diagnostics, Core.Emulation.Types, RM.Vulkan.Bindings,
-  RM.Vulkan.Loader, RM.Vulkan.Compute, RM.Vulkan.HLE, PS2.Types, PS2.GS.Memory, PS2.GS.Raster;
+  RM.Vulkan.Loader, RM.Vulkan.Compute, RM.Vulkan.HLE, RM.Vulkan.TexScale,
+  PS2.GS.PascalShaders,
+  PS2.Types, PS2.GS.Memory, PS2.GS.Raster;
 
 type
   // A target with its depth buffer, which the depth image holds.
@@ -49,6 +52,10 @@ type
     ZVerified, ZWatched: Int64;
     // GS memory's bytes of the depth buffer when last made equal to it.
     ZShadow: TBytes;
+    // Page-row bands (bit N: band N) resolved from the depth image since its
+    // last load: equal shadow bytes do not prove the image holds their exact
+    // normalized values, so these bands are uploaded again.
+    ZReloadRows: UInt64;
     // Depth newer than GS memory, as the colour's Dirty.
     ZDirty: Boolean;
     ZX1, ZY1, ZX2, ZY2: Integer;
@@ -77,7 +84,7 @@ type
   end;
   PPS2HLEVertex = ^TPS2HLEVertex;
 
-  // As shaders/PS2.GS.HLEPush.glsl declares it.
+  // As PS2GSHLEPush.pasm declares it.
   TPS2HLEPush = packed record
     NdcX, NdcY: Single;
     Flags, Tex, ClampU, ClampV, TexA, FogColor, AlphaTest, Blend: Cardinal;
@@ -91,12 +98,27 @@ type
   // target's, the raster's Sync.
   TPS2HLEFlush = (frOthers, frTexture, frDepth, frStale, frSync);
 
+  // As shaders/PS2.GS.HLEUpload.comp declares it.
+  TPS2HLEUploadPush = packed record
+    OffsetWords, WidthPages, Format, Scale: Cardinal;
+    Width, Height, FirstY, Depth: Cardinal;
+  end;
+
   // A draw's pass: the alpha test's passing pixels, or its failing ones.
   TPS2HLEPass = record
     Pipeline: VkPipeline;
     Layout: VkPipelineLayout;
     Push: TPS2HLEPush;
   end;
+
+  TPS2HLEDisplay = record
+    Target: TPS2HLETarget;
+    Version: Int64;
+    X, Y, Width, Height: Integer;
+    Format: Cardinal;
+    Pixels: TArray<Cardinal>;
+  end;
+  PPS2HLEDisplay = ^TPS2HLEDisplay;
 
   TPS2GSVulkanHLE = class(TVulkanHLERenderer)
   private
@@ -143,6 +165,11 @@ type
     // Depth over the depth buffer's range (its largest value plus one).
     FZScale: Double;
     FDepthClamp: Boolean;
+    FUploadKernel: TVulkanKernel;
+    FUploadScratch: TVulkanBuffer;
+    FUploadSources: array[0..3] of VkBuffer;
+    FUploadSourceCount: Integer;
+    FColorGpuLoads, FDepthGpuLoads: Int64;
     // The texture being looked up: its GS blocks as runs of bytes (and the
     // CLUT's entries it takes, last), the pages of those blocks.
     FBlockBits: array[0..255] of UInt64;
@@ -163,6 +190,10 @@ type
     FPartials: Int64;
     FVertices: array[0..5] of TPS2HLEVertex;
     FDepthLoads, FTargetTextures, FCopies, FPartialStores, FSetups: Int64;
+    FDisplay: array[1..2] of TPS2HLEDisplay;
+    FStoreRow: TArray<Cardinal>;
+    function FitsTarget(const D: TPS2GSDraw; LastY: Integer): Boolean;
+    procedure StoreScaled(T: TPS2HLETarget; Color, Depth: Boolean);
     function TargetFor(const D: TPS2GSDraw): TPS2HLETarget;
     procedure FlushOthers(T: TPS2HLETarget; const Pages: TPS2GSPages);
     function TargetTexture(const D: TPS2GSDraw; out OffX, OffY: Integer): TPS2HLETarget;
@@ -175,13 +206,14 @@ type
     function EnsureTexture(const D: TPS2GSDraw; V: PPS2HLEVertex; Count: Integer): TVulkanHLETexture;
     function TexelBox(const D: TPS2GSDraw; V: PPS2HLEVertex; Count: Integer; out U0, V0, U1, V1: Integer): Boolean;
     procedure EnsureDepth(T: TPS2HLETarget; const D: TPS2GSDraw);
-    procedure LoadDepth(T: TPS2HLETarget);
+    procedure LoadDepth(T: TPS2HLETarget; ChangedOnly: Boolean);
     procedure WatchDepth(T: TPS2HLETarget);
     procedure HoldDepthRows(T: TPS2HLETarget; Y1, Y2: Integer);
     procedure HoldNewDepthRows(T: TPS2HLETarget; Y1, Y2: Integer);
     procedure HoldTarget(T: TPS2HLETarget);
     function BandRows(T: TVulkanHLETarget): Integer;
-    function DepthBits(Z: Cardinal): Cardinal; inline;
+    function UploadSet(Buffer: TVulkanBuffer): Integer;
+    function UploadTargetGpu(T: TPS2HLETarget; Depth: Boolean): Boolean;
     procedure Store(T: TPS2HLETarget; Color, Depth: Boolean);
     procedure StoreOverlapping(const Pages: TPS2GSPages);
     procedure WatchFault(const Writes: TPS2GSPages);
@@ -219,7 +251,7 @@ type
     procedure RecordFrame(T: TVulkanHLETarget; W, H: Integer); override;
   public
     // Memory: the GS memory drawn; Clut: the raster's CLUT (512 entries).
-    constructor Create(Memory: TPS2GSMemory; Clut: PWord; Compute: TVulkanCompute);
+    constructor Create(Memory: TPS2GSMemory; Clut: PWord; Compute: TVulkanCompute; Resolution: Integer = 1);
     destructor Destroy; override;
     // A sprite or triangle (TPS2GSAccelerator's), pixels X0..X1 - 1, Y0..Y1 - 1
     // inside the scissor: False when it is the software renderer's.
@@ -233,6 +265,8 @@ type
     // Something is held or watched (accesses must be reported).
     function Pending: Boolean;
     function Describe: string;
+    function ReadCircuit(Circuit: Integer; BP, BW, PSM: Cardinal; X, Y, W, H: Integer;
+      out Pixels: TArray<Cardinal>): Boolean;
     // Changes whenever what is held or watched may have.
     property Revision: Int64 read FRevision;
   end;
@@ -245,7 +279,8 @@ type
     FCalls: Integer;
     procedure Update; inline;
   public
-    constructor Create(Memory: TPS2GSMemory; Clut: PWord);
+    constructor Create(Memory: TPS2GSMemory; Clut: PWord; Resolution: Integer = 1;
+      TextureScale: Integer = 0; TextureFilter: TTexScaleFilter = tfXBRZ);
     destructor Destroy; override;
     procedure Sync; override;
     procedure ReadPages(First, Last: Integer); override;
@@ -268,6 +303,14 @@ procedure PS2HLELoadColorRow(Memory: TPS2GSMemory; const A: TPS2GSAddressing;
   Format: Cardinal; Y, X, Count: Integer; Target: PCardinal);
 procedure PS2HLEStoreColorRow(Memory: TPS2GSMemory; const A: TPS2GSAddressing;
   Format: Cardinal; Y, X, Count: Integer; Source: PCardinal);
+procedure PS2HLELoadDepthRow(Memory: TPS2GSMemory; const A: TPS2GSAddressing;
+  Format: Cardinal; Y, X, Count: Integer; D24: Boolean; Target: PCardinal);
+// The next run of page-row bands at or after Y (moved to its start) whose GS
+// memory differs from Shadow or whose bit is set in ReloadRows: its rows, at
+// most MaxRows; 0 when none is left.
+function PS2HLEChangedRows(Memory: TPS2GSMemory; Addr, RowBytes: Cardinal;
+  Height, PageRows, MaxRows: Integer; const Shadow: TBytes; var Y: Integer;
+  ReloadRows: UInt64 = 0): Integer;
 
 implementation
 
@@ -284,10 +327,6 @@ const
   FLAG_ALPHA1 = 16;
   FLAG_BLEND = 32;
 
-{$I shaders\PS2.GS.HLEVert.inc}
-{$I shaders\PS2.GS.HLEFrag.inc}
-{$I shaders\PS2.GS.HLEBlendFrag.inc}
-
 type
   // A texture as EnsureTexture looks it up (CachedTexture's request).
   TPS2HLETexRequest = record
@@ -302,7 +341,8 @@ type
 procedure PS2HLELoadColorRow(Memory: TPS2GSMemory; const A: TPS2GSAddressing;
   Format: Cardinal; Y, X, Count: Integer; Target: PCardinal);
 begin
-  if Count <= 0 then Exit;
+  if Count <= 0 then
+    Exit;
   var RB := A.RowBase(Cardinal(Y));
   var RO := A.RowOffsets(Cardinal(Y));
   var Words := PCardinal(Memory.Data);
@@ -318,10 +358,31 @@ begin
     while X < Last do
     begin
       var At := A.InRow(RB, RO, Cardinal(X));
-      if Separate and ((X and 1) = 0) and (X + 1 < Last) then
+      if Separate and ((X and 7) = 0) and (X + 7 < Last) then
+      begin
+        // An eight-pixel row stays inside one GS block, including VRAM wrap.
+        if Is24 then
+        begin
+          PUInt64(Target)^ := (PUInt64(Words + At)^ and $00FFFFFF00FFFFFF) or $8000000080000000;
+          PUInt64(Target + 2)^ := (PUInt64(Words + At + 4)^ and $00FFFFFF00FFFFFF) or $8000000080000000;
+          PUInt64(Target + 4)^ := (PUInt64(Words + At + 8)^ and $00FFFFFF00FFFFFF) or $8000000080000000;
+          PUInt64(Target + 6)^ := (PUInt64(Words + At + 12)^ and $00FFFFFF00FFFFFF) or $8000000080000000;
+        end
+        else
+        begin
+          PUInt64(Target)^ := PUInt64(Words + At)^;
+          PUInt64(Target + 2)^ := PUInt64(Words + At + 4)^;
+          PUInt64(Target + 4)^ := PUInt64(Words + At + 8)^;
+          PUInt64(Target + 6)^ := PUInt64(Words + At + 12)^;
+        end;
+        Inc(Target, 8);
+        Inc(X, 8);
+      end
+      else if Separate and ((X and 1) = 0) and (X + 1 < Last) then
       begin
         var Pair := PUInt64(Words + At)^;
-        if Is24 then Pair := (Pair and $00FFFFFF00FFFFFF) or $8000000080000000;
+        if Is24 then
+          Pair := (Pair and $00FFFFFF00FFFFFF) or $8000000080000000;
         PUInt64(Target)^ := Pair;
         Inc(Target, 2);
         Inc(X, 2);
@@ -329,7 +390,8 @@ begin
       else
       begin
         var Pixel := Words[At];
-        if Is24 then Pixel := (Pixel and $FFFFFF) or $80000000;
+        if Is24 then
+          Pixel := (Pixel and $FFFFFF) or $80000000;
         Target^ := Pixel;
         Inc(Target);
         Inc(X);
@@ -356,7 +418,8 @@ begin
       begin
         var V: Cardinal := Halves[At];
         var C := ((V and $1F) shl 3) or (((V shr 5) and $1F) shl 11) or (((V shr 10) and $1F) shl 19);
-        if (V and $8000) <> 0 then C := C or $FF000000;
+        if (V and $8000) <> 0 then
+          C := C or $FF000000;
         Target^ := C;
         Inc(Target);
         Inc(X);
@@ -367,7 +430,8 @@ end;
 procedure PS2HLEStoreColorRow(Memory: TPS2GSMemory; const A: TPS2GSAddressing;
   Format: Cardinal; Y, X, Count: Integer; Source: PCardinal);
 begin
-  if Count <= 0 then Exit;
+  if Count <= 0 then
+    Exit;
   var RB := A.RowBase(Cardinal(Y));
   var RO := A.RowOffsets(Cardinal(Y));
   var Words := PCardinal(Memory.Data);
@@ -381,7 +445,30 @@ begin
     while X < Last do
     begin
       var At := A.InRow(RB, RO, Cardinal(X));
-      if Separate and ((X and 1) = 0) and (X + 1 < Last) then
+      if Separate and ((X and 7) = 0) and (X + 7 < Last) then
+      begin
+        if Is24 then
+        begin
+          PUInt64(Words + At)^ := (PUInt64(Words + At)^ and $FF000000FF000000) or
+            (PUInt64(Source)^ and $00FFFFFF00FFFFFF);
+          PUInt64(Words + At + 4)^ := (PUInt64(Words + At + 4)^ and $FF000000FF000000) or
+            (PUInt64(Source + 2)^ and $00FFFFFF00FFFFFF);
+          PUInt64(Words + At + 8)^ := (PUInt64(Words + At + 8)^ and $FF000000FF000000) or
+            (PUInt64(Source + 4)^ and $00FFFFFF00FFFFFF);
+          PUInt64(Words + At + 12)^ := (PUInt64(Words + At + 12)^ and $FF000000FF000000) or
+            (PUInt64(Source + 6)^ and $00FFFFFF00FFFFFF);
+        end
+        else
+        begin
+          PUInt64(Words + At)^ := PUInt64(Source)^;
+          PUInt64(Words + At + 4)^ := PUInt64(Source + 2)^;
+          PUInt64(Words + At + 8)^ := PUInt64(Source + 4)^;
+          PUInt64(Words + At + 12)^ := PUInt64(Source + 6)^;
+        end;
+        Inc(Source, 8);
+        Inc(X, 8);
+      end
+      else if Separate and ((X and 1) = 0) and (X + 1 < Last) then
       begin
         if Is24 then
           PUInt64(Words + At)^ := (PUInt64(Words + At)^ and $FF000000FF000000) or
@@ -393,8 +480,10 @@ begin
       end
       else
       begin
-        if Is24 then Words[At] := (Words[At] and $FF000000) or (Source^ and $FFFFFF)
-        else Words[At] := Source^;
+        if Is24 then
+          Words[At] := (Words[At] and $FF000000) or (Source^ and $FFFFFF)
+        else
+          Words[At] := Source^;
         Inc(Source);
         Inc(X);
       end;
@@ -526,7 +615,201 @@ begin
   end;
 end;
 
+function CanNormalizeDepthPair: Boolean;
+{$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+asm
+  .NOFRAME
+  stmxcsr [rsp + 8]
+  test dword ptr [rsp + 8], $1000 // precision exception masked
+  setnz al
+end;
+{$ELSE}
+begin
+  Result := False;
+end;
+{$ENDIF}
+
+// The scalar sequence in two independent lanes: integer -> Double, divide,
+// then Double -> Single, all with the host rounding mode unchanged.
+procedure NormalizeDepthPair(Z0, Z1: Cardinal; Target: PCardinal; Range: Double);
+{$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+asm
+  .NOFRAME
+  mov eax, ecx
+  cvtsi2sd xmm0, rax
+  mov eax, edx
+  cvtsi2sd xmm1, rax
+  unpcklpd xmm0, xmm1
+  unpcklpd xmm3, xmm3
+  divpd xmm0, xmm3
+  cvtpd2ps xmm0, xmm0
+  movq qword ptr [r8], xmm0
+end;
+{$ELSE}
+begin
+  var F: Double := Z0 / Range;
+  PSingle(Target)^ := F;
+  F := Z1 / Range;
+  PSingle(Target + 1)^ := F;
+end;
+{$ENDIF}
+
+// Unsigned 16/24-bit inputs fit signed dwords. Keep integer -> Double ->
+// division -> Single for four independent pixels, without a narrow multiply.
+procedure NormalizeSmallDepthQuad(Pair0, Pair1: UInt64; Target: PCardinal; Range: Double);
+{$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+asm
+  .NOFRAME
+  unpcklpd xmm3, xmm3
+  movq xmm0, rcx
+  cvtdq2pd xmm0, xmm0
+  divpd xmm0, xmm3
+  cvtpd2ps xmm0, xmm0
+  movq xmm1, rdx
+  cvtdq2pd xmm1, xmm1
+  divpd xmm1, xmm3
+  cvtpd2ps xmm1, xmm1
+  movlhps xmm0, xmm1
+  movups [r8], xmm0
+end;
+{$ELSE}
+begin
+  var Values: array[0..3] of Cardinal;
+  Values[0] := Cardinal(Pair0 and $FFFFFFFF);
+  Values[1] := Cardinal(Pair0 shr 32);
+  Values[2] := Cardinal(Pair1 and $FFFFFFFF);
+  Values[3] := Cardinal(Pair1 shr 32);
+  for var K := 0 to 3 do
+  begin
+    var F: Double := Values[K] / Range;
+    PSingle(Target + K)^ := F;
+  end;
+end;
+{$ENDIF}
+
+procedure PS2HLELoadDepthRow(Memory: TPS2GSMemory; const A: TPS2GSAddressing;
+  Format: Cardinal; Y, X, Count: Integer; D24: Boolean; Target: PCardinal);
+begin
+  if Count <= 0 then
+    Exit;
+  var RB := A.RowBase(Cardinal(Y));
+  var RO := A.RowOffsets(Cardinal(Y));
+  var Range: Double := DepthRange(Format);
+  var Last := X + Count;
+  if D24 then
+  begin
+    while X < Last do
+    begin
+      var F: Double := Memory.ReadAt(Integer(Format), A.InRow(RB, RO, Cardinal(X))) / Range;
+      Target^ := Min(Cardinal(Round(F * 16777215)), 16777215);
+      Inc(Target);
+      Inc(X);
+    end;
+    Exit;
+  end;
+  // A trapping conversion must retain scalar exception/write ordering too.
+  var Separate := CanNormalizeDepthPair and
+    ((NativeUInt(Target) >= NativeUInt(Memory.Data) + PS2GSMemorySize) or
+    (NativeUInt(Memory.Data) >= NativeUInt(Target) + NativeUInt(Count * 4)));
+  if Format in [PSMZ16, PSMZ16S] then
+  begin
+    var Source := PWord(Memory.Data);
+    while X < Last do
+    begin
+      var At := A.InRow(RB, RO, Cardinal(X));
+      if Separate and ((X and 1) = 0) and (X + 3 < Last) then
+      begin
+        var Next := A.InRow(RB, RO, Cardinal(X + 2));
+        var Pair0 := UInt64(Source[At]) or (UInt64(Source[At + 2]) shl 32);
+        var Pair1 := UInt64(Source[Next]) or (UInt64(Source[Next + 2]) shl 32);
+        NormalizeSmallDepthQuad(Pair0, Pair1, Target, Range);
+        Inc(Target, 4);
+        Inc(X, 4);
+      end
+      else if Separate and ((X and 1) = 0) and (X + 1 < Last) then
+      begin
+        NormalizeDepthPair(Source[At], Source[At + 2], Target, Range);
+        Inc(Target, 2);
+        Inc(X, 2);
+      end
+      else
+      begin
+        var F: Double := Source[At] / Range;
+        PSingle(Target)^ := F;
+        Inc(Target);
+        Inc(X);
+      end;
+    end;
+  end
+  else
+  begin
+    var Source := PCardinal(Memory.Data);
+    var Mask: Cardinal := $FFFFFFFF;
+    if Format = PSMZ24 then
+      Mask := $FFFFFF;
+    while X < Last do
+    begin
+      var At := A.InRow(RB, RO, Cardinal(X));
+      if Separate and (Format = PSMZ24) and ((X and 1) = 0) and (X + 3 < Last) then
+      begin
+        var Next := A.InRow(RB, RO, Cardinal(X + 2));
+        var Pair0 := PUInt64(Source + At)^ and UInt64($00FFFFFF00FFFFFF);
+        var Pair1 := PUInt64(Source + Next)^ and UInt64($00FFFFFF00FFFFFF);
+        NormalizeSmallDepthQuad(Pair0, Pair1, Target, Range);
+        Inc(Target, 4);
+        Inc(X, 4);
+      end
+      else if Separate and ((X and 1) = 0) and (X + 1 < Last) then
+      begin
+        var Pair := PUInt64(Source + At)^;
+        NormalizeDepthPair(Cardinal(Pair and Mask), Cardinal(Pair shr 32) and Mask, Target, Range);
+        Inc(Target, 2);
+        Inc(X, 2);
+      end
+      else
+      begin
+        var F: Double := (Source[At] and Mask) / Range;
+        PSingle(Target)^ := F;
+        Inc(Target);
+        Inc(X);
+      end;
+    end;
+  end;
+end;
+
 { TPS2HLETarget }
+
+function PS2HLEChangedRows(Memory: TPS2GSMemory; Addr, RowBytes: Cardinal;
+  Height, PageRows, MaxRows: Integer; const Shadow: TBytes; var Y: Integer;
+  ReloadRows: UInt64): Integer;
+
+  function Matches(Row: Integer): Boolean;
+  begin
+    if (Row div PageRows < 64) and ((ReloadRows and (UInt64(1) shl (Row div PageRows))) <> 0) then
+      Exit(False);
+    var At := Cardinal(Row) * RowBytes;
+    var Bytes := Min(Cardinal(PageRows) * RowBytes, Cardinal(Length(Shadow)) - At);
+    var Source := (Addr + At) and MemMask;
+    var First := Min(Bytes, PS2GSMemorySize - Source);
+    Result := VulkanHLEEqualBytes(Memory.Data + Source, @Shadow[At], First) and
+      ((First = Bytes) or VulkanHLEEqualBytes(Memory.Data, @Shadow[At + First], Bytes - First));
+  end;
+
+begin
+  Result := 0;
+  if (Y < 0) or (Y >= Height) or (MaxRows <= 0) then
+    Exit;
+  if (PageRows <= 0) or (RowBytes = 0) then
+    Exit(Min(MaxRows, Height - Y));
+  if (Y mod PageRows <> 0) or (MaxRows < PageRows) or
+    (UInt64(RoundRows(Height, PageRows)) * RowBytes > UInt64(Length(Shadow))) then
+    Exit(Min(MaxRows, Height - Y));
+  MaxRows := MaxRows - MaxRows mod PageRows;
+  while (Y < Height) and Matches(Y) do
+    Inc(Y, Min(PageRows, Height - Y));
+  while (Y + Result < Height) and (Result < MaxRows) and not Matches(Y + Result) do
+    Inc(Result, Min(PageRows, Height - Y - Result));
+end;
 
 constructor TPS2HLETarget.Create;
 begin
@@ -547,7 +830,8 @@ end;
 
 { TPS2GSHLE }
 
-constructor TPS2GSHLE.Create(Memory: TPS2GSMemory; Clut: PWord);
+constructor TPS2GSHLE.Create(Memory: TPS2GSMemory; Clut: PWord; Resolution, TextureScale: Integer;
+  TextureFilter: TTexScaleFilter);
 var
   Compute: TVulkanCompute;
   Error: string;
@@ -561,7 +845,9 @@ begin
     raise EVulkanError.Create('The Vulkan device has no dual-source blending.');
   end;
   // (Its destructor frees the device should it fail.)
-  FRenderer := TPS2GSVulkanHLE.Create(Memory, Clut, Compute);
+  FRenderer := TPS2GSVulkanHLE.Create(Memory, Clut, Compute, Resolution);
+  FRenderer.TextureScale := TextureScale;
+  FRenderer.TextureFilter := TextureFilter;
   PageReads := True;
   Update;
 end;
@@ -653,17 +939,18 @@ end;
 
 { TPS2GSVulkanHLE }
 
-constructor TPS2GSVulkanHLE.Create(Memory: TPS2GSMemory; Clut: PWord; Compute: TVulkanCompute);
+constructor TPS2GSVulkanHLE.Create(Memory: TPS2GSMemory; Clut: PWord; Compute: TVulkanCompute;
+  Resolution: Integer);
 var
   Props: VkFormatProperties;
 begin
   FMemory := Memory;
   FClut := Clut;
   FRevision := 1;
-  inherited Create(Compute, 1, SizeOf(TPS2HLEVertex), SizeOf(TPS2HLEPush), 1024, 1024);
+  inherited Create(Compute, Resolution, SizeOf(TPS2HLEVertex), SizeOf(TPS2HLEPush), 1024, 1024);
   FDepthClamp := Compute.Features.DepthClamp;
-  FVertexModule := Compute.CreateShaderModule(PS2HLEVertSPIRV);
-  FFragmentModule := Compute.CreateShaderModule(PS2HLEFragSPIRV);
+  FVertexModule := Compute.CreateShaderModule(PS2GSKernelCode(TPS2GSKernel.HLEVertex));
+  FFragmentModule := Compute.CreateShaderModule(PS2GSKernelCode(TPS2GSKernel.HLEFragment));
   // Shader blending writes the colour as a storage image (RGBA8 storage is
   // required of every device) where the device orders fragments for it.
   FAPI.vkGetPhysicalDeviceFormatProperties(Compute.PhysicalDevice, VK_FORMAT_R8G8B8A8_UNORM, @Props);
@@ -684,6 +971,8 @@ end;
 
 procedure TPS2GSVulkanHLE.FreeDevice;
 begin
+  FreeAndNil(FUploadKernel);
+  FreeAndNil(FUploadScratch);
   if FBlendModule <> 0 then
     FAPI.vkDestroyShaderModule(FDevice, FBlendModule, nil);
   if FBlendPool <> 0 then
@@ -736,7 +1025,7 @@ var
   Deps: array[0..1] of VkSubpassDependency;
   PassInfo: VkRenderPassCreateInfo;
 begin
-  FBlendModule := FCompute.CreateShaderModule(PS2HLEBlendFragSPIRV);
+  FBlendModule := FCompute.CreateShaderModule(PS2GSKernelCode(TPS2GSKernel.HLEBlendFragment));
   Binding := Default(VkDescriptorSetLayoutBinding);
   Binding.binding := 0;
   Binding.descriptorType := VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -841,6 +1130,9 @@ end;
 
 procedure TPS2GSVulkanHLE.DestroyTarget(T: TVulkanHLETarget);
 begin
+  for var N := Low(FDisplay) to High(FDisplay) do
+    if FDisplay[N].Target = T then
+      FDisplay[N] := Default(TPS2HLEDisplay);
   var G := TPS2HLETarget(T);
   if G.BlendSet <> 0 then
     FAPI.vkFreeDescriptorSets(FDevice, FBlendPool, 1, @G.BlendSet);
@@ -892,7 +1184,7 @@ begin
   begin
     Stages[I] := Default(VkPipelineShaderStageCreateInfo);
     Stages[I].sType := VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    Stages[I].pName := 'main';
+    Stages[I].pName := PAnsiChar(PS2GSEntryPoint);
   end;
   Stages[0].stage := VK_SHADER_STAGE_VERTEX_BIT;
   Stages[0].module := FVertexModule;
@@ -1001,8 +1293,8 @@ function TPS2GSVulkanHLE.MemoryEquals(Addr: Cardinal; Data: PByte; Size: Cardina
 begin
   var A := Addr and MemMask;
   var First := Min(Size, PS2GSMemorySize - A);
-  Result := CompareMem(FMemory.Data + A, Data, First) and ((First = Size) or
-    CompareMem(FMemory.Data, Data + First, Size - First));
+  Result := VulkanHLEEqualBytes(FMemory.Data + A, Data, First) and ((First = Size) or
+    VulkanHLEEqualBytes(FMemory.Data, Data + First, Size - First));
 end;
 
 procedure TPS2GSVulkanHLE.ReadMemory(Addr: Cardinal; Data: PByte; Size: Cardinal);
@@ -1054,6 +1346,22 @@ end;
 
 { Targets }
 
+function TPS2GSVulkanHLE.FitsTarget(const D: TPS2GSDraw; LastY: Integer): Boolean;
+begin
+  Result := True;
+  if FScale = 1 then
+    Exit;
+  var WidthLimit := Min(Integer(FCompute.Properties.limits.maxImageDimension2D),
+    Integer(FCompute.Properties.limits.maxFramebufferWidth));
+  var HeightLimit := Min(Integer(FCompute.Properties.limits.maxImageDimension2D),
+    Integer(FCompute.Properties.limits.maxFramebufferHeight));
+  var Stride := Integer(D.FBW * 64);
+  var Rows := PageRowsOf(D.FPSM);
+  var Height := Min(2048, Integer(PS2GSMemorySize div (Cardinal(Stride) * PixelBytesOf(D.FPSM))));
+  Height := Min(RoundRows(LastY + 1, Rows), Height - Height mod Rows);
+  Result := (Stride * FScale <= WidthLimit) and (Height * FScale <= HeightLimit);
+end;
+
 // The target D draws into, whole page rows as tall as FNeedY needs.
 function TPS2GSVulkanHLE.TargetFor(const D: TPS2GSDraw): TPS2HLETarget;
 begin
@@ -1061,38 +1369,178 @@ begin
   var Stride := D.FBW * 64;
   var PH := PageRowsOf(D.FPSM);
   var MaxH := Min(2048, Integer(PS2GSMemorySize div (Stride * PB)));
+  // At 1x the image need not reach beyond the scissor: fewer rows to load,
+  // store and keep coherent with other targets.
+  if FScale = 1 then
+    MaxH := Min(MaxH, RoundRows(D.SY1 + 1, PH));
+  if FScale > 1 then
+    MaxH := Min(MaxH, Min(Integer(FCompute.Properties.limits.maxImageDimension2D),
+      Integer(FCompute.Properties.limits.maxFramebufferHeight)) div FScale);
   MaxH := MaxH - MaxH mod PH;
   var Need := Min(RoundRows(FNeedY + 1, PH), MaxH);
   Result := TPS2HLETarget(FindTarget((D.FBP shl 8) and MemMask, D.FPSM, Stride, PB, Need, Need, MaxH));
 end;
 
-// Another target newer than GS memory in Pages (which T is about to use):
-// everything goes back to GS memory first.
+// Other targets newer than GS memory in Pages (which T is about to draw):
+// those whose drawn rows meet them go back to GS memory first; the others'
+// images there become older than what T draws (stale).
 procedure TPS2GSVulkanHLE.FlushOthers(T: TPS2HLETarget; const Pages: TPS2GSPages);
 var
-  Theirs: TPS2GSPages;
+  Part: TPS2GSPages;
 begin
+  var Held := False;
   for var V in FTargets do
   begin
     var U := TPS2HLETarget(V);
-    if (U = T) or not (U.Dirty or U.ZDirty) then
+    if U = T then
       Continue;
-    FillChar(Theirs, SizeOf(Theirs), 0);
-    if U.Dirty then
-      AddRange(Theirs, U.Addr, U.Bytes);
-    if U.ZDirty then
-      AddRange(Theirs, U.ZAddr, U.ZBytes);
-    if Meets(Theirs, Pages) then
+    if U.Dirty and (U.HeldY1 <= U.HeldY2) then
     begin
-      Flush(frOthers);
-      Exit;
+      FillChar(Part, SizeOf(Part), 0);
+      AddRange(Part, U.Addr + Cardinal(U.HeldY1) * U.Stride * U.PixelBytes,
+        Cardinal(U.HeldY2 - U.HeldY1 + 1) * U.Stride * U.PixelBytes);
+      Held := Held or Meets(Part, Pages);
+    end;
+    if U.ZDirty and (U.ZHeldY1 <= U.ZHeldY2) then
+    begin
+      FillChar(Part, SizeOf(Part), 0);
+      AddRange(Part, U.ZAddr + Cardinal(U.ZHeldY1) * U.ZRowBytes, Cardinal(U.ZHeldY2 - U.ZHeldY1 + 1) * U.ZRowBytes);
+      Held := Held or Meets(Part, Pages);
+    end;
+  end;
+  if Held then
+  begin
+    Inc(FFlushes[frOthers]);
+    StoreOverlapping(Pages);
+  end;
+  for var V in FTargets do
+  begin
+    var U := TPS2HLETarget(V);
+    if U = T then
+      Continue;
+    if U.Dirty and not U.Stale then
+    begin
+      FillChar(Part, SizeOf(Part), 0);
+      AddRange(Part, U.Addr, U.Bytes);
+      if Meets(Part, Pages) then
+        U.Stale := True;
+    end;
+    if U.ZDirty and not U.ZStale then
+    begin
+      FillChar(Part, SizeOf(Part), 0);
+      AddRange(Part, U.ZAddr, U.ZBytes);
+      if Meets(Part, Pages) then
+        U.ZStale := True;
     end;
   end;
 end;
 
 function TPS2GSVulkanHLE.BandRows(T: TVulkanHLETarget): Integer;
 begin
-  Result := EnsureRange((HLEUploadCapacity div 2) div (T.Width * 4), 1, T.Height);
+  Result := EnsureRange((HLEUploadCapacity div 2) div (T.Width * FScale * FScale * 4), 1, T.Height);
+end;
+
+function TPS2GSVulkanHLE.UploadSet(Buffer: TVulkanBuffer): Integer;
+begin
+  if FUploadKernel = nil then
+  begin
+    FUploadScratch := FCompute.CreateBuffer(HLEUploadCapacity, vbkDevice,
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT or VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+    FUploadKernel := FCompute.CreateKernel(PS2GSKernelCode(TPS2GSKernel.HLEUpload, FScale),
+      2, SizeOf(TPS2HLEUploadPush), [], Length(FUploadSources), PS2GSEntryPoint);
+  end;
+  for var I := 0 to FUploadSourceCount - 1 do
+    if FUploadSources[I] = Buffer.Handle then
+      Exit(I);
+  Result := -1;
+  if FUploadSourceCount >= Length(FUploadSources) then
+    Exit;
+  Result := FUploadSourceCount;
+  // Sets are immutable after their first use: earlier queued dispatches may
+  // still refer to this same staging buffer and the shared scratch buffer.
+  FUploadKernel.Bind(Result, 0, Buffer);
+  FUploadKernel.Bind(Result, 1, FUploadScratch);
+  FUploadSources[Result] := Buffer.Handle;
+  Inc(FUploadSourceCount);
+end;
+
+// A target's colour (any frame format) or its 24/16-bit depth loaded on the
+// GPU: the raw GS bytes are staged, the compute shader unswizzles them into
+// the image's layout with integer operations only (16/24-bit depth values
+// have at most 24 significant bits, so their normalized Single is built
+// exactly), then copied into the image. False: the CPU path loads it.
+function TPS2GSVulkanHLE.UploadTargetGpu(T: TPS2HLETarget; Depth: Boolean): Boolean;
+var
+  Push: TPS2HLEUploadPush;
+  Region: VkBufferImageCopy;
+begin
+  Result := False;
+  // Small native targets are cheaper on the CPU than a dispatch.
+  if (FScale = 1) and (Int64(T.Width) * T.Height < 16384) then
+    Exit;
+  var Addr := T.Addr;
+  var Format := T.Format;
+  var Bytes := T.Bytes;
+  var Image := T.Color.Image;
+  var Aspect: Cardinal := VK_IMAGE_ASPECT_COLOR_BIT;
+  if Depth then
+  begin
+    if FD24 or not (T.ZPSM in [PSMZ24, PSMZ16, PSMZ16S]) then
+      Exit;
+    Addr := T.ZAddr;
+    Format := T.ZPSM;
+    Bytes := T.ZBytes;
+    Image := T.Depth.Image;
+    Aspect := VK_IMAGE_ASPECT_DEPTH_BIT;
+  end
+  else if not (Format in [PSMCT32, PSMCT24, PSMCT16, PSMCT16S]) then
+    Exit;
+  if (Bytes > PS2GSMemorySize) or (Bytes > HLEUploadCapacity) or
+    (Slot.Upload.Size > FCompute.Properties.limits.maxStorageBufferRange) then
+    Exit;
+  var Offset: Int64;
+  var P := StageUpload(Bytes, Offset);
+  ReadMemory(Addr, P, Bytes);
+  Slot.Upload.Flush(Offset, Bytes);
+  var SetIndex := UploadSet(Slot.Upload);
+  if SetIndex < 0 then
+    Exit;
+  FUploadKernel.ActiveSet := SetIndex;
+  Push.OffsetWords := Cardinal(Offset div 4);
+  Push.WidthPages := T.Stride shr 6;
+  Push.Format := Format;
+  Push.Scale := FScale;
+  Push.Width := T.Width * FScale;
+  Push.Depth := Ord(Depth);
+  var Rows := BandRows(T);
+  var Y0 := 0;
+  while Y0 < T.Height do
+  begin
+    var N := Min(Rows, T.Height - Y0);
+    Push.Height := N * FScale;
+    Push.FirstY := Y0;
+    // Also orders the previous copy's read before the next scratch overwrite.
+    Slot.Cmd.FullBarrier;
+    Slot.Cmd.Dispatch(FUploadKernel, (Push.Width + 7) div 8, (Push.Height + 7) div 8,
+      1, Push, SizeOf(Push));
+    Slot.Cmd.FullBarrier;
+    Region := Default(VkBufferImageCopy);
+    Region.imageSubresource.aspectMask := Aspect;
+    Region.imageSubresource.layerCount := 1;
+    Region.imageOffset.y := Y0 * FScale;
+    Region.imageExtent.width := Push.Width;
+    Region.imageExtent.height := Push.Height;
+    Region.imageExtent.depth := 1;
+    FAPI.vkCmdCopyBufferToImage(Slot.Cmd.Handle, FUploadScratch.Handle, Image,
+      VK_IMAGE_LAYOUT_GENERAL, 1, @Region);
+    ImageBarrier;
+    Inc(Y0, N);
+  end;
+  if Depth then
+    Inc(FDepthGpuLoads)
+  else
+    Inc(FColorGpuLoads);
+  Result := True;
 end;
 
 // GS memory's pixels into the colour image.
@@ -1100,32 +1548,47 @@ procedure TPS2GSVulkanHLE.LoadTarget(T: TVulkanHLETarget);
 var
   A: TPS2GSAddressing;
 begin
+  if UploadTargetGpu(TPS2HLETarget(T), False) then
+    Exit;
   A.Init(Integer(T.Format), T.Addr shr 8, T.Stride shr 6);
   var Rows := BandRows(T);
+  var PageRows := PageRowsOf(T.Format);
+  var Partial := (FScale = 1) and T.Loaded and (T.Format in [PSMCT32, PSMCT24]) and
+    (Cardinal(Length(T.Shadow)) = T.Bytes) and (Rows >= PageRows);
   var Y0 := 0;
   while Y0 < T.Height do
   begin
     var N := Min(Rows, T.Height - Y0);
+    if Partial then
+    begin
+      N := PS2HLEChangedRows(FMemory, T.Addr, T.Stride * T.PixelBytes, T.Height,
+        PageRows, Rows, T.Shadow, Y0);
+      if N = 0 then
+        Break;
+    end;
     var Offset: Int64;
-    var P := PCardinal(StageUpload(Int64(T.Width) * N * 4, Offset));
+    var P := PCardinal(StageUpload(Int64(T.Width) * N * FScale * FScale * 4, Offset));
     for var Y := Y0 to Y0 + N - 1 do
     begin
-      PS2HLELoadColorRow(FMemory, A, T.Format, Y, 0, T.Width, P);
-      Inc(P, T.Width);
+      if FScale = 1 then
+        PS2HLELoadColorRow(FMemory, A, T.Format, Y, 0, T.Width, P)
+      else
+      begin
+        if Length(FStoreRow) < T.Width then
+          SetLength(FStoreRow, T.Width);
+        PS2HLELoadColorRow(FMemory, A, T.Format, Y, 0, T.Width, @FStoreRow[0]);
+        for var X := 0 to T.Width - 1 do
+          for var K := 0 to FScale - 1 do
+            P[X * FScale + K] := FStoreRow[X];
+        for var K := 1 to FScale - 1 do
+          Move(P^, P[T.Width * FScale * K], T.Width * FScale * 4);
+      end;
+      Inc(P, T.Width * FScale * FScale);
     end;
-    CopyToImage(T.Color.Image, VK_IMAGE_ASPECT_COLOR_BIT, Offset, 0, 0, Y0, T.Width, N);
+    CopyToImage(T.Color.Image, VK_IMAGE_ASPECT_COLOR_BIT, Offset, 0, 0, Y0 * FScale,
+      T.Width * FScale, N * FScale);
     Inc(Y0, N);
   end;
-end;
-
-// A depth value as the depth image holds it.
-function TPS2GSVulkanHLE.DepthBits(Z: Cardinal): Cardinal;
-begin
-  var F := Z / FZScale;
-  if FD24 then
-    Result := Min(Cardinal(Round(F * 16777215)), 16777215)
-  else
-    PSingle(@Result)^ := F;
 end;
 
 function TPS2GSVulkanHLE.DepthOf(const D: TPS2GSDraw; Z: Cardinal): Single;
@@ -1136,35 +1599,63 @@ begin
   Result := Z / FZScale;
 end;
 
-procedure TPS2GSVulkanHLE.LoadDepth(T: TPS2HLETarget);
+procedure TPS2GSVulkanHLE.LoadDepth(T: TPS2HLETarget; ChangedOnly: Boolean);
 var
   A: TPS2GSAddressing;
 begin
   FZScale := DepthRange(T.ZPSM);
+  if UploadTargetGpu(T, True) then
+  begin
+    SetLength(T.ZShadow, T.ZBytes);
+    ReadMemory(T.ZAddr, @T.ZShadow[0], Length(T.ZShadow));
+    T.ZLoaded := True;
+    T.ZReloadRows := 0;
+    Inc(FDepthLoads);
+    Exit;
+  end;
   A.Init(Integer(T.ZPSM), T.ZAddr shr 8, T.Stride shr 6);
   var Rows := BandRows(T);
+  var PageRows := PageRowsOf(T.ZPSM);
+  var Partial := ChangedOnly and (FScale = 1) and not FD24 and
+    (Cardinal(Length(T.ZShadow)) = T.ZBytes) and (Rows >= PageRows);
   var Y0 := 0;
   while Y0 < T.Height do
   begin
     var N := Min(Rows, T.Height - Y0);
+    if Partial then
+    begin
+      N := PS2HLEChangedRows(FMemory, T.ZAddr, T.ZRowBytes, T.Height,
+        PageRows, Rows, T.ZShadow, Y0, T.ZReloadRows);
+      if N = 0 then
+        Break;
+    end;
     var Offset: Int64;
-    var P := PCardinal(StageUpload(Int64(T.Width) * N * 4, Offset));
+    var P := PCardinal(StageUpload(Int64(T.Width) * N * FScale * FScale * 4, Offset));
     for var Y := Y0 to Y0 + N - 1 do
     begin
-      var RB := A.RowBase(Cardinal(Y));
-      var RO := A.RowOffsets(Cardinal(Y));
-      for var X := 0 to T.Width - 1 do
+      if FScale = 1 then
+        PS2HLELoadDepthRow(FMemory, A, T.ZPSM, Y, 0, T.Width, FD24, P)
+      else
       begin
-        P^ := DepthBits(FMemory.ReadAt(Integer(T.ZPSM), A.InRow(RB, RO, Cardinal(X))));
-        Inc(P);
+        if Length(FStoreRow) < T.Width then
+          SetLength(FStoreRow, T.Width);
+        PS2HLELoadDepthRow(FMemory, A, T.ZPSM, Y, 0, T.Width, FD24, @FStoreRow[0]);
+        for var X := 0 to T.Width - 1 do
+          for var K := 0 to FScale - 1 do
+            P[X * FScale + K] := FStoreRow[X];
       end;
+      for var K := 1 to FScale - 1 do
+        Move(P^, P[T.Width * FScale * K], T.Width * FScale * 4);
+      Inc(P, T.Width * FScale * FScale);
     end;
-    CopyToImage(T.Depth.Image, VK_IMAGE_ASPECT_DEPTH_BIT, Offset, 0, 0, Y0, T.Width, N);
+    CopyToImage(T.Depth.Image, VK_IMAGE_ASPECT_DEPTH_BIT, Offset, 0, 0, Y0 * FScale,
+      T.Width * FScale, N * FScale);
     Inc(Y0, N);
   end;
   SetLength(T.ZShadow, T.ZBytes);
   ReadMemory(T.ZAddr, @T.ZShadow[0], Length(T.ZShadow));
   T.ZLoaded := True;
+  T.ZReloadRows := 0;
   Inc(FDepthLoads);
 end;
 
@@ -1198,7 +1689,7 @@ begin
   end;
   if MemoryHeld(ZA, T.ZBytes) then
     Flush(frDepth);
-  LoadDepth(T);
+  LoadDepth(T, Same);
   T.ZVerified := FRun;
 end;
 
@@ -1253,6 +1744,11 @@ var
   Regions: array[0..1] of VkBufferImageCopy;
   A: TPS2GSAddressing;
 begin
+  if FScale > 1 then
+  begin
+    StoreScaled(T, Color, Depth);
+    Exit;
+  end;
   Color := Color and T.Dirty;
   Depth := Depth and T.ZDirty;
   var CW := 0;
@@ -1360,6 +1856,117 @@ begin
   end;
   if Depth then
   begin
+    if T.ZStale then
+      T.ZReloadRows := High(UInt64)
+    else if (ZW > 0) and (ZH > 0) then
+      for var Row := T.ZY1 div PageRowsOf(T.ZPSM) to T.ZY2 div PageRowsOf(T.ZPSM) do
+        T.ZReloadRows := T.ZReloadRows or (UInt64(1) shl Row);
+    T.ZDirty := False;
+    T.ZStale := False;
+    SetLength(T.ZShadow, T.ZBytes);
+    ReadMemory(T.ZAddr, @T.ZShadow[0], Length(T.ZShadow));
+  end;
+end;
+
+procedure TPS2GSVulkanHLE.StoreScaled(T: TPS2HLETarget; Color, Depth: Boolean);
+var
+  A: TPS2GSAddressing;
+
+  procedure Plane(IsDepth: Boolean);
+  var
+    Region: VkBufferImageCopy;
+  begin
+    var X1 := Max(T.X1, 0);
+    var Y1 := Max(T.Y1, 0);
+    var X2 := Min(T.X2, T.Width - 1);
+    var Y2 := Min(T.Y2, T.Height - 1);
+    var Image := T.Color.Image;
+    var Aspect: Cardinal := VK_IMAGE_ASPECT_COLOR_BIT;
+    if IsDepth then
+    begin
+      X1 := Max(T.ZX1, 0);
+      Y1 := Max(T.ZY1, 0);
+      X2 := Min(T.ZX2, T.Width - 1);
+      Y2 := Min(T.ZY2, T.Height - 1);
+      Image := T.Depth.Image;
+      Aspect := VK_IMAGE_ASPECT_DEPTH_BIT;
+      A.Init(Integer(T.ZPSM), T.ZAddr shr 8, T.Stride shr 6);
+    end
+    else
+      A.Init(Integer(T.Format), T.Addr shr 8, T.Stride shr 6);
+    var W := X2 - X1 + 1;
+    if (W <= 0) or (Y1 > Y2) then
+      Exit;
+    var SW := W * FScale;
+    var Rows := Max(1, Integer(FReadback.Size div UInt64(SW * FScale * 4)));
+    if Length(FStoreRow) < W then
+      SetLength(FStoreRow, W);
+    var Range: Double := DepthRange(T.ZPSM);
+    var ZMax: Double := Range - 1;
+    var Y0 := Y1;
+    while Y0 <= Y2 do
+    begin
+      var N := Min(Rows, Y2 - Y0 + 1);
+      Record_;
+      EndPass;
+      ImageBarrier;
+      Region := Default(VkBufferImageCopy);
+      Region.imageSubresource.aspectMask := Aspect;
+      Region.imageSubresource.layerCount := 1;
+      Region.imageOffset.x := X1 * FScale;
+      Region.imageOffset.y := Y0 * FScale;
+      Region.imageExtent.width := SW;
+      Region.imageExtent.height := N * FScale;
+      Region.imageExtent.depth := 1;
+      FAPI.vkCmdCopyImageToBuffer(Slot.Cmd.Handle, Image, VK_IMAGE_LAYOUT_GENERAL, FReadback.Handle, 1, @Region);
+      HostReadBarrier;
+      WaitAll;
+      FReadback.Invalidate(0, UInt64(SW) * UInt64(N) * UInt64(FScale) * 4);
+      // Guest memory has one sample per native pixel, including depth.
+      var P := PCardinal(FReadback.Data) + (FScale div 2) * (SW + 1);
+      for var Y := Y0 to Y0 + N - 1 do
+      begin
+        if IsDepth then
+        begin
+          var RB := A.RowBase(Cardinal(Y));
+          var RO := A.RowOffsets(Cardinal(Y));
+          for var X := 0 to W - 1 do
+          begin
+            var Raw := P[X * FScale];
+            var F: Double;
+            if FD24 then
+              F := (Raw and $FFFFFF) / 16777215
+            else
+              F := PSingle(@Raw)^;
+            F := F * Range;
+            var Value: Cardinal;
+            if not (F > 0) then
+              Value := 0
+            else if F >= ZMax then
+              Value := Cardinal(Trunc(ZMax))
+            else
+              Value := Cardinal(Trunc(F + 0.5));
+            FMemory.WriteAt(Integer(T.ZPSM), A.InRow(RB, RO, Cardinal(X1 + X)), Value);
+          end;
+        end
+        else
+        begin
+          for var X := 0 to W - 1 do
+            FStoreRow[X] := P[X * FScale];
+          PS2HLEStoreColorRow(FMemory, A, T.Format, Y, X1, W, @FStoreRow[0]);
+        end;
+        Inc(P, SW * FScale);
+      end;
+      Inc(Y0, N);
+    end;
+  end;
+
+begin
+  if Color and T.Dirty then
+    Plane(False);
+  if Depth and T.ZDirty then
+  begin
+    Plane(True);
     T.ZDirty := False;
     T.ZStale := False;
     SetLength(T.ZShadow, T.ZBytes);
@@ -1550,7 +2157,7 @@ begin
     T.Copy.Height := T.Height;
     T.Copy.Levels := 1;
     T.Copy.Target := T;
-    T.Copy.Image := CreateImage(VK_FORMAT_R8G8B8A8_UNORM, T.Width, T.Height, 1,
+    T.Copy.Image := CreateImage(VK_FORMAT_R8G8B8A8_UNORM, T.Width * FScale, T.Height * FScale, 1,
       VK_IMAGE_USAGE_SAMPLED_BIT or VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
   end;
   Record_;
@@ -1560,8 +2167,8 @@ begin
   Region.srcSubresource.aspectMask := VK_IMAGE_ASPECT_COLOR_BIT;
   Region.srcSubresource.layerCount := 1;
   Region.dstSubresource := Region.srcSubresource;
-  Region.extent.width := T.Width;
-  Region.extent.height := T.Height;
+  Region.extent.width := T.Width * FScale;
+  Region.extent.height := T.Height * FScale;
   Region.extent.depth := 1;
   FAPI.vkCmdCopyImage(Slot.Cmd.Handle, T.Color.Image, VK_IMAGE_LAYOUT_GENERAL, T.Copy.Image.Image,
     VK_IMAGE_LAYOUT_GENERAL, 1, @Region);
@@ -1633,11 +2240,11 @@ begin
   Region.srcSubresource.aspectMask := VK_IMAGE_ASPECT_COLOR_BIT;
   Region.srcSubresource.layerCount := 1;
   Region.dstSubresource := Region.srcSubresource;
-  Region.srcOffset.x := FCopyX1;
-  Region.srcOffset.y := FCopyY1;
+  Region.srcOffset.x := FCopyX1 * FScale;
+  Region.srcOffset.y := FCopyY1 * FScale;
   Region.dstOffset := Region.srcOffset;
-  Region.extent.width := FCopyX2 - FCopyX1 + 1;
-  Region.extent.height := FCopyY2 - FCopyY1 + 1;
+  Region.extent.width := (FCopyX2 - FCopyX1 + 1) * FScale;
+  Region.extent.height := (FCopyY2 - FCopyY1 + 1) * FScale;
   Region.extent.depth := 1;
   FAPI.vkCmdCopyImage(Slot.Cmd.Handle, T.Color.Image, VK_IMAGE_LAYOUT_GENERAL, T.Copy.Image.Image,
     VK_IMAGE_LAYOUT_GENERAL, 1, @Region);
@@ -1923,7 +2530,8 @@ begin
   // parts for primitives reading the same pages, and a few for primitives
   // crossing a texture in turn.
   var BU0, BV0, BU1, BV1: Integer;
-  var Box := (Levels = 1) and (Request.W * Request.H >= 65536) and (FindTexture(Key) = nil) and
+  var Box := (ScaleFor(Request.W, Request.H) = 1) and (Levels = 1) and
+    (Request.W * Request.H >= 65536) and (FindTexture(Key) = nil) and
     TexelBox(D, V, Count, BU0, BV0, BU1, BV1);
   if Box then
   begin
@@ -2006,6 +2614,10 @@ begin
   Height := R.H;
   Levels := R.Levels;
   Scale := 1;
+  // Vulkan mip extents must remain the native mip extent times this factor.
+  if (R.U0 = 0) and (R.V0 = 0) and (Width = 1 shl R.D.TW) and (Height = 1 shl R.D.TH) and
+    (Width shr (Levels - 1) > 0) and (Height shr (Levels - 1) > 0) then
+    Scale := ScaleFor(Width, Height);
 end;
 
 function TPS2GSVulkanHLE.TextureMatches(T: TVulkanHLETexture; Request: Pointer): Boolean;
@@ -2159,6 +2771,27 @@ end;
 function TPS2GSVulkanHLE.SameState(const D: TPS2GSDraw): Boolean;
 begin
   Result := CompareMem(@D, @FLast, SizeOf(TPS2GSDraw));
+  if not Result and (FPassCount = 1) then
+  begin
+    // Vertex-only and already-resolved fields do not alter a single-pass batch.
+    var Current := D;
+    var Previous := FLast;
+    Current.Ctx := 0;
+    Previous.Ctx := 0;
+    Current.IIP := False;
+    Previous.IIP := False;
+    Current.FST := False;
+    Previous.FST := False;
+    Current.ZTE := False;
+    Previous.ZTE := False;
+    Current.FB16 := False;
+    Previous.FB16 := False;
+    Current.FB24 := False;
+    Previous.FB24 := False;
+    Current.DstRead := False;
+    Previous.DstRead := False;
+    Result := CompareMem(@Current, @Previous, SizeOf(TPS2GSDraw));
+  end;
   if Result and D.TME and IsPalettized(D.TPSM) then
     Result := CompareMem(FClut, @FLastClut[0], SizeOf(TPS2GSClut));
 end;
@@ -2216,10 +2849,19 @@ begin
   FZPageRows := PageRowsOf(D.ZPSM);
   // Other targets newer than GS memory where this one draws go back first.
   FillChar(Mine, SizeOf(Mine), 0);
-  AddRange(Mine, T.Addr, T.Bytes);
+  // Only the page rows the scissor lets this state draw.
+  var SY0 := EnsureRange(D.SY0, 0, T.Height - 1);
+  var SY1 := EnsureRange(D.SY1, SY0, T.Height - 1);
+  var CY0 := SY0 - SY0 mod FPageRows;
+  var CY1 := Min(RoundRows(SY1 + 1, FPageRows), T.Height);
+  AddRange(Mine, T.Addr + Cardinal(CY0) * T.Stride * T.PixelBytes, Cardinal(CY1 - CY0) * T.Stride * T.PixelBytes);
   if FDepthUsed then
-    AddRange(Mine, (D.ZBP shl 8) and MemMask, Cardinal(RoundRows(T.Height, FZPageRows)) * T.Stride *
-      PixelBytesOf(D.ZPSM));
+  begin
+    var ZY0 := SY0 - SY0 mod FZPageRows;
+    var ZY1 := RoundRows(SY1 + 1, FZPageRows);
+    AddRange(Mine, ((D.ZBP shl 8) and MemMask) + Cardinal(ZY0) * T.Stride * PixelBytesOf(D.ZPSM),
+      Cardinal(ZY1 - ZY0) * T.Stride * PixelBytesOf(D.ZPSM));
+  end;
   FlushOthers(T, Mine);
   var Tex := FBlank;
   var Source: TPS2HLETarget := nil;
@@ -2304,6 +2946,10 @@ begin
     Push.ClampU := Cardinal(D.MINU) or (Cardinal(D.MAXU) shl 16);
     Push.ClampV := Cardinal(D.MINV) or (Cardinal(D.MAXV) shl 16);
     Push.TexA := Cardinal(D.TA0) or (Cardinal(D.TA1) shl 8);
+    if Source <> nil then
+      Push.TexA := Push.TexA or (Cardinal(FScale) shl 16)
+    else
+      Push.TexA := Push.TexA or (Cardinal(Tex.Scale) shl 16);
     Push.LodK := D.K;
   end;
   if D.FGE then
@@ -2512,10 +3158,10 @@ begin
   var Y1 := Max(D.SY0, 0);
   var X2 := Min(D.SX1, T.Width - 1);
   var Y2 := Min(D.SY1, T.Height - 1);
-  FScissor.offset.x := X1;
-  FScissor.offset.y := Y1;
-  FScissor.extent.width := Cardinal(Max(X2 - X1 + 1, 0));
-  FScissor.extent.height := Cardinal(Max(Y2 - Y1 + 1, 0));
+  FScissor.offset.x := X1 * FScale;
+  FScissor.offset.y := Y1 * FScale;
+  FScissor.extent.width := Cardinal(Max(X2 - X1 + 1, 0) * FScale);
+  FScissor.extent.height := Cardinal(Max(Y2 - Y1 + 1, 0) * FScale);
   FTarget := T;
   // The passes are new: bound again before the next draw.
   FBoundPass := -1;
@@ -2688,6 +3334,8 @@ begin
     Exit;
   if D.FBW = 0 then
     Exit(False);
+  if not FitsTarget(D, Y1 - 1) then
+    Exit(False);
   // Texture coordinates at the corners (1/16 texels), along x and along y.
   var UA, UB, TA, TB: Double;
   if D.FST then
@@ -2719,28 +3367,49 @@ begin
   if not D.FST then
     C.LodQ := V1.Q;
   C.Fog := V1.F;
+  var XA: Double := V0.X / 16 + 0.5;
+  var XB: Double := V1.X / 16 + 0.5;
+  var YA: Double := V0.Y / 16 + 0.5;
+  var YB: Double := V1.Y / 16 + 0.5;
+  if FScale > 1 then
+  begin
+    // A GS sprite covers whole native pixels. Retain their interpolation
+    // centres while covering every subpixel, including framebuffer edges.
+    var DU: Double := (UB - UA) / (XB - XA);
+    var DT: Double := (TB - TA) / (YB - YA);
+    var LeftU: Double := UA + (X0 - XA) * DU;
+    var TopT: Double := TA + (Y0 - YA) * DT;
+    UB := UA + (X1 - XA) * DU;
+    TB := TA + (Y1 - YA) * DT;
+    UA := LeftU;
+    TA := TopT;
+    XA := X0;
+    XB := X1;
+    YA := Y0;
+    YB := Y1;
+  end;
   var Corners: array[0..3] of TPS2HLEVertex;
   for var I := 0 to 3 do
   begin
     Corners[I] := C;
     if (I and 1) = 0 then
     begin
-      Corners[I].X := V0.X / 16 + 0.5;
+      Corners[I].X := XA;
       Corners[I].S := UA;
     end
     else
     begin
-      Corners[I].X := V1.X / 16 + 0.5;
+      Corners[I].X := XB;
       Corners[I].S := UB;
     end;
     if (I and 2) = 0 then
     begin
-      Corners[I].Y := V0.Y / 16 + 0.5;
+      Corners[I].Y := YA;
       Corners[I].T := TA;
     end
     else
     begin
-      Corners[I].Y := V1.Y / 16 + 0.5;
+      Corners[I].Y := YB;
       Corners[I].T := TB;
     end;
   end;
@@ -2784,6 +3453,8 @@ begin
   if (D.ZTST = 0) or (X0 >= X1) or (Y0 >= Y1) then
     Exit;
   if D.FBW = 0 then
+    Exit(False);
+  if not FitsTarget(D, Y1 - 1) then
     Exit(False);
   FZScale := DepthRange(D.ZPSM);
   // Flat shading takes the last vertex's colour.
@@ -2837,6 +3508,8 @@ begin
   if D.ZTST = 0 then
     Exit;
   if D.FBW = 0 then
+    Exit(False);
+  if not FitsTarget(D, Min(Max(V0.Y, V1.Y) div 16 + 1, D.SY1)) then
     Exit(False);
   FZScale := DepthRange(D.ZPSM);
   if Kind = gpPoint then
@@ -2917,6 +3590,94 @@ begin
 end;
 
 // (The display reads GS memory: frames are not read from the images.)
+function TPS2GSVulkanHLE.ReadCircuit(Circuit: Integer; BP, BW, PSM: Cardinal; X, Y, W, H: Integer;
+  out Pixels: TArray<Cardinal>): Boolean;
+var
+  Region: VkBufferImageCopy;
+begin
+  Result := False;
+  Pixels := nil;
+  if (Circuit < Low(FDisplay)) or (Circuit > High(FDisplay)) or (BW = 0) or (W <= 0) or (H <= 0) then
+    Exit;
+  var Address := (BP shl 8) and MemMask;
+  var Found: TPS2HLETarget := nil;
+  var OX := 0;
+  var OY := 0;
+  for var V in FTargets do
+  begin
+    var T := TPS2HLETarget(V);
+    if not T.Loaded or T.Stale or (T.Stride <> BW * 64) then
+      Continue;
+    if T.Format <> PSM then
+      if not ((T.Format in [PSMCT32, PSMCT24]) and (PSM in [PSMCT32, PSMCT24])) then
+        Continue;
+    var Delta := Cardinal((Int64(Address) - T.Addr) and MemMask);
+    if (Delta >= T.Bytes) or ((Delta and 8191) <> 0) or not ShadowMatches(T) then
+      Continue;
+    var Pages := Integer(Delta shr PageShift);
+    var TX := X + (Pages mod Integer(BW)) * 64;
+    var TY := Y + (Pages div Integer(BW)) * PageRowsOf(T.Format);
+    if (TX < 0) or (TY < 0) or (TX + W > T.Width) or (TY + H > T.Height) then
+      Continue;
+    if (Found <> nil) and (Found.LastUse > T.LastUse) then
+      Continue;
+    Found := T;
+    OX := TX;
+    OY := TY;
+  end;
+  if Found = nil then
+    Exit;
+  var Cache: PPS2HLEDisplay := @FDisplay[Circuit];
+  if (Cache.Target = Found) and (Cache.Version = Found.Version) and (Cache.X = OX) and (Cache.Y = OY) and
+    (Cache.Width = W) and (Cache.Height = H) and (Cache.Format = PSM) then
+  begin
+    Pixels := Cache.Pixels;
+    Inc(FStats.Presents);
+    Exit(True);
+  end;
+  var Watch := TStopwatch.StartNew;
+  Record_;
+  EndPass;
+  ImageBarrier;
+  Region := Default(VkBufferImageCopy);
+  Region.imageSubresource.aspectMask := VK_IMAGE_ASPECT_COLOR_BIT;
+  Region.imageSubresource.layerCount := 1;
+  Region.imageOffset.x := OX * FScale;
+  Region.imageOffset.y := OY * FScale;
+  Region.imageExtent.width := W * FScale;
+  Region.imageExtent.height := H * FScale;
+  Region.imageExtent.depth := 1;
+  var Count := W * H * FScale * FScale;
+  if UInt64(Count) * 4 > FReadback.Size then
+    Exit;
+  FAPI.vkCmdCopyImageToBuffer(Slot.Cmd.Handle, Found.Color.Image, VK_IMAGE_LAYOUT_GENERAL,
+    FReadback.Handle, 1, @Region);
+  HostReadBarrier;
+  WaitAll;
+  FReadback.Invalidate(0, UInt64(Count) * 4);
+  SetLength(Pixels, Count);
+  var Source := PCardinal(FReadback.Data);
+  for var I := 0 to Count - 1 do
+  begin
+    var C := Source[I];
+    var Alpha: Cardinal := $80000000;
+    if Is16(PSM) and ((C and $80000000) = 0) then
+      Alpha := 0;
+    Pixels[I] := (C and $FFFFFF) or Alpha;
+  end;
+  Cache.Target := Found;
+  Cache.Version := Found.Version;
+  Cache.X := OX;
+  Cache.Y := OY;
+  Cache.Width := W;
+  Cache.Height := H;
+  Cache.Format := PSM;
+  Cache.Pixels := Pixels;
+  Inc(FStats.Presents);
+  FStats.PresentSeconds := FStats.PresentSeconds + Watch.Elapsed.TotalSeconds;
+  Result := True;
+end;
+
 procedure TPS2GSVulkanHLE.RecordFrame(T: TVulkanHLETarget; W, H: Integer);
 var
   Region: VkBufferImageCopy;
@@ -2924,15 +3685,17 @@ begin
   Region := Default(VkBufferImageCopy);
   Region.imageSubresource.aspectMask := VK_IMAGE_ASPECT_COLOR_BIT;
   Region.imageSubresource.layerCount := 1;
-  Region.imageExtent.width := Min(W, T.Width);
-  Region.imageExtent.height := Min(H, T.Height);
+  Region.imageExtent.width := Min(W, T.Width * FScale);
+  Region.imageExtent.height := Min(H, T.Height * FScale);
   Region.imageExtent.depth := 1;
   FAPI.vkCmdCopyImageToBuffer(Slot.Cmd.Handle, T.Color.Image, VK_IMAGE_LAYOUT_GENERAL, FReadback.Handle, 1, @Region);
 end;
 
 function TPS2GSVulkanHLE.Describe: string;
 begin
-  Result := Format('hle prims=%d draws=%d submits=%d flushes=%d partial=%d loads=%d zloads=%d readbacks=%d ' +
+  Result := Format('hle scale=%d texturescale=%d filter=%s scaled=%d ',
+    [FScale, TextureScale, TexScaleFilterName(TextureFilter), FStats.TextureScales]) +
+    Format('prims=%d draws=%d submits=%d flushes=%d partial=%d loads=%d zloads=%d readbacks=%d ' +
     'textures=%d hits=%d targettex=%d copies=%d pipelines=%d watchfaults=%d setup=%.0fms wait=%.0fms flush=%.0fms ' +
     'shaderblend=%d/%d parts=%d', [FStats.Prims, FStats.Draws, FStats.Submits, FStats.Flushes, FPartialStores, FStats.TargetLoads, FDepthLoads,
     FStats.Readbacks, FStats.TextureUploads, FStats.TextureHits, FTargetTextures, FCopies, FStats.Pipelines,
@@ -2940,6 +3703,7 @@ begin
     Ord(FShaderBlend), FPartials]) +
     Format(' setups=%d flush: others=%d texture=%d depth=%d stale=%d sync=%d', [FSetups, FFlushes[frOthers],
     FFlushes[frTexture], FFlushes[frDepth], FFlushes[frStale], FFlushes[frSync]]);
+  Result := Result + Format(' cgpu=%d zgpu=%d', [FColorGpuLoads, FDepthGpuLoads]);
   for var T in FTargets do
   begin
     Result := Result + Format(' [%x %x %dx%d', [T.Addr, T.Format, T.Width, T.Height]);

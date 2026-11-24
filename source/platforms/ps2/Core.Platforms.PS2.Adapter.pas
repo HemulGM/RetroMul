@@ -9,7 +9,8 @@ interface
 
 uses
   Core.InputConfig, System.SysUtils, System.Classes, System.IniFiles, System.SyncObjs, Core.Storage, Core.Emulation,
-  Core.Snapshots, Core.CD.Disc, Core.DVD.Image, PS2.Types, PS2.Console, PS2.IOP.CDVD, Core.Platforms.PS2.Playback;
+  Core.Snapshots, Core.CD.Disc, Core.DVD.Image, PS2.Types, PS2.Console, PS2.IOP.CDVD, Core.Platforms.PS2.Playback,
+  RM.Vulkan.TexScale;
 
 {$SCOPEDENUMS ON}
 
@@ -29,6 +30,8 @@ type
     FExtraKeys: TPS2ExtraKeyMap;
     FBIOSMode, FBIOSFile, FRegion, FVideo, FLanguage, FRenderer: string;
     FRecompiler: Boolean;
+    FResolution, FTextureScale: Integer;
+    FTextureFilter: TTexScaleFilter;
   protected
     procedure LoadCoreSettings(Ini: TCustomIniFile); override;
     procedure SaveCoreSettings(Ini: TCustomIniFile); override;
@@ -56,6 +59,10 @@ type
     // front end and its renderer run on a thread
     // of its own (TPS2GSRaster.Async) on hosts with four logical processors.
     property Renderer: string read FRenderer write FRenderer;
+    // HLE enhancements, captured when the worker starts; other renderers stay native.
+    property Resolution: Integer read FResolution write FResolution;
+    property TextureScale: Integer read FTextureScale write FTextureScale;
+    property TextureFilter: TTexScaleFilter read FTextureFilter write FTextureFilter;
     property Recompiler: Boolean read FRecompiler write FRecompiler;
     // Band threads for Renderer (0: none; Vulkan's CPU fallbacks use them
     // too), and whether the GS draws on a thread of its own (not 'single').
@@ -106,6 +113,8 @@ type
     FGSAsync: Boolean;
     FRecompiler: Boolean;
     FVulkan, FHLE: Boolean;
+    FResolution, FTextureScale: Integer;
+    FTextureFilter: TTexScaleFilter;
     FAudio: TPS2AudioPlayback;
     FAudioFailed: Boolean;
     FAudioError: string;
@@ -131,7 +140,8 @@ type
     // Where the console's EEPROM is saved (BIOS boot).
     NVMFile: string;
     constructor Create(const ProgramData, Identity: TBytes; const ProgramName: string; const Base: TPS2ConsoleConfig;
-      const Storage: IStorage; const SnapshotDirectory, CardFile1, CardFile2: string);
+      const Storage: IStorage; const SnapshotDirectory, CardFile1, CardFile2: string;
+      Resolution: Integer = 1; TextureScale: Integer = 0; TextureFilter: TTexScaleFilter = tfXBRZ);
     destructor Destroy; override;
     procedure Configure(const Inputs: TPS2PadInputs; Paused, AudioEnabled: Boolean; Volume: Single; GSThreads: Integer;
       GSAsync, Recompiler, Vulkan, HLE: Boolean);
@@ -276,6 +286,7 @@ begin
   FVideo := 'auto';
   FLanguage := 'auto';
   FRenderer := 'threads';
+  FResolution := 1;
 end;
 
 function TPS2Config.GSThreads: Integer;
@@ -324,6 +335,12 @@ begin
     FVideo := 'auto';
   FLanguage := Ini.ReadString('System', 'Language', 'auto').ToLower;
   FRenderer := Ini.ReadString('Video', 'Renderer', 'threads').ToLower;
+  FResolution := EnsureRange(Ini.ReadInteger('Video', 'Resolution', FResolution), 1, 8);
+  FTextureScale := EnsureRange(Ini.ReadInteger('Video', 'TextureScale', FTextureScale), 0, TexScaleMax);
+  if FTextureScale = 1 then
+    FTextureScale := 0;
+  FTextureFilter := TexScaleFilterFromName(Ini.ReadString('Video', 'TextureFilter',
+    TexScaleFilterName(FTextureFilter)));
   FRecompiler := SameText(Ini.ReadString('Emulation', 'Execution', 'interpreter'), 'jit');
   if FRenderer = 'vulkan-lle' then
     FRenderer := 'vulkan';
@@ -349,6 +366,9 @@ begin
   Ini.WriteString('System', 'Video', FVideo);
   Ini.WriteString('System', 'Language', FLanguage);
   Ini.WriteString('Video', 'Renderer', FRenderer);
+  Ini.WriteInteger('Video', 'Resolution', FResolution);
+  Ini.WriteInteger('Video', 'TextureScale', FTextureScale);
+  Ini.WriteString('Video', 'TextureFilter', TexScaleFilterName(FTextureFilter));
   if FRecompiler then
     Ini.WriteString('Emulation', 'Execution', 'jit')
   else
@@ -368,7 +388,8 @@ end;
 { TPS2Worker }
 
 constructor TPS2Worker.Create(const ProgramData, Identity: TBytes; const ProgramName: string;
-  const Base: TPS2ConsoleConfig; const Storage: IStorage; const SnapshotDirectory, CardFile1, CardFile2: string);
+  const Base: TPS2ConsoleConfig; const Storage: IStorage; const SnapshotDirectory, CardFile1, CardFile2: string;
+  Resolution, TextureScale: Integer; TextureFilter: TTexScaleFilter);
 begin
   inherited Create(True);
   FreeOnTerminate := False;
@@ -376,6 +397,9 @@ begin
   FIdentity := Copy(Identity);
   FProgramName := ProgramName;
   FBase := Base;
+  FResolution := Resolution;
+  FTextureScale := TextureScale;
+  FTextureFilter := TextureFilter;
   FStorage := Storage;
   FSnapshotDirectory := SnapshotDirectory;
   FCardFiles[0] := CardFile1;
@@ -544,7 +568,7 @@ begin
   if (Width <= 0) or (Height <= 0) or (Length(Source) < Width * Height) then
     Exit;
   var Lines := 1;
-  if Height < 300 then
+  if FConsole.GS.NativeFrameHeight < 300 then
     Lines := 2;
   var Frame: TEmulatorFrame;
   Frame.Width := Width;
@@ -668,6 +692,7 @@ begin
       if FBase.Disc = nil then
         Config.HostDirectory := ExtractFilePath(FProgramName);
       FConsole := TPS2Console.Create(Config);
+      FConsole.GS.Raster.ConfigureHLE(FResolution, FTextureScale, FTextureFilter);
       FConsole.GS.OnFrame :=
         procedure(const Pixels: TArray<Cardinal>; Width, Height: Integer; Number: Int64)
         begin
@@ -1120,7 +1145,7 @@ begin
   Base.Mechacon := FMechacon;
   Base.NVM := FNVM;
   FWorker := TPS2Worker.Create(FProgram, FIdentity, FProgramName, Base, FStorage, FSnapshotDirectory, FCardFiles[0],
-    FCardFiles[1]);
+    FCardFiles[1], FConfigObject.Resolution, FConfigObject.TextureScale, FConfigObject.TextureFilter);
   FWorker.NVMFile := FNVMFile;
   Configure;
   FWorker.Start;

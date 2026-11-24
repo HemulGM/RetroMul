@@ -51,7 +51,8 @@ begin
   Config := C;
   var Map := C.Keys;
   for var Port := 0 to 1 do
-    for var B := Low(TEmulatorButton) to High(TEmulatorButton) do Keys[Port, B] := Map[Port, B];
+    for var B := Low(TEmulatorButton) to High(TEmulatorButton) do
+      Keys[Port, B] := Map[Port, B];
 end;
 
 class procedure TPS2Platform.LoadLegacyExtras(Input: TInputManager; Ini: TCustomIniFile);
@@ -62,7 +63,8 @@ begin
   for var Port := 0 to 1 do
   begin
     var Section := 'Keys';
-    if Port > 0 then Section := Section + IntToStr(Port + 1);
+    if Port > 0 then
+      Section := Section + IntToStr(Port + 1);
     for var Extra := Low(TPS2Extra) to High(TPS2Extra) do
       AddLegacyInputKey(Input, PS1Action(Port, TPS1Extra(Ord(Extra))), ReadEmulatorKey(Ini, Section,
         TPS2Config.ExtraKeyName(Extra), C.ExtraKey(Port, Extra)));
@@ -71,7 +73,8 @@ end;
 
 class procedure TPS2Platform.RegisterPlatform;
 begin
-  if FRegistered then Exit;
+  if FRegistered then
+    Exit;
   TPlatformRegistry.RegisterPlatform('ps2', 'PlayStation 2', 'PS2', 'Sony', 'PS2 PlayStation 2',
     'ps2', ['ps2', 'playstation2'], ['.iso', '.chd', '.cue', '.bin', '.mds', '.elf'], 'PS2', 'ps2', 2);
   var Registration := TEmulationCoreRegistration.Create('PS2', ['.elf']);

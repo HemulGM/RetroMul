@@ -38,6 +38,7 @@ type
   TPS2GIF = class(TPS2Device)
   private
     FGS: TPS2GS;
+    FLocalMemory: PByte; // Stable front-raster allocation; no synchronizing getter in a run.
     // The EE clock: the scheduler's (FSchedulerClock), or the time of the
     // packet the kick thread is drawing (FKickNow) while it does.
     FClock, FSchedulerClock: PInt64;
@@ -58,6 +59,7 @@ type
     procedure ReglistWrite(var P: TPS2GIFPathState; Value: UInt64);
     procedure StartPath3Burst;
     function TransferHere(PathIndex: Integer; Data: PByte; Count: Integer; FromDMA: Boolean): Integer;
+    function TransferImageRun(Data: PByte; Count: Integer): Integer;
     procedure KickHere(Memory: PByte; Address, Mask: Cardinal);
     procedure DrawAt(Data: PByte; Count: Integer; Direct: Boolean; Now: Int64);
     function Detachable(Data: PByte; out Count: Integer): Boolean;
@@ -115,6 +117,9 @@ type
     procedure KickPacket(Data: PByte);
     // VIF1 DIRECT: a quadword to PATH2 (threaded the same way).
     procedure TransferDirect(const Data: TPS2Reg128);
+    // Accept only a safe asynchronous prefix. The caller retains barriers
+    // and command completion on its original per-quadword path.
+    function TransferDirectRun(Data: PCardinal; Count: Integer): Integer;
     // Waits until the kick thread drew what it was given.
     procedure Join;
     property Threaded: Boolean read FThreaded write SetThreaded;
@@ -235,6 +240,7 @@ type
     destructor Destroy; override;
     procedure PutPacket(Data: PByte; Count: Integer; Now: Int64);
     procedure PutDirect(const Data: TPS2Reg128; Now: Int64);
+    procedure PutDirectRun(Data: PByte; Count: Integer; Now: Int64; Control: Cardinal);
     // Nothing given is still to draw.
     function Idle: Boolean; inline;
     procedure Join;
@@ -391,6 +397,52 @@ begin
   FOpen := True;
 end;
 
+procedure TPS2GIFKicker.PutDirectRun(Data: PByte; Count: Integer; Now: Int64; Control: Cardinal);
+begin
+  while Count > 0 do
+  begin
+    var E: PEntry := @FEntries[FPosted and EntryMask];
+    var Next: Int64;
+    if FOpen then
+    begin
+      Next := E.Start + E.Count;
+      if (E.Now <> Now) or (E.Control <> Control) or ((Next and DataMask) = 0) or not Room(Next + 1) then
+      begin
+        Close;
+        Continue;
+      end;
+    end
+    else
+    begin
+      Next := Reserve(1);
+      E.Start := Next;
+      E.Count := 0;
+      E.Now := Now;
+      E.Control := Control;
+      E.Direct := True;
+      FOpen := True;
+    end;
+    // Same 64-quad entry bound and wrap boundary as repeated PutDirect.
+    // Only this producer writes the open entry; the consumer sees it after Close.
+    var N := Count;
+    if N > DirectBatch - E.Count then
+      N := DirectBatch - E.Count;
+    var Tail := DataSize - Integer(Next and DataMask);
+    if N > Tail then
+      N := Tail;
+    var Free := DataSize - Integer(Next - FDataDoneSeen);
+    if N > Free then
+      N := Free;
+    Move(Data^, FData[Next and DataMask], N * SizeOf(TPS2Reg128));
+    Inc(E.Count, N);
+    FDataWrite := Next + N;
+    Inc(Data, N * SizeOf(TPS2Reg128));
+    Dec(Count, N);
+    if E.Count >= DirectBatch then
+      Close;
+  end;
+end;
+
 procedure TPS2GIFKicker.Wait(var Spins: Integer);
 begin
   if Spins < SpinRounds then
@@ -484,6 +536,7 @@ constructor TPS2GIF.Create(GS: TPS2GS);
 begin
   inherited Create;
   FGS := GS;
+  FLocalMemory := FGS.Raster.Memory.Data;
   FGS.BeforeAccess := Join;
   Reset;
 end;
@@ -619,6 +672,46 @@ begin
   Transfer(2, @Q, 1);
 end;
 
+function TPS2GIF.TransferDirectRun(Data: PCardinal; Count: Integer): Integer;
+var
+  Source, Bytes: NativeUInt;
+
+  function ClearOf(Base: Pointer; Size: NativeUInt): Boolean;
+  begin
+    var At := NativeUInt(Base);
+    Result := (At <= High(NativeUInt) - Size) and
+      ((Source + Bytes <= At) or (Source >= At + Size));
+  end;
+
+begin
+  Result := 0;
+  if (Count < 2) or not FThreaded or (TagLog <> nil) or (FSchedulerClock = nil) or
+    not FGS.Raster.Async or FGS.WriteInterrupts then
+    Exit;
+  if NativeUInt(Count) > High(NativeUInt) div SizeOf(TPS2Reg128) then
+    Exit;
+  Source := NativeUInt(Data);
+  Bytes := NativeUInt(Count) * SizeOf(TPS2Reg128);
+  if Source > High(NativeUInt) - Bytes then
+    Exit;
+  // Synthetic aliased callers retain the per-quad read/commit ordering.
+  if not ClearOf(Self, InstanceSize) or not ClearOf(FGS, FGS.InstanceSize) or
+    not ClearOf(FGS.Raster, FGS.Raster.InstanceSize) or
+    not ClearOf(FLocalMemory, PS2GSMemorySize) then
+    Exit;
+  var K := TPS2GIFKicker(Kicker);
+  var Q := PPS2Reg128(Data);
+  var State := FDirectPath;
+  while (Result < Count) and NextDirect(State, Q[Result]) do
+    Inc(Result);
+  if Result = 0 then
+    Exit;
+  FDirectPath := State;
+  // No guest instruction or synchronous GS operation runs in this prefix.
+  // Its EE time and control word are identical for every quadword.
+  K.PutDirectRun(PByte(Data), Result, FSchedulerClock^, ControlWord);
+end;
+
 procedure TPS2GIF.DrawAt(Data: PByte; Count: Integer; Direct: Boolean; Now: Int64);
 begin
   FKickNow := Now;
@@ -627,7 +720,32 @@ begin
   // this was given: nothing to do, and not from this thread.)
   FGS.InterruptsQuiet := True;
   try
-    if not Direct then
+    var Groupable := (Count >= 4) and (TagLog = nil) and
+      (FGS.Raster.PrimLog = nil) and (FGS.Raster.TransferLog = nil) and (FGS.Raster.WatchX < 0);
+    if Groupable then
+    begin
+      var Pixels := FGS.Raster.PixelsDrawn;
+      // Counter headroom for two full-scissor draws per quadword.
+      var Margin: Int64 := Int64(Count) * $800000;
+      if (Pixels < 0) or (FBusyPixels < 0) or (FBusyPixels > Pixels) or (Pixels > High(Int64) - Margin) then
+        Groupable := False
+      else
+      begin
+        var Limit := High(Int64) - Margin - (Pixels - FBusyPixels) div GSPixelsPerCycle;
+        Groupable := (FBusyUntil <= Limit) and (FKickNow <= Limit);
+      end;
+    end;
+    if Groupable then
+    begin
+      var PathIndex := 1;
+      if Direct then
+        PathIndex := 2;
+      // Owned data, one EE time, no IRQ writes. Keep the last quad separate:
+      // its preceding busy update then leaves exactly the scalar timeline.
+      TransferHere(PathIndex, Data, Count - 1, False);
+      TransferHere(PathIndex, Data + (Count - 1) * SizeOf(TPS2Reg128), 1, False);
+    end
+    else if not Direct then
       KickHere(Data, 0, $3FFF)
     else
       for var K := 0 to Count - 1 do
@@ -803,6 +921,32 @@ begin
   Result := TransferHere(PathIndex, Data, Count, FromDMA);
 end;
 
+function TPS2GIF.TransferImageRun(Data: PByte; Count: Integer): Integer;
+var
+  Source, Bytes: NativeUInt;
+
+  function ClearOf(Base: Pointer; Size: NativeUInt): Boolean;
+  begin
+    var At := NativeUInt(Base);
+    Result := (At <= High(NativeUInt) - Size) and
+      ((Source + Bytes <= At) or (Source >= At + Size));
+  end;
+
+begin
+  Result := 0;
+  if (Count < 2) or not FGS.Raster.Async or
+    (NativeUInt(Count) > High(NativeUInt) div SizeOf(TPS2Reg128)) then
+    Exit;
+  Source := NativeUInt(Data);
+  Bytes := NativeUInt(Count) * SizeOf(TPS2Reg128);
+  if Source > High(NativeUInt) - Bytes then
+    Exit;
+  if not ClearOf(Self, InstanceSize) or not ClearOf(FGS, FGS.InstanceSize) or
+    not ClearOf(FGS.Raster, FGS.Raster.InstanceSize) or not ClearOf(FLocalMemory, PS2GSMemorySize) then
+    Exit;
+  Result := FGS.WriteImageRun(Data, Count);
+end;
+
 function TPS2GIF.TransferHere(PathIndex: Integer; Data: PByte; Count: Integer; FromDMA: Boolean): Integer;
 
   procedure PacketEnd(Done: Integer);
@@ -876,8 +1020,18 @@ begin
         end;
     else
       begin
-        FGS.WriteImage(Q^);
-        Inc(P.Loop);
+        var Chunk := Count - Result;
+        if Chunk > P.NLoop - P.Loop then
+          Chunk := P.NLoop - P.Loop;
+        var Taken := TransferImageRun(PByte(Q), Chunk);
+        if Taken = 0 then
+        begin
+          FGS.WriteImage(Q^);
+          Taken := 1;
+        end;
+        Inc(P.Loop, Taken);
+        Inc(Result, Taken - 1);
+        Inc(Q, Taken - 1);
       end;
     end;
     Inc(Result);

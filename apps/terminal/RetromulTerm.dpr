@@ -317,6 +317,7 @@ uses
   RM.Platforms.ColecoVision.Input in '..\..\source\platforms\colecovision\RM.Platforms.ColecoVision.Input.pas',
   RM.Platforms.ColecoVision in '..\..\source\platforms\colecovision\RM.Platforms.ColecoVision.pas',
   RM.Platforms.ColecoVision.Settings in '..\..\source\platforms\colecovision\RM.Platforms.ColecoVision.Settings.pas',
+  PS2.GS.PascalShaders in '..\..\source\gpu\shaders\PS2.GS.PascalShaders.pas',
   RetroMul.Platforms in '..\retromul\RetroMul.Platforms.pas',
   HW.Sound.Y8950 in '..\..\source\hardware\audio\HW.Sound.Y8950.pas',
 

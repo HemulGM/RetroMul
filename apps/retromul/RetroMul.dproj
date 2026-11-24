@@ -320,6 +320,7 @@
         <DCCReference Include="..\..\source\platforms\colecovision\RM.Platforms.ColecoVision.Input.pas"/>
         <DCCReference Include="..\..\source\platforms\colecovision\RM.Platforms.ColecoVision.pas"/>
         <DCCReference Include="..\..\source\platforms\colecovision\RM.Platforms.ColecoVision.Settings.pas"/>
+        <DCCReference Include="..\..\source\gpu\shaders\PS2.GS.PascalShaders.pas"/>
         <DCCReference Include="RetroMul.Platforms.pas"/>
         <DCCReference Include="..\..\source\hardware\cpu\HW.ARM.pas"/>
         <DCCReference Include="..\..\source\media\audio\codecs\atrac3\Audio.ATRAC3.Decoder.pas"/>
@@ -1094,9 +1095,112 @@
         <DCCReference Include="..\..\source\media\swf\SWF.FLV.AAC.pas"/>
         <DCCReference Include="..\..\source\media\swf\SWF.FLV.AVC.pas"/>
         <DCCReference Include="..\..\source\media\swf\SWF.FLV.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.AudioWait.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.BIOS.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.CDVD.Drive.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.Console.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.Display.Pixels.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.DMAC.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.EE.Bus.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.EE.CPU.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.ELF.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.GIF.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.GS.Gpu.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.GS.Memory.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.GS.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.GS.RaceCheck.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.GS.Raster.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.GS.Scanout.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.GS.VulkanHLE.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.HostTempo.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.CDVD.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.CPU.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.FileIO.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.Hardware.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.HLE.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.Kernel.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.Libs.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.Loader.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.Machine.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.MemoryCard.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.Pad.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.SIO2.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IPU.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.Kernel.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.Scheduler.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.SIF.Bridge.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.SIF.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.SPU2.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.Timers.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.Types.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.VIF.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.VU.DiamondPlan.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.VU.Float.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.VU.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.VU1Domain.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.VU1Thread.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.Vulkan.Compute.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.Bindings.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.Compiler.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.Component.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.ConstEval.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.Diagnostics.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.Features.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.FileSafety.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.FloatEnvironment.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.FloatLiteral.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.FlowAnalysis.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.Graphics.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.IR.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.Layout.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.Lexer.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.Names.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.Parser.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.Profile.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.Project.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.References.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.Reflection.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.Source.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.SourceLoader.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.SPIRV.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.Types.pas"/>
+        <DCCReference Include="..\..\dependencies\PasToSPIRV\source\PTS.Analysis.pas"/>
+        <DCCReference Include="..\..\source\platforms\ps2\Core.Platforms.PS2.Adapter.pas"/>
+        <DCCReference Include="..\..\source\platforms\ps2\Core.Platforms.PS2.Playback.pas"/>
+        <DCCReference Include="..\..\source\platforms\ps2\RM.Platforms.PS2.Input.pas"/>
+        <DCCReference Include="..\..\source\platforms\ps2\RM.Platforms.PS2.pas"/>
+        <DCCReference Include="..\..\source\platforms\ps2\RM.Platforms.PS2.Settings.pas"/>
+        <DCCReference Include="..\..\source\media\dvd\Core.DVD.Image.pas"/>
+        <DCCReference Include="..\..\source\media\image\Media.Image.Decode.pas"/>
+        <DCCReference Include="..\..\source\media\image\Media.Image.GIF.pas"/>
+        <DCCReference Include="..\..\source\media\image\Media.Image.JPEG.pas"/>
+        <DCCReference Include="..\..\source\media\image\Media.Image.Types.pas"/>
         <None Include="..\..\source\cores\cps\CPS.RomData.inc"/>
         <None Include="..\..\source\cores\sms\SMS.Region.inc"/>
         <RcCompile Include="..\..\source\gpu\shaders\PSPGE.Pascal.rc"/>
+        <RcCompile Include="..\..\source\gpu\shaders\PS2GS.Pascal.rc"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSColorLoad2.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSDecodeImage.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSDepthPack.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSDirectBlend.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSDirectColor.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSHLEBlendFrag.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSHLEFrag.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSHLEFragment.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSHLEPush.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSHLEUpload.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSHLEVert.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLEPixel.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLESprite.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLETables.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLETriangleInputs.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLETriangleMath.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLETriangleResolve.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLETriangleShade.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLETypes.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSMirrorDecode.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSPackedPage.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSPaletteHybrid.pasm"/>
         <None Include="..\..\source\gpu\shaders\PSPGEHLEBlend.pasm"/>
         <None Include="..\..\source\gpu\shaders\PSPGEHLEBlendFrag.pasm"/>
         <None Include="..\..\source\gpu\shaders\PSPGEHLEClut.pasm"/>
@@ -2281,6 +2385,138 @@
                     </Platform>
                 </DeployFile>
                 <DeployFile LocalName="..\..\source\cores\system32\S32.RomData.inc" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PS2GSColorLoad2.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PS2GSDecodeImage.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PS2GSDepthPack.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PS2GSDirectBlend.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PS2GSDirectColor.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PS2GSHLEBlendFrag.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PS2GSHLEFrag.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PS2GSHLEFragment.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PS2GSHLEPush.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PS2GSHLEUpload.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PS2GSHLEVert.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PS2GSLLEPixel.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PS2GSLLESprite.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PS2GSLLETables.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PS2GSLLETriangleInputs.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PS2GSLLETriangleMath.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PS2GSLLETriangleResolve.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PS2GSLLETriangleShade.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PS2GSLLETypes.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PS2GSMirrorDecode.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PS2GSPackedPage.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PS2GSPaletteHybrid.pasm" Configuration="Release" Class="ProjectFile">
                     <Platform Name="Win64">
                         <RemoteDir>.\</RemoteDir>
                         <Overwrite>true</Overwrite>

@@ -35,24 +35,34 @@ interface
 type
   // Architectural register order, not the host double's word order.
   TSH4Vector = array[0..3] of Cardinal;
+
   TSH4Matrix = array[0..15] of Cardinal;
+
   PSH4Vector = ^TSH4Vector;
+
   PSH4Matrix = ^TSH4Matrix;
 
 // True: an FPU exception; the destination stays unchanged. FPSCR causes are
 // rewritten and flags are sticky. PR=1 leaves registers and FPSCR untouched,
 // but the measured unconditional enables still cause an exception.
 function SH4FIPR(const M, N: TSH4Vector; var FPSCR, Value: Cardinal): Boolean;
+
 function SH4FTRV(const Matrix: TSH4Matrix; var Vector: TSH4Vector; var FPSCR: Cardinal): Boolean;
 // The same on the register banks as the CPU stores them, each pair of
 // registers swapped: FVm and FVn from FR(m) and FR(n) (multiples of 4) and
 // XMTRX as the whole XF bank. FIPR's Value is then stored FR(n + 2).
+
 function SH4FIPRBanks(const M, N: TSH4Vector; var FPSCR, Value: Cardinal): Boolean;
+
 function SH4FTRVBanks(const XF: TSH4Matrix; var FV: TSH4Vector; var FPSCR: Cardinal): Boolean;
+
 function SH4FSCA(Angle: Cardinal; var FPSCR, SinBits, CosBits: Cardinal): Boolean;
+
 function SH4FSRRA(var Value, FPSCR: Cardinal): Boolean;
 {$IFDEF SH4_FTRV_CACHE_STATS}
+
 procedure SH4TransformCacheStats(out Hits, Misses: Int64);
+
 procedure SH4DotCacheStats(out Hits, Misses: Int64);
 {$ENDIF}
 
@@ -74,6 +84,7 @@ type
     Cause: Cardinal;
     Mode: Byte;
   end;
+
   PTransformEntry = ^TTransformEntry;
 
   TDotEntry = record
@@ -82,6 +93,7 @@ type
     Mode: Byte;
     Valid: Boolean;
   end;
+
   PDotEntry = ^TDotEntry;
 
   TVectorCaches = record
@@ -97,6 +109,7 @@ type
     TransformHits, TransformMisses, DotHits, DotMisses: Int64;
     {$ENDIF}
   end;
+
   PVectorCaches = ^TVectorCaches;
 
 threadvar
@@ -119,6 +132,7 @@ end;
 {$ENDIF}
 
 // Architectural order from stored order and back: each pair swapped.
+
 function Swapped(const V: TSH4Vector): TSH4Vector; inline;
 begin
   Result[0] := V[1];
@@ -156,16 +170,20 @@ end;
 
 // Callers have already excluded zero; vector sums and fixed results fit
 // 32 bits. Avoid normalizing them one bit at a time in the hot path.
-function HighestBit(Value: Cardinal): Integer;
 {$IF Defined(CPUX64) and Defined(MSWINDOWS)}
+function HighestBit(Value: Cardinal): Integer;
 asm
-  BSR EAX, ECX
+        BSR     EAX, ECX
 end;
 {$ELSEIF Defined(CPUX86)}
+
+function HighestBit(Value: Cardinal): Integer;
 asm
-  BSR EAX, EAX
+        BSR     EAX, EAX
 end;
 {$ELSE}
+
+function HighestBit(Value: Cardinal): Integer;
 begin
   Result := 0;
   if Value >= $10000 then
@@ -318,8 +336,7 @@ begin
   Result := Sign or (Cardinal(Exponent) shl 23) or (Q and $7FFFFF);
 end;
 
-function TryRoundInterval(LowSum, HighSum, MaxExponent: Integer; RZ, DN: Boolean;
-  out Bits, Cause: Cardinal): Boolean;
+function TryRoundInterval(LowSum, HighSum, MaxExponent: Integer; RZ, DN: Boolean; out Bits, Cause: Cardinal): Boolean;
 begin
   // One normalization suffices in the common signed normal binade.
   var Sign: Cardinal := 0;
@@ -376,8 +393,7 @@ begin
   Result := (Bits = Other) and (Cause = OtherCause);
 end;
 
-function TryNormalDot(const Mul, Rec: TSH4Vector; RZ, DN: Boolean;
-  out Bits, Cause: Cardinal): Boolean;
+function TryNormalDot(const Mul, Rec: TSH4Vector; RZ, DN: Boolean; out Bits, Cause: Cardinal): Boolean;
 var
   LowProduct, HighProduct: array[0..3] of Cardinal;
   Exponents: array[0..3] of Integer;
@@ -597,8 +613,7 @@ begin
   Result := RoundDotSum(Integer(Sum), MaxExponent, RZ, DN, Cause);
 end;
 
-function DotNormalExact(const Mul, Rec: TSH4Vector; MaxExponent: Integer;
-  RZ, DN: Boolean; out Cause: Cardinal): Cardinal;
+function DotNormalExact(const Mul, Rec: TSH4Vector; MaxExponent: Integer; RZ, DN: Boolean; out Cause: Cardinal): Cardinal;
 begin
   // The transform bounds have already classified every operand and found
   // the row exponent. Reuse that proof instead of collecting/classifying
@@ -644,6 +659,7 @@ end;
 // ambiguous row with the full Booth calculation. Win64 volatile registers only.
 type
   TBoundsVector = array[0..3] of Integer;
+
   TBoundsMatrix = array[0..3] of TBoundsVector;
 
 const
@@ -659,144 +675,147 @@ const
 var
   UseAVX2Bounds: Boolean;
 
-function TransformBoundsAVX2(const Matrix: TSH4Matrix; const Vector: TSH4Vector;
-  DN: Boolean; out LowSums, HighSums, MaxExponents: TBoundsVector): Boolean;
+function TransformBoundsAVX2(const Matrix: TSH4Matrix; const Vector: TSH4Vector; DN: Boolean; out LowSums, HighSums, MaxExponents: TBoundsVector): Boolean;
 var
   ProductsLo, ProductsHi, Exponents, Signs, Active: TBoundsMatrix;
   MaxE: TBoundsVector;
 asm
-  VPXOR XMM0, XMM0, XMM0
-  VMOVDQU MaxE, XMM0
-  XOR R10D, R10D
-  XOR R11D, R11D
+        VPXOR   XMM0, XMM0, XMM0
+        VMOVDQU MaxE, XMM0
+        XOR     R10D, R10D
+        XOR     R11D, R11D
+
 @Column:
-  VPBROADCASTD XMM0, DWORD PTR [RDX + R10 * 4]
-  VMOVDQU XMM1, [RCX + R11]
-  VPSRLD XMM2, XMM0, 23
-  VPAND XMM2, XMM2, BoundsFF
-  VPSRLD XMM3, XMM1, 23
-  VPAND XMM3, XMM3, BoundsFF
-  VPCMPEQD XMM4, XMM2, BoundsFF
-  VPCMPEQD XMM5, XMM3, BoundsFF
-  VPOR XMM4, XMM4, XMM5
-  VMOVMSKPS EAX, XMM4
-  TEST EAX, EAX
-  JNZ @Decline
-  TEST R8B, R8B
-  JNZ @ClassesOK
-  VPSLLD XMM4, XMM0, 1
-  VPCMPEQD XMM4, XMM4, BoundsZero
-  VPCMPEQD XMM5, XMM2, BoundsZero
-  VPANDN XMM4, XMM4, XMM5
-  VMOVMSKPS EAX, XMM4
-  TEST EAX, EAX
-  JNZ @Decline
-  VPSLLD XMM4, XMM1, 1
-  VPCMPEQD XMM4, XMM4, BoundsZero
-  VPCMPEQD XMM5, XMM3, BoundsZero
-  VPANDN XMM4, XMM4, XMM5
-  VMOVMSKPS EAX, XMM4
-  TEST EAX, EAX
-  JNZ @Decline
+        VPBROADCASTD XMM0, DWORD PTR[RDX + R10 * 4]
+        VMOVDQU XMM1, [RCX + R11]
+        VPSRLD  XMM2, XMM0, 23
+        VPAND   XMM2, XMM2, BoundsFF
+        VPSRLD  XMM3, XMM1, 23
+        VPAND   XMM3, XMM3, BoundsFF
+        VPCMPEQD XMM4, XMM2, BoundsFF
+        VPCMPEQD XMM5, XMM3, BoundsFF
+        VPOR    XMM4, XMM4, XMM5
+        VMOVMSKPS EAX, XMM4
+        TEST    EAX, EAX
+        JNZ     @Decline
+        TEST    R8B, R8B
+        JNZ     @ClassesOK
+        VPSLLD  XMM4, XMM0, 1
+        VPCMPEQD XMM4, XMM4, BoundsZero
+        VPCMPEQD XMM5, XMM2, BoundsZero
+        VPANDN  XMM4, XMM4, XMM5
+        VMOVMSKPS EAX, XMM4
+        TEST    EAX, EAX
+        JNZ     @Decline
+        VPSLLD  XMM4, XMM1, 1
+        VPCMPEQD XMM4, XMM4, BoundsZero
+        VPCMPEQD XMM5, XMM3, BoundsZero
+        VPANDN  XMM4, XMM4, XMM5
+        VMOVMSKPS EAX, XMM4
+        TEST    EAX, EAX
+        JNZ     @Decline
+
 @ClassesOK:
-  VPXOR XMM4, XMM0, XMM1
-  VPSRAD XMM4, XMM4, 31
-  LEA RAX, Signs
-  VMOVDQU [RAX + R11], XMM4
-  VPCMPEQD XMM4, XMM2, BoundsZero
-  VPCMPEQD XMM5, XMM3, BoundsZero
-  VPOR XMM4, XMM4, XMM5
-  VPADDD XMM2, XMM2, XMM3
-  VPCMPGTD XMM5, XMM2, Bounds75
-  VPANDN XMM4, XMM4, XMM5
-  LEA RAX, Active
-  VMOVDQU [RAX + R11], XMM4
-  VPAND XMM2, XMM2, XMM4
-  LEA RAX, Exponents
-  VMOVDQU [RAX + R11], XMM2
-  VPMAXSD XMM2, XMM2, MaxE
-  VMOVDQU MaxE, XMM2
-  VPAND XMM0, XMM0, BoundsMantissa
-  VPOR XMM0, XMM0, BoundsHidden
-  VPAND XMM1, XMM1, BoundsMantissa
-  VPOR XMM1, XMM1, BoundsHidden
-  VPMULUDQ XMM2, XMM0, XMM1
-  VPSRLDQ XMM3, XMM1, 4
-  VPMULUDQ XMM4, XMM0, XMM3
-  VPADDQ XMM3, XMM2, BoundsRound
-  VPADDQ XMM5, XMM4, BoundsRound
-  VPSRLQ XMM3, XMM3, 20
-  VPSRLQ XMM5, XMM5, 20
-  VPSHUFD XMM3, XMM3, $88
-  VPSHUFD XMM5, XMM5, $88
-  VPUNPCKLDQ XMM3, XMM3, XMM5
-  LEA RAX, Active
-  VPAND XMM3, XMM3, [RAX + R11]
-  LEA RAX, ProductsHi
-  VMOVDQU [RAX + R11], XMM3
-  VPSUBQ XMM2, XMM2, BoundsSubtract
-  VPSUBQ XMM4, XMM4, BoundsSubtract
-  VPSRLQ XMM2, XMM2, 20
-  VPSRLQ XMM4, XMM4, 20
-  VPSHUFD XMM2, XMM2, $88
-  VPSHUFD XMM4, XMM4, $88
-  VPUNPCKLDQ XMM2, XMM2, XMM4
-  VPAND XMM1, XMM1, BoundsLowMask
-  VPCMPEQD XMM1, XMM1, BoundsZero
-  VPANDN XMM2, XMM1, XMM2
-  VPAND XMM3, XMM3, XMM1
-  VPOR XMM2, XMM2, XMM3
-  LEA RAX, Active
-  VPAND XMM2, XMM2, [RAX + R11]
-  LEA RAX, ProductsLo
-  VMOVDQU [RAX + R11], XMM2
-  INC R10D
-  ADD R11D, 16
-  CMP R10D, 4
-  JL @Column
-  VPXOR XMM0, XMM0, XMM0
-  VPXOR XMM1, XMM1, XMM1
-  VMOVDQU XMM2, MaxE
-  LEA RCX, Exponents
-  LEA RDX, ProductsLo
-  LEA R10, ProductsHi
-  LEA R8, Signs
-  XOR R11D, R11D
+        VPXOR   XMM4, XMM0, XMM1
+        VPSRAD  XMM4, XMM4, 31
+        LEA     RAX, Signs
+        VMOVDQU [RAX + R11], XMM4
+        VPCMPEQD XMM4, XMM2, BoundsZero
+        VPCMPEQD XMM5, XMM3, BoundsZero
+        VPOR    XMM4, XMM4, XMM5
+        VPADDD  XMM2, XMM2, XMM3
+        VPCMPGTD XMM5, XMM2, Bounds75
+        VPANDN  XMM4, XMM4, XMM5
+        LEA     RAX, Active
+        VMOVDQU [RAX + R11], XMM4
+        VPAND   XMM2, XMM2, XMM4
+        LEA     RAX, Exponents
+        VMOVDQU [RAX + R11], XMM2
+        VPMAXSD XMM2, XMM2, MaxE
+        VMOVDQU MaxE, XMM2
+        VPAND   XMM0, XMM0, BoundsMantissa
+        VPOR    XMM0, XMM0, BoundsHidden
+        VPAND   XMM1, XMM1, BoundsMantissa
+        VPOR    XMM1, XMM1, BoundsHidden
+        VPMULUDQ XMM2, XMM0, XMM1
+        VPSRLDQ XMM3, XMM1, 4
+        VPMULUDQ XMM4, XMM0, XMM3
+        VPADDQ  XMM3, XMM2, BoundsRound
+        VPADDQ  XMM5, XMM4, BoundsRound
+        VPSRLQ  XMM3, XMM3, 20
+        VPSRLQ  XMM5, XMM5, 20
+        VPSHUFD XMM3, XMM3, $88
+        VPSHUFD XMM5, XMM5, $88
+        VPUNPCKLDQ XMM3, XMM3, XMM5
+        LEA     RAX, Active
+        VPAND   XMM3, XMM3, [RAX + R11]
+        LEA     RAX, ProductsHi
+        VMOVDQU [RAX + R11], XMM3
+        VPSUBQ  XMM2, XMM2, BoundsSubtract
+        VPSUBQ  XMM4, XMM4, BoundsSubtract
+        VPSRLQ  XMM2, XMM2, 20
+        VPSRLQ  XMM4, XMM4, 20
+        VPSHUFD XMM2, XMM2, $88
+        VPSHUFD XMM4, XMM4, $88
+        VPUNPCKLDQ XMM2, XMM2, XMM4
+        VPAND   XMM1, XMM1, BoundsLowMask
+        VPCMPEQD XMM1, XMM1, BoundsZero
+        VPANDN  XMM2, XMM1, XMM2
+        VPAND   XMM3, XMM3, XMM1
+        VPOR    XMM2, XMM2, XMM3
+        LEA     RAX, Active
+        VPAND   XMM2, XMM2, [RAX + R11]
+        LEA     RAX, ProductsLo
+        VMOVDQU [RAX + R11], XMM2
+        INC     R10D
+        ADD     R11D, 16
+        CMP     R10D, 4
+        JL      @Column
+        VPXOR   XMM0, XMM0, XMM0
+        VPXOR   XMM1, XMM1, XMM1
+        VMOVDQU XMM2, MaxE
+        LEA     RCX, Exponents
+        LEA     RDX, ProductsLo
+        LEA     R10, ProductsHi
+        LEA     R8, Signs
+        XOR     R11D, R11D
+
 @SumColumn:
-  VPSUBD XMM3, XMM2, [RCX + R11]
-  VMOVDQU XMM4, [RDX + R11]
-  VPSRLVD XMM4, XMM4, XMM3
-  VMOVDQU XMM5, [R10 + R11]
-  VPSRLVD XMM5, XMM5, XMM3
-  VPXOR XMM3, XMM4, XMM5
-  VPAND XMM3, XMM3, [R8 + R11]
-  VPXOR XMM4, XMM4, XMM3
-  VPXOR XMM5, XMM5, XMM3
-  VPXOR XMM4, XMM4, [R8 + R11]
-  VPSUBD XMM4, XMM4, [R8 + R11]
-  VPXOR XMM5, XMM5, [R8 + R11]
-  VPSUBD XMM5, XMM5, [R8 + R11]
-  VPADDD XMM0, XMM0, XMM4
-  VPADDD XMM1, XMM1, XMM5
-  ADD R11D, 16
-  CMP R11D, 64
-  JL @SumColumn
-  VMOVDQU [R9], XMM0
-  MOV RAX, HighSums
-  VMOVDQU [RAX], XMM1
-  MOV RAX, MaxExponents
-  VMOVDQU [RAX], XMM2
-  MOV EAX, 1
-  JMP @Done
+        VPSUBD  XMM3, XMM2, [RCX + R11]
+        VMOVDQU XMM4, [RDX + R11]
+        VPSRLVD XMM4, XMM4, XMM3
+        VMOVDQU XMM5, [R10 + R11]
+        VPSRLVD XMM5, XMM5, XMM3
+        VPXOR   XMM3, XMM4, XMM5
+        VPAND   XMM3, XMM3, [R8 + R11]
+        VPXOR   XMM4, XMM4, XMM3
+        VPXOR   XMM5, XMM5, XMM3
+        VPXOR   XMM4, XMM4, [R8 + R11]
+        VPSUBD  XMM4, XMM4, [R8 + R11]
+        VPXOR   XMM5, XMM5, [R8 + R11]
+        VPSUBD  XMM5, XMM5, [R8 + R11]
+        VPADDD  XMM0, XMM0, XMM4
+        VPADDD  XMM1, XMM1, XMM5
+        ADD     R11D, 16
+        CMP     R11D, 64
+        JL      @SumColumn
+        VMOVDQU [R9], XMM0
+        MOV     RAX, HighSums
+        VMOVDQU [RAX], XMM1
+        MOV     RAX, MaxExponents
+        VMOVDQU [RAX], XMM2
+        MOV     EAX, 1
+        JMP     @Done
+
 @Decline:
-  XOR EAX, EAX
+        XOR     EAX, EAX
+
 @Done:
-  VZEROUPPER
+        VZEROUPPER
 end;
 {$ENDIF}
 
-function TryNormalTransform(const Matrix: TSH4Matrix; const Vector: TSH4Vector;
-  RZ, DN: Boolean; out Output: TSH4Vector; out Cause: Cardinal): Boolean;
+function TryNormalTransform(const Matrix: TSH4Matrix; const Vector: TSH4Vector; RZ, DN: Boolean; out Output: TSH4Vector; out Cause: Cardinal): Boolean;
 var
   Mantissa, Exponent, Sign: TSH4Vector;
   LowProduct, HighProduct: array[0..15] of Cardinal;
@@ -921,11 +940,11 @@ begin
   begin
     Bits := Entry.Value;
     Cause := Entry.Cause;
-    {$IFDEF SH4_FTRV_CACHE_STATS}Inc(VectorCaches.DotHits);{$ENDIF}
+    {$IFDEF SH4_FTRV_CACHE_STATS}            Inc(VectorCaches.DotHits);{$ENDIF}
   end
   else
   begin
-    {$IFDEF SH4_FTRV_CACHE_STATS}Inc(VectorCaches.DotMisses);{$ENDIF}
+    {$IFDEF SH4_FTRV_CACHE_STATS}            Inc(VectorCaches.DotMisses);{$ENDIF}
     Bits := Dot(Swapped(M), Swapped(N), (FPSCR and 3) = 1, (FPSCR and DenormalMode) <> 0, Cause);
     Entry.M := M;
     Entry.N := N;
@@ -969,11 +988,11 @@ begin
   begin
     Output := Entry.Output;
     Cause := Entry.Cause;
-    {$IFDEF SH4_FTRV_CACHE_STATS}Inc(Caches.TransformHits);{$ENDIF}
+    {$IFDEF SH4_FTRV_CACHE_STATS}            Inc(Caches.TransformHits);{$ENDIF}
   end
   else
   begin
-    {$IFDEF SH4_FTRV_CACHE_STATS}Inc(Caches.TransformMisses);{$ENDIF}
+    {$IFDEF SH4_FTRV_CACHE_STATS}            Inc(Caches.TransformMisses);{$ENDIF}
     var Vector := Swapped(FV);
     if not TryNormalTransform(Caches.Matrix, Vector, (FPSCR and 3) = 1, (FPSCR and DenormalMode) <> 0, Output,
       Cause) then
@@ -1011,6 +1030,7 @@ begin
   if not Result then
     Vector := Swapped(FV);
 end;
+
 type
   TFSCAWord = record
     C0, L: Cardinal;
@@ -1265,3 +1285,4 @@ initialization
 {$ENDIF}
 
 end.
+

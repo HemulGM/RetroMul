@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, Core.Storage;
+  System.SysUtils, System.Classes, Core.Storage, Core.Archive.Container;
 
 type
   TCDDisc = class;
@@ -68,6 +68,8 @@ type
     constructor Create(Stream: TStream; const Storage: IStorage; const Location: string; DeferIdentity: Boolean = False; const ImageName: string = '');
     // Inspect archive directory metadata without loading cartridge/disc payloads.
     class function IsDiscContainer(Stream: TStream; const Name: string = ''): Boolean; static;
+    // Returns -1 unless the archive has a single descriptor or standalone image.
+    class function ContainerImageIndex(const Archive: IArchiveContainer): Integer; static;
     procedure AddTrack(const Track: TCDTrack);
     procedure RequireISO9660;
     // Optional root-directory file; bounded to avoid trusting corrupt extents.
@@ -124,9 +126,8 @@ implementation
 
 uses
   Core.Platforms, System.Hash, System.IOUtils, System.Math, System.StrUtils,
-  Core.Archive.Container, Core.MediaArchive, Core.ArchiveStorage,
-  System.Generics.Collections, System.Generics.Defaults, Core.CD.CHD,
-  Core.CD.Physical
+  Core.MediaArchive, Core.ArchiveStorage, System.Generics.Collections,
+  System.Generics.Defaults, Core.CD.CHD, Core.CD.Physical
   {$IFDEF ANDROID}, Core.Storage.Android{$ENDIF};
 
 var
@@ -543,6 +544,33 @@ begin
   end;
 end;
 
+class function TCDDisc.ContainerImageIndex(const Archive: IArchiveContainer): Integer;
+begin
+  Result := -1;
+  var DescriptorCount := 0;
+  var ImageCount := 0;
+  for var I := 0 to Archive.Count - 1 do
+  begin
+    TStorage.CheckReadCancelled;
+    var Entry := Archive.Entries[I];
+    if Entry.IsDirectory or not DiscContainerEntry(Entry.Name) then
+      Continue;
+    if MediaFormats[ExtractFileExt(Entry.Name)].Descriptor then
+    begin
+      Inc(DescriptorCount);
+      Result := I;
+    end
+    else
+    begin
+      Inc(ImageCount);
+      if DescriptorCount = 0 then
+        Result := I;
+    end;
+  end;
+  if (DescriptorCount > 1) or ((DescriptorCount = 0) and (ImageCount <> 1)) then
+    Result := -1;
+end;
+
 procedure TCDDisc.LoadContainer(Stream: TStream; const Storage: IStorage; const ArchiveName: string);
 begin
   var Archive: IArchiveContainer;
@@ -551,25 +579,8 @@ begin
     Archive := OpenMediaArchive(Stream, ArchiveName, Storage);
     if Archive.Count > 4096 then
       raise EReadError.Create('CD archive contains too many entries');
-    var Selected := -1;
-    var DescriptorCount := 0;
-    var ImageCount := 0;
-    for var i := 0 to Archive.Count - 1 do
-      if not Archive.Entries[i].IsDirectory and DiscContainerEntry(Archive.Entries[i].Name) then
-      begin
-        if MediaFormats[ExtractFileExt(Archive.Entries[i].Name)].Descriptor then
-        begin
-          Inc(DescriptorCount);
-          Selected := i;
-        end
-        else
-        begin
-          Inc(ImageCount);
-          if DescriptorCount = 0 then
-            Selected := i;
-        end;
-      end;
-    if (Selected < 0) or (DescriptorCount > 1) or ((DescriptorCount = 0) and (ImageCount <> 1)) then
+    var Selected := ContainerImageIndex(Archive);
+    if Selected < 0 then
       raise EReadError.Create('CD archive must contain one disc descriptor or one standalone disc image');
 
     // Descriptors and all their relative companions share a read-only view.

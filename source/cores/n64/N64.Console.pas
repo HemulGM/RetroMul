@@ -410,6 +410,7 @@ type
     FSaveDirty: Boolean;
     FSaveType: TN64SaveType;
     FDetectedSaveType: TN64SaveType;
+    FDK64USACutsceneFix: Boolean;
     FFlashData: array[0..$1FFFF] of Byte;
     FFlashBuffer: array[0..127] of Byte;
     FFlashUsed, FFlashReady: Boolean;
@@ -457,6 +458,7 @@ type
     procedure ProcessEvents(Target: UInt64);
     class procedure RaiseClockOverflow; static;
     function RunIdle(Budget: Integer): Integer;
+    procedure FixDK64CutsceneTiming;
     procedure HandleEvent(Kind: TN64EventKind);
     procedure ScheduleVI;
     procedure ScheduleOutput;
@@ -717,6 +719,10 @@ begin
   end;
   if (FData[0] <> $80) or (FData[1] <> $37) or (FData[2] <> $12) or (FData[3] <> $40) then
     raise EReadError.Create('Invalid N64 ROM signature');
+
+  FDK64USACutsceneFix := (FData[$3B] = Ord('N')) and (FData[$3C] = Ord('D')) and
+    (FData[$3D] = Ord('O')) and (FData[$3E] = Ord('E')) and (FData[$3F] = 0) and
+    (Read32($10000010) = $EC58EABF) and (Read32($10000014) = $AD7C7169);
 
   FDetectedSaveType := TN64SaveType.EEPROM4K;
   // Cartridge save hardware, by the region-independent product code.
@@ -2606,6 +2612,43 @@ begin
   end;
 end;
 
+procedure TN64Console.FixDK64CutsceneTiming;
+const
+  CodeAddress = $600914;
+  Original: array[0..10] of Cardinal = (
+    $3C038076, $3C048077, $2484AF10, $24637A40, $8C6E0284, $8C8F0000,
+    $3C018074, $01CFC023, $AC384478, $8C790284, $AC990000);
+  // The cutscene path can measure zero VI retraces between two game frames.
+  // Keep both counter reads and both stores, changing only a zero delta to 1.
+  Patched: array[0..10] of Cardinal = (
+    $3C048077, // lui   a0, $8077
+    $3C038076, // lui   v1, $8076
+    $8C6E7CC4, // lw    t6, $7CC4(v1)
+    $8C8FAF10, // lw    t7, -$50F0(a0)
+    $01CFC023, // subu  t8, t6, t7
+    $2F190001, // sltiu t9, t8, 1
+    $0319C021, // addu  t8, t8, t9
+    $3C018074, // lui   at, $8074
+    $AC384478, // sw    t8, $4478(at)
+    $8C797CC4, // lw    t9, $7CC4(v1)
+    $AC99AF10  // sw    t9, -$50F0(a0)
+    );
+begin
+  if not FDK64USACutsceneFix then
+    Exit;
+  // A field boundary or state load can leave the CPU inside the old code.
+  var PC := FCPU.PC and $1FFFFFFF;
+  if ((PC >= CodeAddress) and (PC < CodeAddress + SizeOf(Original))) or
+    SPReadHazard(CodeAddress) then
+    Exit;
+  for var I := Low(Original) to High(Original) do
+    if ReadRAM32(CodeAddress + Cardinal(I) * 4) <> Original[I] then
+      Exit;
+  // Normal RDRAM writes invalidate any cached CPU blocks for this page.
+  for var I := Low(Patched) to High(Patched) do
+    WriteRAM32(CodeAddress + Cardinal(I) * 4, Patched[I]);
+end;
+
 procedure TN64Console.HandleEvent(Kind: TN64EventKind);
 begin
   case Kind of
@@ -2624,6 +2667,7 @@ begin
           else
             FField := 0;
           FFrame := Add64(FFrame, 1);
+          FixDK64CutsceneTiming;
           if FVideoOutputEnabled then
             RenderFrame(CompletedPhysicalField, True);
         end;
@@ -3039,6 +3083,7 @@ begin
       raise EReadError.Create('Invalid N64 cartridge snapshot');
     ValidateState;
     MarkSPTransfers;
+    FixDK64CutsceneTiming;
   end;
 end;
 

@@ -12,7 +12,11 @@ function OpenZip(Input: TStream; const Storage: IStorage): IArchiveContainer;
 implementation
 
 uses
-  System.SysUtils, System.Zip;
+  System.SysUtils, System.StrUtils, System.Zip, System.ZLib;
+
+const
+  // Space for a dual-layer DVD and the ZIP records around it.
+  MaxZipDVDBytes = Int64(9) shl 30;
 
 type
   TZipReadView = class(TStream)
@@ -28,10 +32,21 @@ type
     function Seek(const Offset: Int64; Origin: TSeekOrigin): Int64; override;
   end;
 
+  TZipLocalHeader = packed record
+    Signature: UInt32;
+    Version, Flags, Compression, ModTime, ModDate: Word;
+    CRC, PackedSize, UnpackedSize: UInt32;
+    NameLength, ExtraLength: Word;
+  end;
+
   TZipContainer = class(TArchiveContainer)
   private
     FInput, FZipInput: TStream;
     FZip: TZipFile;
+    FDataEnd: Int64;
+    function OpenLargeMember(const Header: TZipHeader): TStream;
+    procedure OpenDirectory(Input: TStream);
+    function ByteLimit: Int64;
   protected
     procedure Extract(Index: Integer; Output: TStream); override;
   public
@@ -133,7 +148,7 @@ begin
 end;
 
 // Bound central-directory allocations before RTL constructs its file array.
-procedure CheckZipDirectory(Input: TStream; out ArchiveStart, ArchiveEnd: Int64);
+procedure CheckZipDirectory(Input: TStream; out ArchiveStart, ArchiveEnd, DataEnd: Int64);
 const
   MaxDirectoryBytes = 64 * 1024 * 1024;
 begin
@@ -176,6 +191,7 @@ begin
   if (Count > MaxArchiveEntries) or (Bytes > MaxDirectoryBytes) or
     (Offset > UInt64(EndPosition)) or (Bytes > UInt64(EndPosition) - Offset) then
     raise EReadError.Create('ZIP directory exceeds archive limits');
+  DataEnd := Int64(Offset);
   var Last := Offset + Bytes;
   // A complete ZIP can be appended with its original relative offsets.
   // Associate the final end record with the directory immediately before it.
@@ -212,31 +228,72 @@ begin
   Input.Position := 0;
 end;
 
+procedure TZipContainer.OpenDirectory(Input: TStream);
+begin
+  var ArchiveStart, ArchiveEnd: Int64;
+  CheckZipDirectory(Input, ArchiveStart, ArchiveEnd, FDataEnd);
+  if (ArchiveStart <> 0) or (ArchiveEnd <> Input.Size) then
+  begin
+    FZipInput := TZipReadView.Create(Input, ArchiveStart, ArchiveEnd - ArchiveStart);
+    Input := FZipInput;
+  end;
+  FZip.Open(Input, zmRead);
+end;
+
+function TZipContainer.ByteLimit: Int64;
+begin
+  Result := MaxArchiveBytes;
+  for var I := 0 to FZip.FileCount - 1 do
+  begin
+    if FZip.FileInfo[I].UncompressedSize64 < UInt64(MaxArchiveBytes) then
+      Continue;
+    // A single large optical image can use the DVD budget. Its contents
+    // are still identified by the disc recognizers after extraction.
+    if (Result = MaxZipDVDBytes) or
+      not MatchText(ExtractFileExt(FZip.FileNames[I]), ['.iso', '.chd', '.mdf']) then
+      Exit(MaxArchiveBytes);
+    Result := MaxZipDVDBytes;
+  end;
+end;
+
 constructor TZipContainer.Create(Input: TStream; const Storage: IStorage);
 begin
   inherited Create(Storage);
+  var ArchiveSize := Input.Size;
+  if ArchiveSize > MaxZipDVDBytes then
+    raise EReadError.Create('ZIP archive exceeds 9 GiB');
+  FZip := TZipFile.Create;
   FInput := TStorage.TryOpenIndependentRead(Input);
   if FInput = nil then
   begin
+    var CacheLimit := MaxArchiveBytes;
+    if ArchiveSize > CacheLimit then
+    begin
+      // Check the directory before caching a large source without its own
+      // file handle. The owned copy is validated again before use.
+      var Saved := Input.Position;
+      try
+        OpenDirectory(Input);
+        CacheLimit := ByteLimit;
+      finally
+        FZip.Close;
+        FreeAndNil(FZipInput);
+        Input.Position := Saved;
+      end;
+      if ArchiveSize > CacheLimit then
+        raise EReadError.Create('ZIP archive exceeds 4 GiB');
+    end;
     var CachedPath := CacheArchiveInput(Input, FStorage,
       procedure(Path: string)
       begin
         TrackCacheFile(Path);
-      end);
+      end, CacheLimit);
     FInput := FStorage.OpenRead(CachedPath);
-  end
-  else if FInput.Size > MaxArchiveBytes then
-    raise EReadError.Create('Archive exceeds 4 GiB');
-  FInput.Position := 0;
-  var ArchiveStart, ArchiveEnd: Int64;
-  CheckZipDirectory(FInput, ArchiveStart, ArchiveEnd);
-  if (ArchiveStart <> 0) or (ArchiveEnd <> FInput.Size) then
-    FZipInput := TZipReadView.Create(FInput, ArchiveStart, ArchiveEnd - ArchiveStart);
-  FZip := TZipFile.Create;
-  if FZipInput <> nil then
-    FZip.Open(FZipInput, zmRead)
-  else
-    FZip.Open(FInput, zmRead);
+  end;
+  OpenDirectory(FInput);
+  var Limit := ByteLimit;
+  if FInput.Size > Limit then
+    raise EReadError.CreateFmt('ZIP archive exceeds %d GiB', [Limit shr 30]);
   for var I := 0 to FZip.FileCount - 1 do
   begin
     var Info := Default(TArchiveEntry);
@@ -245,7 +302,7 @@ begin
     Info.CRC32 := FZip.FileInfo[I].CRC32;
     Info.HasCRC := True;
     Info.IsDirectory := Info.Name.EndsWith('/') or Info.Name.EndsWith('\');
-    AddEntry(Info);
+    AddEntry(Info, Limit);
   end;
 end;
 
@@ -257,15 +314,48 @@ begin
   inherited;
 end;
 
+function TZipContainer.OpenLargeMember(const Header: TZipHeader): TStream;
+begin
+  // ZIP64 streaming writers may leave the local sizes unset. The central
+  // directory supplies the payload bounds and the CRC checked by EnsureEntry.
+  var Source := FZipInput;
+  if Source = nil then
+    Source := FInput;
+  var Offset := Header.LocalHeaderOffset64;
+  var local: TZipLocalHeader;
+  if (Offset > UInt64(FDataEnd)) or (UInt64(SizeOf(local)) > UInt64(FDataEnd) - Offset) then
+    raise EReadError.Create('ZIP64 local header outside member data');
+  Source.Position := Int64(Offset);
+  Source.ReadBuffer(local, SizeOf(local));
+  if (local.Signature <> $04034B50) or (local.Compression <> Header.CompressionMethod) then
+    raise EReadError.Create('Invalid ZIP64 local header');
+  if Header.IsEncrypted or ((local.Flags and 1) <> 0) then
+    raise EReadError.Create('Encrypted ZIP64 image is unsupported');
+  var DataAt := Source.Position + local.NameLength + local.ExtraLength;
+  var PackedSize := Header.CompressedSize64;
+  if (DataAt > FDataEnd) or (PackedSize > UInt64(FDataEnd - DataAt)) then
+    raise EReadError.Create('ZIP64 member exceeds data bounds');
+  if local.Compression = Word(Ord(zcStored)) then
+  begin
+    if PackedSize <> Header.UncompressedSize64 then
+      raise EReadError.Create('Invalid stored ZIP64 member size');
+    Exit(TZipReadView.Create(Source, DataAt, Int64(PackedSize)));
+  end;
+  Result := TZDecompressionStream.Create(TZipReadView.Create(Source, DataAt, Int64(PackedSize)), -15, True);
+end;
+
 procedure TZipContainer.Extract(Index: Integer; Output: TStream);
 begin
   var Input: TStream;
-  var Header: TZipHeader;
-  FZip.Read(Index, Input, Header, True);
+  var Header := FZip.FileInfo[Index];
+  var Size := Header.UncompressedSize64;
+  if (Size >= UInt64(MaxArchiveBytes)) and (Header.CompressionMethod in [Ord(zcStored), Ord(zcDeflate)]) then
+    Input := OpenLargeMember(Header)
+  else
+    FZip.Read(Index, Input, Header, True);
   try
     var Buffer: array[0..65535] of Byte;
     var Total: UInt64 := 0;
-    var Size := FZip.FileInfo[Index].UncompressedSize64;
     while True do
     begin
       TStorage.CheckReadCancelled;

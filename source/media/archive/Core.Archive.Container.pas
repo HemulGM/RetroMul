@@ -47,7 +47,7 @@ type
   protected
     FStorage: IStorage;
     procedure Extract(Index: Integer; Output: TStream); virtual;
-    procedure AddEntry(const Entry: TArchiveEntry);
+    procedure AddEntry(const Entry: TArchiveEntry; ByteLimit: Int64 = MaxArchiveBytes);
     function BeginEntry(Index: Integer): TStream;
     procedure TrackCacheFile(const Path: string);
     procedure CompleteEntry(Index: Integer; CRC: Cardinal);
@@ -91,7 +91,7 @@ type
     property Container: IArchiveContainer read FContainer;
   end;
 
-function CacheArchiveInput(Input: TStream; const Storage: IStorage; const Created: TProc<string> = nil): string;
+function CacheArchiveInput(Input: TStream; const Storage: IStorage; const Created: TProc<string> = nil; ByteLimit: Int64 = MaxArchiveBytes): string;
 
 procedure ReadArchiveBuffer(Input: TStream; var Buffer; Count: Integer);
 
@@ -200,7 +200,7 @@ begin
   end;
 end;
 
-function CacheArchiveInput(Input: TStream; const Storage: IStorage; const Created: TProc<string>): string;
+function CacheArchiveInput(Input: TStream; const Storage: IStorage; const Created: TProc<string>; ByteLimit: Int64): string;
 begin
   if Input = nil then
     raise EArgumentNilException.Create('Input');
@@ -225,8 +225,10 @@ begin
             var N := Input.Read(Buffer, SizeOf(Buffer));
             if N = 0 then
               Break;
-            if (N < 0) or (N > SizeOf(Buffer)) or (N > MaxArchiveBytes - Total) then
-              raise EReadError.Create('Archive exceeds 4 GiB or returned an invalid read count');
+            if (N < 0) or (N > SizeOf(Buffer)) then
+              raise EReadError.Create('Invalid archive read count');
+            if N > ByteLimit - Total then
+              raise EReadError.CreateFmt('Archive exceeds %d GiB', [ByteLimit div (Int64(1) shl 30)]);
             Output.WriteBuffer(Buffer, N);
             Inc(Total, N);
           end;
@@ -285,14 +287,14 @@ begin
     raise EArgumentOutOfRangeException.Create('Archive member index');
 end;
 
-procedure TArchiveContainer.AddEntry(const Entry: TArchiveEntry);
+procedure TArchiveContainer.AddEntry(const Entry: TArchiveEntry; ByteLimit: Int64);
 begin
   if (Entry.Name = '') or Entry.Name.Contains(#0) then
     raise EReadError.Create('Invalid archive member name');
   if Length(FEntries) >= MaxArchiveEntries then
     raise EReadError.Create('Archive contains too many entries');
-  if Entry.Size > UInt64(MaxArchiveBytes - FTotal) then
-    raise EReadError.Create('Archive unpacked data exceeds 4 GiB');
+  if (FTotal > ByteLimit) or (Entry.Size > UInt64(ByteLimit - FTotal)) then
+    raise EReadError.CreateFmt('Archive unpacked data exceeds %d GiB', [ByteLimit div (Int64(1) shl 30)]);
   if (Length(Entry.Name) > 65535) or (Length(Entry.Name) * Int64(2) > 16 * 1024 * 1024 - FNameBytes) then
     raise EReadError.Create('Archive names exceed metadata limit');
   Inc(FTotal, Int64(Entry.Size));
@@ -552,3 +554,4 @@ begin
 end;
 
 end.
+

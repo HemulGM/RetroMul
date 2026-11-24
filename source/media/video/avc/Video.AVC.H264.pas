@@ -2151,7 +2151,9 @@ begin
   GroupCount := 0;
   HaveDirect := False;
   DCT8Allowed := FP.Transform8x8Mode;
-  {$IFDEF PLAYER_TEST_STATS}               Inc(H264TestBTypes[TypeCode]); {$ENDIF}
+  {$IFDEF PLAYER_TEST_STATS}
+  Inc(H264TestBTypes[TypeCode]);
+  {$ENDIF}
   FDirect[FMB] := TypeCode = 0;
   if TypeCode = 0 then
   begin
@@ -2203,7 +2205,9 @@ begin
         Sub[I] := FBits.ReadUE;
       if Sub[I] > 12 then
         raise EPlayerFormat.Create('Invalid B subpartition');
-      {$IFDEF PLAYER_TEST_STATS}                                           Inc(H264TestBSubTypes[Sub[I]]); {$ENDIF}
+      {$IFDEF PLAYER_TEST_STATS}
+      Inc(H264TestBSubTypes[Sub[I]]);
+      {$ENDIF}
     end;
     GroupCount := 4;
     for I := 0 to 3 do

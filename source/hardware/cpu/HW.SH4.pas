@@ -5226,6 +5226,7 @@ end;
 // Common finite single-precision arithmetic has no operand normalization or
 // enabled traps. Keep its destination local instead of copying the FP bank.
 // Exceptional inputs/results still use the complete atomic exception path.
+
 function TSH4.OpFPUChecked(I: PSH4Inst): Boolean;
 begin
   var OldFPSCR := S.FPSCR;

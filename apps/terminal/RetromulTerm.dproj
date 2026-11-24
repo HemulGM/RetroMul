@@ -573,6 +573,43 @@
         <DCCReference Include="..\..\source\hardware\cpu\HW.ARM.pas"/>
         <DCCReference Include="..\..\source\media\audio\codecs\atrac3\Audio.ATRAC3.Decoder.pas"/>
         <DCCReference Include="..\..\source\media\audio\codecs\atrac3\Audio.ATRAC3.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.Types.pas"/>
+        <DCCReference Include="..\..\source\gpu\shaders\PS2.GS.PascalShaders.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.Scheduler.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.ELF.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.EE.CPU.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.Timers.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.DMAC.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.SIF.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.EE.Bus.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.GS.Memory.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.GS.Raster.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.GS.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.GIF.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.VU.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.Kernel.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.FileIO.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.HLE.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.CDVD.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.Pad.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.MemoryCard.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.CPU.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.SIO2.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.SPU2.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.Hardware.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.Loader.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.BIOS.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.SIF.Bridge.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.CDVD.Drive.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.Machine.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.Kernel.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.Libs.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.VIF.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IPU.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.Console.pas"/>
+        <DCCReference Include="..\..\source\media\dvd\Core.DVD.Image.pas"/>
+        <DCCReference Include="..\..\source\platforms\ps2\Core.Platforms.PS2.Playback.pas"/>
+        <DCCReference Include="..\..\source\platforms\ps2\Core.Platforms.PS2.Adapter.pas"/>
         <DCCReference Include="..\..\source\media\Core.Bitstream.pas"/>
         <DCCReference Include="..\..\source\media\video\avc\Video.AVC.Bitstream.pas"/>
         <DCCReference Include="..\..\source\media\video\avc\Video.AVC.H264.CABAC.pas"/>
@@ -1628,7 +1665,41 @@
     </ProjectExtensions>
     <ItemGroup>
         <RcCompile Include="..\..\source\gpu\shaders\PSPGE.Pascal.rc"/>
+        <RcCompile Include="..\..\source\gpu\shaders\PS2GS.Pascal.rc"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.AudioWait.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.Display.Pixels.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.GS.Scanout.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.HostTempo.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.VU.DiamondPlan.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.VU1Domain.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.VU1Thread.pas"/>
+        <DCCReference Include="..\..\source\gpu\vulkan\RM.Vulkan.PipelineState.pas"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSColorLoad2.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSDecodeImage.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSDepthPack.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSDirectBlend.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSDirectColor.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSHLEBlendFrag.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSHLEFrag.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSHLEFragment.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSHLEPush.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSHLEUpload.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSHLEVert.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLEPixel.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLESprite.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLETables.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLETriangleInputs.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLETriangleMath.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLETriangleResolve.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLETriangleShade.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLETypes.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSMirrorDecode.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSPackedPage.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSPaletteHybrid.pasm"/>
     </ItemGroup>
+    <PropertyGroup Condition="'$(Base)'!=''">
+        <DCC_UnitSearchPath>..\..\source\platforms\ps2;..\..\source\cores\ps2;..\..\source\media\dvd;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+    </PropertyGroup>
     <Import Project="$(BDS)\Bin\CodeGear.Delphi.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Delphi.Targets')"/>
     <Import Project="$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj" Condition="Exists('$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj')"/>
     <Import Project="$(MSBuildProjectName).deployproj" Condition="Exists('$(MSBuildProjectName).deployproj')"/>

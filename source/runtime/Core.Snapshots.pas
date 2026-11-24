@@ -18,6 +18,8 @@ type
     procedure Field(var Value; Size: Integer);
     // Self-sized append-only records can read their earlier prefix layout.
     procedure CompatibleField(var Value; Size, PreviousSize: Integer; IntermediateSize: Integer = -1);
+    // Keep the existing native-width count on save. Accept both widths on load.
+    procedure NativeCount(var Value: NativeInt);
     property Loading: Boolean read FLoading;
     // The core payload version; zero for direct, current-layout archives.
     property Version: Cardinal read FVersion;
@@ -166,6 +168,20 @@ begin
   FillChar(Value, Size, 0);
   if StoredSize > 0 then
     FStream.ReadBuffer(Value, StoredSize);
+end;
+
+procedure TStateArchive.NativeCount(var Value: NativeInt);
+begin
+  if not FLoading then
+  begin
+    Field(Value, SizeOf(Value));
+    Exit;
+  end;
+  var Stored: Int64;
+  CompatibleField(Stored, SizeOf(Stored), SizeOf(Integer));
+  if (Stored < 0) or (Stored > High(Integer)) then
+    raise EReadError.Create('Invalid snapshot count');
+  Value := NativeInt(Stored);
 end;
 
 procedure TransferStream(Stream: TStream; Loading: Boolean; const Transfer: TStateTransfer; Version: Cardinal);

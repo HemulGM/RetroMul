@@ -17,19 +17,20 @@
 
 interface
 
-{$Q-}{$R-}
+{$Q-}
+{$R-}
 
 uses
   System.SysUtils;
-{$IF (DEFINED(CPUX64) AND (DEFINED(MSWINDOWS) OR DEFINED(LINUX))) OR (DEFINED(CPUARM64) AND DEFINED(ANDROID))}
 
 const
-  JitSupported = True;
-{$ELSE}
-
-const
-  JitSupported = False;
-{$ENDIF}
+  JitSupported =
+    {$IF (DEFINED(CPUX64) AND (DEFINED(MSWINDOWS) OR DEFINED(LINUX))) OR
+    (DEFINED(CPUARM64) AND DEFINED(ANDROID))}
+    True
+    {$ELSE}
+    False
+    {$ENDIF};
 
 type
   // Registers by role. The fixed ones keep their values across calls: Self
@@ -45,7 +46,6 @@ type
   // as a value. At most one operand of an operation is in memory; constants
   // fit 32 bits (sign-extended to 64) but in Move to a register.
   TJitOpKind = (okReg, okImm, okMem, okAddr);
-
   TJitOp = record
     Kind: TJitOpKind;
     Reg: TJitReg;
@@ -57,13 +57,21 @@ type
 
   TJitDoubleAlu = (jdAdd, jdSub, jdMul, jdDiv);
   // Left, right logical, right arithmetic (8 bits: as 32).
-
   TJitShift = (jsShl, jsShr, jsSar);
   // After Branch's comparison of A with B: signed jcLt..jcGe, unsigned
   // jcBelow..jcAboveEq. After BranchTest of A and B: jcEq none of the bits,
   // jcNe some.
-
   TJitCond = (jcEq, jcNe, jcLt, jcLe, jcGt, jcGe, jcBelow, jcBelowEq, jcAbove, jcAboveEq);
+
+  // Optional volatile 128-bit scratch registers. Ordinary calls invalidate
+  // all of them; VectorCall leaves its result in v0 only. No saved-vector
+  // state or change to a backend's generated unwind frame is required.
+  TJitVector = (jv0, jv1, jv2, jv3);
+  TJitVectorValue = packed record
+    Lane: array[0..3] of Cardinal;
+  end;
+  TJitVectorAlu = (jvaAnd, jvaOr, jvaXor);
+  TJitVectorMask = (jvmSign, jvmZero);
 
   TJitLabel = Integer;
 
@@ -74,6 +82,8 @@ type
   private
     FBase: PByte;
     FSize, FUsed, FCodeStart, FFlushed: NativeInt;
+    FAuxStart, FAuxUsed, FPrimaryUsed: NativeInt;
+    FInAux: Boolean;
     FSealable, FPublished: Boolean;
     // Labels: where each is (-1: not yet), and the jumps to ones not yet
     // bound (their fields). Kept from function to function, so that writing
@@ -83,6 +93,7 @@ type
     FFixField: TArray<NativeInt>;
     FLabelCount, FFixCount: Integer;
     procedure RequireWritable; inline;
+    procedure RequirePublishedEntry(Code: Pointer); inline;
     procedure Fix(Field: NativeInt; L: TJitLabel);
   protected
     // Room's estimates times this (the model's operations take more bytes
@@ -121,6 +132,9 @@ type
     function Room(Bytes: NativeInt): Boolean; inline;
     function Here: PByte; inline;
     function Offset: NativeInt; inline;
+    procedure ReserveAuxiliary(PrimaryBytes: NativeInt);
+    function BeginAuxiliary(Estimate: NativeInt): Boolean;
+    procedure EndAuxiliary;
     procedure Align(N: Integer);
 
     // Dst := Src.
@@ -138,6 +152,31 @@ type
     // As Call, the routine's address read from memory operand Routine (its
     // register not one the arguments change).
     procedure CallAt(const Routine: TJitOp; const Args: array of TJitOp); virtual; abstract;
+    // Optional vector operations; test HasVectors before emitting them.
+    // Memory operands cover 16 bytes, unaligned accesses are allowed. A
+    // store's mask uses bit K for lane K, with zero meaning no memory access.
+    function HasVectors: Boolean; virtual;
+    procedure VectorLoad(Dst: TJitVector; const Src: TJitOp); virtual;
+    procedure VectorStore(const Dst: TJitOp; Src: TJitVector; Mask: Byte = 15); virtual;
+    procedure VectorBroadcast(Dst: TJitVector; const Src: TJitOp); virtual;
+    procedure VectorShuffle(Dst, Src: TJitVector; Pattern: Byte); virtual;
+    procedure VectorAlu(Op: TJitVectorAlu; Dst, Src: TJitVector); virtual;
+    procedure VectorMask(Op: TJitVectorMask; Dst: TJitReg; Src: TJitVector); virtual;
+    // NativeRoutine's backend-specific ABI receives v0/v1 plus Context in
+    // its first integer argument, returning v0 and an integer in T0. The
+    // model uses ModelRoutine(const A,B:128-bit; Context:pointer; out R).
+    // Both routines may clobber all scratch integer/vector registers.
+    procedure VectorCall(NativeRoutine, ModelRoutine: Pointer; const Context: TJitOp); virtual;
+    // As VectorCall, the native routine's address read from memory operand
+    // NativeRoutine (its register not the argument's).
+    procedure VectorCallAt(const NativeRoutine: TJitOp; ModelRoutine: Pointer; const Context: TJitOp); virtual;
+    // Optional kept vector registers (slots 0..VectorKeepCount - 1): calls
+    // and vector routines leave them, only code run by InvokeKeeping may use
+    // them. VectorBlend: Dst's lanes in Mask (bit K lane K) from Src.
+    function VectorKeepCount: Integer; virtual;
+    procedure VectorKeep(Slot: Integer; Src: TJitVector); virtual;
+    procedure VectorTake(Dst: TJitVector; Slot: Integer); virtual;
+    procedure VectorBlend(Dst, Src: TJitVector; Mask: Byte); virtual;
     // A function's start: the fixed registers saved, Self and Ctx from its
     // two arguments. Its end: Value as its result, the fixed registers as
     // they were, back to its caller.
@@ -178,16 +217,15 @@ type
     // Runs the function at Code (written with Enter or EnterJump) with four
     // pointer-sized arguments (unused ones ignored): its result.
     function Invoke(Code: Pointer; A0, A1, A2, A3: NativeUInt): NativeInt; virtual;
+    // As Invoke, for code that may change the kept vector registers.
+    function InvokeKeeping(Code: Pointer; A0, A1: NativeUInt): NativeInt; virtual;
     property Size: NativeInt read FSize;
     property Base: PByte read FBase;
   end;
 
 function JReg(Reg: TJitReg): TJitOp; inline;
-
 function JImm(Value: Int64): TJitOp; inline;
-
 function JMem(Base: TJitReg; Disp: Integer): TJitOp; inline;
-
 function JAddr(Base: TJitReg; Disp: Integer): TJitOp; inline;
 
 const
@@ -221,15 +259,8 @@ function CreateJitModel(Size: NativeInt): TJitAsm;
 implementation
 
 {$IF JitSupported}
-  {$IFDEF MSWINDOWS}
-
 uses
-  Winapi.Windows;
-  {$ELSE}
-
-uses
-  Posix.SysMman;
-  {$ENDIF}
+  {$IFDEF MSWINDOWS}Winapi.Windows{$ELSE}Posix.SysMman{$ENDIF};
 {$ENDIF}
 
 function JReg(Reg: TJitReg): TJitOp;
@@ -286,6 +317,8 @@ begin
   RequireWritable;
   FUsed := FCodeStart;
   FFlushed := FCodeStart;
+  FInAux := False;
+  FAuxUsed := FAuxStart;
   FLabelCount := 0;
   FFixCount := 0;
 end;
@@ -315,9 +348,82 @@ procedure TJitAsm.AddWindow(Disp: Integer);
 begin
 end;
 
+function TJitAsm.HasVectors: Boolean;
+begin
+  Result := False;
+end;
+
+procedure VectorUnsupported;
+begin
+  raise EInvalidOpException.Create('JIT: vector scratch registers are unavailable');
+end;
+
+procedure TJitAsm.VectorLoad(Dst: TJitVector; const Src: TJitOp);
+begin
+  VectorUnsupported;
+end;
+
+procedure TJitAsm.VectorStore(const Dst: TJitOp; Src: TJitVector; Mask: Byte);
+begin
+  VectorUnsupported;
+end;
+
+procedure TJitAsm.VectorBroadcast(Dst: TJitVector; const Src: TJitOp);
+begin
+  VectorUnsupported;
+end;
+
+procedure TJitAsm.VectorShuffle(Dst, Src: TJitVector; Pattern: Byte);
+begin
+  VectorUnsupported;
+end;
+
+procedure TJitAsm.VectorAlu(Op: TJitVectorAlu; Dst, Src: TJitVector);
+begin
+  VectorUnsupported;
+end;
+
+procedure TJitAsm.VectorMask(Op: TJitVectorMask; Dst: TJitReg; Src: TJitVector);
+begin
+  VectorUnsupported;
+end;
+
+procedure TJitAsm.VectorCall(NativeRoutine, ModelRoutine: Pointer; const Context: TJitOp);
+begin
+  VectorUnsupported;
+end;
+
+procedure TJitAsm.VectorCallAt(const NativeRoutine: TJitOp; ModelRoutine: Pointer; const Context: TJitOp);
+begin
+  VectorUnsupported;
+end;
+
+function TJitAsm.VectorKeepCount: Integer;
+begin
+  Result := 0;
+end;
+
+procedure TJitAsm.VectorKeep(Slot: Integer; Src: TJitVector);
+begin
+  VectorUnsupported;
+end;
+
+procedure TJitAsm.VectorTake(Dst: TJitVector; Slot: Integer);
+begin
+  VectorUnsupported;
+end;
+
+procedure TJitAsm.VectorBlend(Dst, Src: TJitVector; Mask: Byte);
+begin
+  VectorUnsupported;
+end;
+
 function TJitAsm.Room(Bytes: NativeInt): Boolean;
 begin
-  Result := (FBase <> nil) and not FPublished and (FUsed + Bytes * FRoomScale <= FSize);
+  var Limit := FSize;
+  if (FAuxStart <> 0) and not FInAux then
+    Limit := FAuxStart;
+  Result := (FBase <> nil) and not FPublished and (Bytes >= 0) and (Bytes <= (Limit - FUsed) div FRoomScale);
 end;
 
 procedure TJitAsm.RequireWritable;
@@ -326,10 +432,61 @@ begin
     raise EInvalidOpException.Create('JIT: code is already published');
 end;
 
+// An optional second part of the same executable mapping. Compilation in
+// it never consumes the ordinary code budget; branches use the same base.
+procedure TJitAsm.ReserveAuxiliary(PrimaryBytes: NativeInt);
+begin
+  RequireWritable;
+  if (FUsed <> FCodeStart)
+    or (FAuxStart <> 0)
+    or (PrimaryBytes <= FCodeStart)
+    or (PrimaryBytes >= FSize)
+    or ((PrimaryBytes and 15) <> 0) then
+    raise EInvalidOpException.Create('JIT: invalid auxiliary reservation');
+  FAuxStart := PrimaryBytes;
+  FAuxUsed := PrimaryBytes;
+end;
+
+function TJitAsm.BeginAuxiliary(Estimate: NativeInt): Boolean;
+begin
+  Result := False;
+  if FPublished or FInAux
+    or (FAuxStart = 0)
+    or (Estimate <= 0)
+    or (FFixCount <> 0)
+    or (Estimate > (FSize - FAuxUsed) div FRoomScale) then
+    Exit;
+  Flush;
+  FPrimaryUsed := FUsed;
+  FUsed := FAuxUsed;
+  FFlushed := FAuxUsed;
+  FInAux := True;
+  Result := True;
+end;
+
+procedure TJitAsm.EndAuxiliary;
+begin
+  if not FInAux then
+    raise EInvalidOpException.Create('JIT: no active auxiliary section');
+  try
+    if FFixCount <> 0 then
+      raise EInvalidOpException.Create('JIT: unbound auxiliary target');
+    Flush;
+    FAuxUsed := FUsed;
+  finally
+    FUsed := FPrimaryUsed;
+    FFlushed := FPrimaryUsed;
+    FInAux := False;
+  end;
+end;
+
 procedure TJitAsm.Need(Bytes: NativeInt);
 begin
   RequireWritable;
-  if FUsed + Bytes > FSize then
+  var Limit := FSize;
+  if (FAuxStart <> 0) and not FInAux then
+    Limit := FAuxStart;
+  if (Bytes < 0) or (Bytes > Limit - FUsed) then
     raise EInvalidOpException.Create('JIT buffer overflow');
 end;
 
@@ -490,42 +647,43 @@ begin
     Exit;
   if not FSealable then
     raise EInvalidOpException.Create('JIT: this buffer is mutable');
-  if (FFixCount <> 0) or (FUsed = FCodeStart) then
+  if FInAux or (FFixCount <> 0) or ((FUsed = FCodeStart) and (FAuxUsed = FAuxStart)) then
     raise EInvalidOpException.Create('JIT: incomplete code');
   Flush;
   MakeExecutable;
   FPublished := True;
 end;
 
+procedure TJitAsm.RequirePublishedEntry(Code: Pointer);
+begin
+  if not FSealable then
+    Exit;
+  var Address := NativeUInt(Code);
+  if FPublished and
+    (((Address >= NativeUInt(FBase + FCodeStart)) and (Address < NativeUInt(FBase + FUsed))) or
+     ((Address >= NativeUInt(FBase + FAuxStart)) and (Address < NativeUInt(FBase + FAuxUsed)))) then
+    Exit;
+  raise EInvalidOpException.Create('JIT: entry point is outside published code');
+end;
+
 function TJitAsm.Invoke(Code: Pointer; A0, A1, A2, A3: NativeUInt): NativeInt;
 type
   TJitFunction = function(A0, A1, A2, A3: NativeUInt): NativeInt;
 begin
-  if FSealable and (not FPublished or (NativeUInt(Code) < NativeUInt(FBase + FCodeStart)) or
-    (NativeUInt(Code) >= NativeUInt(FBase + FUsed))) then
-    raise EInvalidOpException.Create('JIT: entry point is outside published code');
+  RequirePublishedEntry(Code);
   Result := TJitFunction(Code)(A0, A1, A2, A3);
+end;
+
+function TJitAsm.InvokeKeeping(Code: Pointer; A0, A1: NativeUInt): NativeInt;
+begin
+  Result := Invoke(Code, A0, A1, 0, 0);
 end;
 
 { x64 }
 
 const
-  rAX = 0;
-  rCX = 1;
-  rDX = 2;
-  rBX = 3;
-  rSP = 4;
-  rBP = 5;
-  rSI = 6;
-  rDI = 7;
-  r8 = 8;
-  r9 = 9;
-  r10 = 10;
-  r11 = 11;
-  r12 = 12;
-  r13 = 13;
-  r14 = 14;
-  r15 = 15;
+  rAX = 0; rCX = 1; rDX = 2; rBX = 3; rSP = 4; rBP = 5; rSI = 6; rDI = 7;
+  r8 = 8; r9 = 9; r10 = 10; r11 = 11; r12 = 12; r13 = 13; r14 = 14; r15 = 15;
 
 type
   // An operand with x64 register numbers.
@@ -544,7 +702,8 @@ type
     FPhys: array[TJitReg] of Byte;
     FArgs: array[0..3] of Byte;
     function X(const Op: TJitOp): TX64Op;
-    procedure ModRM(W64: Boolean; const Opcode: array of Byte; RegField: Integer; ByteReg: Boolean; const RM: TX64Op; ByteRM: Boolean);
+    procedure ModRM(W64: Boolean; const Opcode: array of Byte; RegField: Integer; ByteReg: Boolean; const RM: TX64Op;
+      ByteRM: Boolean);
     procedure LoadImm(W: TJitWidth; Reg: Integer; Value: Int64);
     procedure MoveX(W: TJitWidth; const Dst, Src: TX64Op);
     procedure MoveArgs(const Args: array of TJitOp);
@@ -601,7 +760,8 @@ begin
   Result.Imm := Op.Imm;
 end;
 
-procedure TJitAsmX64.ModRM(W64: Boolean; const Opcode: array of Byte; RegField: Integer; ByteReg: Boolean; const RM: TX64Op; ByteRM: Boolean);
+procedure TJitAsmX64.ModRM(W64: Boolean; const Opcode: array of Byte; RegField: Integer; ByteReg: Boolean;
+  const RM: TX64Op; ByteRM: Boolean);
 begin
   // REX: W for 64 bits, R and B for registers 8..15, a plain one for the byte
   // registers SPL..DIL (ByteReg, ByteRM: the operand is a byte register).
@@ -733,13 +893,13 @@ const
 begin
   if (Dst.Kind <> okMem) or (Src.Kind <> okMem) then
     raise EInvalidOpException.Create('JIT: double arithmetic requires memory operands');
-  // XMM0 is volatile under both x64 ABIs. Legacy prefixes precede REX.
+  // XMM4 is volatile under both x64 ABIs and outside the JIT vector roles.
   Emit([$F2]);
-  ModRM(False, [$0F, $10], 0, False, X(Dst), False);
+  ModRM(False, [$0F, $10], 4, False, X(Dst), False);
   Emit([$F2]);
-  ModRM(False, [$0F, Opcode[Op]], 0, False, X(Src), False);
+  ModRM(False, [$0F, Opcode[Op]], 4, False, X(Src), False);
   Emit([$F2]);
-  ModRM(False, [$0F, $11], 0, False, X(Dst), False);
+  ModRM(False, [$0F, $11], 4, False, X(Dst), False);
 end;
 
 procedure TJitAsmX64.Shift(Op: TJitShift; W: TJitWidth; Dst: TJitReg; Count: Integer);
@@ -949,7 +1109,7 @@ type
     function HasS4: Boolean; override;
     procedure I(V: Cardinal); inline;
     procedure LoadImm(Is64: Boolean; Rd: Integer; Value: UInt64);
-    procedure MovReg(Is64: Boolean; Rd, RM: Integer);
+    procedure MovReg(Is64: Boolean; Rd, Rm: Integer);
     procedure AddImm(Is64: Boolean; Rd, Rn: Integer; Value: Int64);
     function Direct(var Base, Disp: Integer; Size: Integer): Boolean;
     procedure LoadStore(Store: Boolean; Size, Rt, Base, Disp: Integer);
@@ -1090,10 +1250,8 @@ begin
   var Ones := 0;
   for var K := 0 to Pieces - 1 do
     case (Value shr (16 * K)) and $FFFF of
-      0:
-        Inc(Zeros);
-      $FFFF:
-        Inc(Ones);
+      0: Inc(Zeros);
+      $FFFF: Inc(Ones);
     end;
   var Inverted := Ones > Zeros;
   var Needed := Pieces - Zeros;
@@ -1203,10 +1361,8 @@ begin
   // Direct, else Disp in x16 as an index. Loads zero-extend.
   var SizeBits: Cardinal := 3;
   case Size of
-    1:
-      SizeBits := 0;
-    4:
-      SizeBits := 2;
+    1: SizeBits := 0;
+    4: SizeBits := 2;
   end;
   var B := Base;
   var Dsp := Disp;
@@ -1250,7 +1406,7 @@ begin
         case W of
           jw8:
             I($53001C00 or (Cardinal(FPhys[Src.Reg]) shl 5) or Cardinal(R));                     // uxtb
-            jw32:
+          jw32:
             MovReg(False, R, FPhys[Src.Reg]);
           jw64:
             if R <> FPhys[Src.Reg] then
@@ -1339,21 +1495,15 @@ begin
   var C := Cardinal(Count);
   if W = jw64 then
     case Op of
-      jsShl:
-        I($D3400000 or (((64 - C) and 63) shl 16) or ((63 - C) shl 10) or (R shl 5) or R);
-      jsShr:
-        I($D3400000 or (C shl 16) or (63 shl 10) or (R shl 5) or R);
-      jsSar:
-        I($93400000 or (C shl 16) or (63 shl 10) or (R shl 5) or R);
+      jsShl: I($D3400000 or (((64 - C) and 63) shl 16) or ((63 - C) shl 10) or (R shl 5) or R);
+      jsShr: I($D3400000 or (C shl 16) or (63 shl 10) or (R shl 5) or R);
+      jsSar: I($93400000 or (C shl 16) or (63 shl 10) or (R shl 5) or R);
     end
   else
     case Op of
-      jsShl:
-        I($53000000 or (((32 - C) and 31) shl 16) or ((31 - C) shl 10) or (R shl 5) or R);
-      jsShr:
-        I($53000000 or (C shl 16) or (31 shl 10) or (R shl 5) or R);
-      jsSar:
-        I($13000000 or (C shl 16) or (31 shl 10) or (R shl 5) or R);
+      jsShl: I($53000000 or (((32 - C) and 31) shl 16) or ((31 - C) shl 10) or (R shl 5) or R);
+      jsShr: I($53000000 or (C shl 16) or (31 shl 10) or (R shl 5) or R);
+      jsSar: I($13000000 or (C shl 16) or (31 shl 10) or (R shl 5) or R);
     end;
 end;
 
@@ -1664,8 +1814,8 @@ end;
 
 { Win64 }
 
-function RtlAddFunctionTable(FunctionTable: Pointer; EntryCount: DWORD; BaseAddress: UInt64): BOOL; stdcall; external kernel32;
-
+function RtlAddFunctionTable(FunctionTable: Pointer; EntryCount: DWORD; BaseAddress: UInt64): BOOL; stdcall;
+  external kernel32;
 function RtlDeleteFunctionTable(FunctionTable: Pointer): BOOL; stdcall; external kernel32;
 
 type
@@ -1679,6 +1829,10 @@ type
       BeginAddress, EndAddress, UnwindData: Cardinal;
     end;
     FRegistered: Boolean;
+    // The host has SSE4.1 (BLENDPS for masked stores).
+    FBlend: Boolean;
+    FVectorMaskAt: array[0..15] of NativeInt;
+    procedure VectorRIP(const Opcode: array of Byte; Reg: Integer; At: NativeInt);
   protected
     function Allocate(Size: NativeInt; out CodeStart: NativeInt): PByte; override;
     procedure Release(Base: PByte); override;
@@ -1688,6 +1842,20 @@ type
     constructor Create(Size: NativeInt; Sealable: Boolean = False);
     procedure Enter; override;
     procedure Leave(const Value: TJitOp); override;
+    function HasVectors: Boolean; override;
+    procedure VectorLoad(Dst: TJitVector; const Src: TJitOp); override;
+    procedure VectorStore(const Dst: TJitOp; Src: TJitVector; Mask: Byte = 15); override;
+    procedure VectorBroadcast(Dst: TJitVector; const Src: TJitOp); override;
+    procedure VectorShuffle(Dst, Src: TJitVector; Pattern: Byte); override;
+    procedure VectorAlu(Op: TJitVectorAlu; Dst, Src: TJitVector); override;
+    procedure VectorMask(Op: TJitVectorMask; Dst: TJitReg; Src: TJitVector); override;
+    procedure VectorCall(NativeRoutine, ModelRoutine: Pointer; const Context: TJitOp); override;
+    procedure VectorCallAt(const NativeRoutine: TJitOp; ModelRoutine: Pointer; const Context: TJitOp); override;
+    function VectorKeepCount: Integer; override;
+    procedure VectorKeep(Slot: Integer; Src: TJitVector); override;
+    procedure VectorTake(Dst: TJitVector; Slot: Integer); override;
+    procedure VectorBlend(Dst, Src: TJitVector; Mask: Byte); override;
+    function InvokeKeeping(Code: Pointer; A0, A1: NativeUInt): NativeInt; override;
   end;
 
 const
@@ -1707,10 +1875,24 @@ const
     0, 0);
   Win64CodeStart = 64;
 
+// CPUID leaf 1: ECX bit 19.
+function HostSSE41: Boolean;
+asm
+  .NOFRAME
+  mov r10, rbx                       // CPUID clobbers nonvolatile RBX
+  mov eax, 1
+  cpuid
+  shr ecx, 19
+  and ecx, 1
+  mov eax, ecx
+  mov rbx, r10
+end;
+
 constructor TJitAsmWin64.Create(Size: NativeInt; Sealable: Boolean);
 const
   Phys: array[TJitReg] of Byte = (rBX, rSI, rDI, r12, r13, r14, rAX, rCX, rDX, r8, r9, r10, r11, rAX);
 begin
+  FBlend := HostSSE41;
   for var R := Low(TJitReg) to High(TJitReg) do
     FPhys[R] := Phys[R];
   FArgs[0] := rCX;
@@ -1767,6 +1949,7 @@ end;
 
 procedure TJitAsmWin64.Enter;
 begin
+  FillChar(FVectorMaskAt, SizeOf(FVectorMaskAt), 0);
   Emit([$53]);                // push rbx
   Emit([$56]);                // push rsi
   Emit([$41, $54]);           // push r12
@@ -1791,6 +1974,165 @@ begin
   Emit([$C3]);                // ret
 end;
 
+function TJitAsmWin64.HasVectors: Boolean;
+begin
+  Result := True;
+end;
+
+procedure TJitAsmWin64.VectorRIP(const Opcode: array of Byte; Reg: Integer; At: NativeInt);
+begin
+  Emit(Opcode);
+  Emit([$05 or (Reg shl 3)]);
+  D(Cardinal(At - (Offset + 4)));
+end;
+
+procedure TJitAsmWin64.VectorLoad(Dst: TJitVector; const Src: TJitOp);
+begin
+  if Src.Kind <> okMem then raise EInvalidOpException.Create('JIT: vector load needs memory');
+  Emit([$F3]);
+  ModRM(False, [$0F, $6F], Ord(Dst), False, X(Src), False);
+end;
+
+procedure TJitAsmWin64.VectorStore(const Dst: TJitOp; Src: TJitVector; Mask: Byte);
+begin
+  if Dst.Kind <> okMem then raise EInvalidOpException.Create('JIT: vector store needs memory');
+  Mask := Mask and 15;
+  if Mask = 0 then Exit;
+  var Reg := Ord(Src);
+  if (Mask <> 15) and FBlend then
+  begin
+    Emit([$F3]);
+    ModRM(False, [$0F, $6F], 4, False, X(Dst), False);    // movdqu xmm4, old destination
+    Emit([$66]);
+    ModRM(False, [$0F, $3A, $0C], 4, False, X64Reg(Reg), False); // blendps xmm4, src, mask
+    Emit([Mask]);
+    Reg := 4;
+  end
+  else if Mask <> 15 then
+  begin
+    if FVectorMaskAt[Mask] = 0 then
+    begin
+      // Frame-local immutable literals need no scratch integer register.
+      // They are skipped in execution and forgotten by every new Enter.
+      var Skip := EmitJump;
+      Align(16);
+      FVectorMaskAt[Mask] := Offset;
+      for var K := 0 to 3 do
+        if Mask and (1 shl K) <> 0 then D($FFFFFFFF) else D(0);
+      PatchJump(Skip, Offset);
+    end;
+    Emit([$F3]);
+    ModRM(False, [$0F, $6F], 4, False, X(Dst), False); // old destination
+    VectorRIP([$F3, $0F, $6F], 5, FVectorMaskAt[Mask]);
+    Emit([$66, $0F, $DF, $EC]);                      // pandn xmm5,xmm4
+    Emit([$66]);
+    ModRM(False, [$0F, $6F], 4, False, X64Reg(Ord(Src)), False);
+    VectorRIP([$66, $0F, $DB], 4, FVectorMaskAt[Mask]);
+    Emit([$66, $0F, $EB, $E5]);                      // por xmm4,xmm5
+    Reg := 4;
+  end;
+  Emit([$F3]);
+  ModRM(False, [$0F, $7F], Reg, False, X(Dst), False);
+end;
+
+procedure TJitAsmWin64.VectorBroadcast(Dst: TJitVector; const Src: TJitOp);
+begin
+  if not (Src.Kind in [okReg, okMem]) then raise EInvalidOpException.Create('JIT: vector broadcast needs a scalar');
+  Emit([$66]);
+  ModRM(False, [$0F, $6E], Ord(Dst), False, X(Src), False);
+  VectorShuffle(Dst, Dst, 0);
+end;
+
+procedure TJitAsmWin64.VectorShuffle(Dst, Src: TJitVector; Pattern: Byte);
+begin
+  Emit([$66]);
+  ModRM(False, [$0F, $70], Ord(Dst), False, X64Reg(Ord(Src)), False);
+  Emit([Pattern]);
+end;
+
+procedure TJitAsmWin64.VectorAlu(Op: TJitVectorAlu; Dst, Src: TJitVector);
+const
+  Codes: array[TJitVectorAlu] of Byte = ($DB, $EB, $EF);
+begin
+  Emit([$66]);
+  ModRM(False, [$0F, Codes[Op]], Ord(Dst), False, X64Reg(Ord(Src)), False);
+end;
+
+procedure TJitAsmWin64.VectorMask(Op: TJitVectorMask; Dst: TJitReg; Src: TJitVector);
+begin
+  var Reg := Ord(Src);
+  if Op = jvmZero then
+  begin
+    Emit([$66, $0F, $EF, $E4]);                      // pxor xmm4,xmm4
+    Emit([$66]);
+    ModRM(False, [$0F, $6F], 5, False, X64Reg(Reg), False);
+    Emit([$66, $0F, $72, $F5, 1]);                   // pslld xmm5,1 (ignore sign)
+    Emit([$66, $0F, $76, $EC]);                      // pcmpeqd xmm5,xmm4
+    Reg := 5;
+  end;
+  ModRM(False, [$0F, $50], FPhys[Dst], False, X64Reg(Reg), False);
+end;
+
+procedure TJitAsmWin64.VectorCall(NativeRoutine, ModelRoutine: Pointer; const Context: TJitOp);
+begin
+  if NativeRoutine = nil then raise EInvalidOpException.Create('JIT: no native vector routine');
+  Call(NativeRoutine, [Context]);
+end;
+
+procedure TJitAsmWin64.VectorCallAt(const NativeRoutine: TJitOp; ModelRoutine: Pointer; const Context: TJitOp);
+begin
+  CallAt(NativeRoutine, [Context]);
+end;
+
+// The kept vector registers are XMM6..XMM15, which the convention has a
+// callee keep (InvokeKeeping keeps them for its caller).
+function TJitAsmWin64.VectorKeepCount: Integer;
+begin
+  if FBlend then Result := 10 else Result := 0;
+end;
+
+procedure TJitAsmWin64.VectorKeep(Slot: Integer; Src: TJitVector);
+begin
+  ModRM(False, [$0F, $28], 6 + Slot, False, X64Reg(Ord(Src)), False); // movaps xmm(6 + slot), src
+end;
+
+procedure TJitAsmWin64.VectorTake(Dst: TJitVector; Slot: Integer);
+begin
+  ModRM(False, [$0F, $28], Ord(Dst), False, X64Reg(6 + Slot), False); // movaps dst, xmm(6 + slot)
+end;
+
+procedure TJitAsmWin64.VectorBlend(Dst, Src: TJitVector; Mask: Byte);
+begin
+  Emit([$66]);
+  ModRM(False, [$0F, $3A, $0C], Ord(Dst), False, X64Reg(Ord(Src)), False); // blendps dst, src, mask
+  Emit([Mask and 15]);
+end;
+
+function Win64InvokeKeeping(Code: Pointer; A0, A1: NativeUInt): NativeInt;
+asm
+  .PARAMS 4
+  .SAVENV XMM6
+  .SAVENV XMM7
+  .SAVENV XMM8
+  .SAVENV XMM9
+  .SAVENV XMM10
+  .SAVENV XMM11
+  .SAVENV XMM12
+  .SAVENV XMM13
+  .SAVENV XMM14
+  .SAVENV XMM15
+  mov rax, rcx
+  mov rcx, rdx
+  mov rdx, r8
+  call rax
+end;
+
+function TJitAsmWin64.InvokeKeeping(Code: Pointer; A0, A1: NativeUInt): NativeInt;
+begin
+  RequirePublishedEntry(Code);
+  Result := Win64InvokeKeeping(Code, A0, A1);
+end;
+
 {$ENDIF}
 
 {$IF JitSupported and Defined(LINUX)}
@@ -1798,7 +2140,6 @@ end;
 { Linux x64 }
 
 procedure __register_frame(Frame: Pointer); cdecl; external 'libgcc_s.so.1' name '__register_frame';
-
 procedure __deregister_frame(Frame: Pointer); cdecl; external 'libgcc_s.so.1' name '__deregister_frame';
 
 type
@@ -1828,9 +2169,9 @@ const
   // code (its start and length at offsets 32 and 40: CFA RSP + 64; RBX, RBP,
   // R12..R15 at CFA - 16 .. CFA - 56) and the terminator.
   SysVFrame: array[0..67] of Byte = (
-    20, 0, 0, 0, 0, 0, 0, 0, 1, Ord('z'), Ord('R'), 0, 1, $78, 16, 1, 0, $0C, 7, 8, $90, 1, 0, 0,
-    36, 0, 0, 0, 28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    $0E, 64, $83, 2, $86, 3, $8C, 4, $8D, 5, $8E, 6, $8F, 7, 0,
+    20, 0, 0, 0,  0, 0, 0, 0,  1, Ord('z'), Ord('R'), 0,  1, $78, 16, 1,  0,  $0C, 7, 8,  $90, 1,  0, 0,
+    36, 0, 0, 0,  28, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,  0,
+    $0E, 64,  $83, 2,  $86, 3,  $8C, 4,  $8D, 5,  $8E, 6,  $8F, 7,  0,
     0, 0, 0, 0);
 
 constructor TJitAsmSysV64.Create(Size: NativeInt);
@@ -1907,9 +2248,7 @@ end;
 // The RTL's unwinder (LLVM libunwind, linked statically: __register_frame
 // takes one FDE) and compiler-rt's __clear_cache (on every Android link).
 procedure __register_frame(FDE: Pointer); cdecl; external 'libunwind.a' name '__register_frame';
-
 procedure __deregister_frame(FDE: Pointer); cdecl; external 'libunwind.a' name '__deregister_frame';
-
 procedure __clear_cache(Start, Stop: Pointer); cdecl; external 'libunwind.a' name '__clear_cache';
 
 type
@@ -1934,18 +2273,18 @@ const
   // length at offsets 32 and 40: CFA SP + 96; x29, x30, x19..x28 at
   // CFA - 96 .. CFA - 8) and the terminator.
   A64Frame: array[0..83] of Byte = (
-    20, 0, 0, 0, 0, 0, 0, 0, 1, Ord('z'), Ord('R'), 0, 1, $78, 30, 1, 0, $0C, 31, 0, 0, 0, 0, 0,
-    52, 0, 0, 0, 28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    $0E, 96, $9D, 12, $9E, 11, $93, 10, $94, 9, $95, 8, $96, 7, $97, 6, $98, 5, $99, 4, $9A, 3,
-    $9B, 2, $9C, 1, 0, 0, 0, 0, 0,
+    20, 0, 0, 0,  0, 0, 0, 0,  1, Ord('z'), Ord('R'), 0,  1, $78, 30, 1,  0,  $0C, 31, 0,  0, 0, 0, 0,
+    52, 0, 0, 0,  28, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,  0,
+    $0E, 96,  $9D, 12,  $9E, 11,  $93, 10,  $94, 9,  $95, 8,  $96, 7,  $97, 6,  $98, 5,  $99, 4,  $9A, 3,
+    $9B, 2,  $9C, 1,  0, 0, 0, 0, 0,
     0, 0, 0, 0);
 
 function TJitAsmAndroid64.Allocate(Size: NativeInt; out CodeStart: NativeInt): PByte;
 begin
   // Read, write and execute: code is written while other code runs.
-  var near := Pointer((NativeUInt(@TJitAsmAndroid64.Allocate) + 32 shl 20) and not NativeUInt($1FFFFF));
+  var Near := Pointer((NativeUInt(@TJitAsmAndroid64.Allocate) + 32 shl 20) and not NativeUInt($1FFFFF));
   {$WARN SYMBOL_PLATFORM OFF}
-  Result := mmap(near, Size, PROT_READ or PROT_WRITE or PROT_EXEC, MAP_PRIVATE or MAP_ANONYMOUS, -1, 0);
+  Result := mmap(Near, Size, PROT_READ or PROT_WRITE or PROT_EXEC, MAP_PRIVATE or MAP_ANONYMOUS, -1, 0);
   {$WARN SYMBOL_PLATFORM ON}
   if Result = MAP_FAILED then
     RaiseLastOSError;
@@ -1992,7 +2331,8 @@ type
 
   // The operations (never $CC, Align's filler: the model skips those bytes).
   TModelCode = (mcMove = 1, mcAlu, mcShift, mcSignExtend, mcCompare, mcTest, mcJumpIf, mcJump, mcCall, mcCallAt,
-    mcEnter, mcLeave, mcEnterJump, mcJumpIndirect);
+    mcEnter, mcLeave, mcEnterJump, mcJumpIndirect, mcVectorLoad, mcVectorStore,
+    mcVectorBroadcast, mcVectorShuffle, mcVectorAlu, mcVectorMask, mcVectorCall);
 
   // One operation: its width, its TJitAlu, TJitShift or TJitCond (Sub), a
   // shift's count or a call's arguments (Count), a jump's target (Target,
@@ -2031,6 +2371,15 @@ type
     function HasS4: Boolean; override;
   public
     constructor Create(Size: NativeInt);
+    function HasVectors: Boolean; override;
+    procedure VectorLoad(Dst: TJitVector; const Src: TJitOp); override;
+    procedure VectorStore(const Dst: TJitOp; Src: TJitVector; Mask: Byte = 15); override;
+    procedure VectorBroadcast(Dst: TJitVector; const Src: TJitOp); override;
+    procedure VectorShuffle(Dst, Src: TJitVector; Pattern: Byte); override;
+    procedure VectorAlu(Op: TJitVectorAlu; Dst, Src: TJitVector); override;
+    procedure VectorMask(Op: TJitVectorMask; Dst: TJitReg; Src: TJitVector); override;
+    procedure VectorCall(NativeRoutine, ModelRoutine: Pointer; const Context: TJitOp); override;
+    procedure VectorCallAt(const NativeRoutine: TJitOp; ModelRoutine: Pointer; const Context: TJitOp); override;
     procedure Move(W: TJitWidth; const Dst, Src: TJitOp); override;
     procedure Alu(Op: TJitAlu; W: TJitWidth; const Dst, Src: TJitOp); override;
     procedure Shift(Op: TJitShift; W: TJitWidth; Dst: TJitReg; Count: Integer); override;
@@ -2104,6 +2453,73 @@ begin
   Result := True;
 end;
 
+function TJitAsmModel.HasVectors: Boolean;
+begin
+  Result := True;
+end;
+
+procedure TJitAsmModel.VectorLoad(Dst: TJitVector; const Src: TJitOp);
+begin
+  if Src.Kind <> okMem then ModelError('vector load needs memory');
+  var P := Put(mcVectorLoad, jw64);
+  P.Sub := Ord(Dst);
+  P.A := ModelOperand(Src);
+end;
+
+procedure TJitAsmModel.VectorStore(const Dst: TJitOp; Src: TJitVector; Mask: Byte);
+begin
+  if Dst.Kind <> okMem then ModelError('vector store needs memory');
+  var P := Put(mcVectorStore, jw64);
+  P.Sub := Ord(Src);
+  P.Count := Mask and 15;
+  P.A := ModelOperand(Dst);
+end;
+
+procedure TJitAsmModel.VectorBroadcast(Dst: TJitVector; const Src: TJitOp);
+begin
+  if not (Src.Kind in [okReg, okMem]) then ModelError('vector broadcast needs a scalar');
+  var P := Put(mcVectorBroadcast, jw32);
+  P.Sub := Ord(Dst);
+  P.A := ModelOperand(Src);
+end;
+
+procedure TJitAsmModel.VectorShuffle(Dst, Src: TJitVector; Pattern: Byte);
+begin
+  var P := Put(mcVectorShuffle, jw64);
+  P.Sub := Ord(Dst);
+  P.Count := Pattern;
+  P.A := ModelOperand(JImm(Ord(Src)));
+end;
+
+procedure TJitAsmModel.VectorAlu(Op: TJitVectorAlu; Dst, Src: TJitVector);
+begin
+  var P := Put(mcVectorAlu, jw64);
+  P.Sub := Ord(Op);
+  P.Count := Ord(Dst);
+  P.A := ModelOperand(JImm(Ord(Src)));
+end;
+
+procedure TJitAsmModel.VectorMask(Op: TJitVectorMask; Dst: TJitReg; Src: TJitVector);
+begin
+  var P := Put(mcVectorMask, jw32);
+  P.Sub := Ord(Op);
+  P.Count := Ord(Src);
+  P.A := ModelOperand(JReg(Dst));
+end;
+
+procedure TJitAsmModel.VectorCall(NativeRoutine, ModelRoutine: Pointer; const Context: TJitOp);
+begin
+  if ModelRoutine = nil then ModelError('no model vector routine');
+  var P := Put(mcVectorCall, jw64);
+  P.Routine := ModelRoutine;
+  P.A := ModelOperand(Context);
+end;
+
+procedure TJitAsmModel.VectorCallAt(const NativeRoutine: TJitOp; ModelRoutine: Pointer; const Context: TJitOp);
+begin
+  VectorCall(nil, ModelRoutine, Context);
+end;
+
 function TJitAsmModel.Put(Code: TModelCode; W: TJitWidth): PModelOp;
 begin
   Need(SizeOf(TModelOp));
@@ -2119,7 +2535,6 @@ procedure TJitAsmModel.Move(W: TJitWidth; const Dst, Src: TJitOp);
 begin
   if Dst.Kind = okReg then
     // (Any source; a constant fills 32 bits for 8 and 32.)
-
   else if Dst.Kind = okMem then
   begin
     if not (Src.Kind in [okReg, okImm]) then
@@ -2271,18 +2686,15 @@ end;
 function TJitAsmModel.Invoke(Code: Pointer; A0, A1, A2, A3: NativeUInt): NativeInt;
 type
   TFn0 = function: NativeUInt;
-
   TFn1 = function(A: NativeUInt): NativeUInt;
-
   TFn2 = function(A, B: NativeUInt): NativeUInt;
-
   TFn3 = function(A, B, C: NativeUInt): NativeUInt;
-
   TFn4 = function(A, B, C, D: NativeUInt): NativeUInt;
 const
   Masks: array[TJitWidth] of UInt64 = ($FF, $FFFFFFFF, UInt64($FFFFFFFFFFFFFFFF));
 var
   R: array[TJitReg] of UInt64;
+  Vectors: array[TJitVector] of TJitVectorValue;
   // The flags: none, of a comparison or of a test (FlagA the bits tested).
   FlagKind: Integer;
   FlagA, FlagB: UInt64;
@@ -2296,10 +2708,8 @@ var
   function Load(A: NativeUInt; W: TJitWidth): UInt64;
   begin
     case W of
-      jw8:
-        Result := PByte(A)^;
-      jw32:
-        Result := PCardinal(A)^;
+      jw8: Result := PByte(A)^;
+      jw32: Result := PCardinal(A)^;
     else
       Result := PUInt64(A)^;
     end;
@@ -2308,10 +2718,8 @@ var
   procedure Store(A: NativeUInt; W: TJitWidth; V: UInt64);
   begin
     case W of
-      jw8:
-        PByte(A)^ := Byte(V);
-      jw32:
-        PCardinal(A)^ := Cardinal(V);
+      jw8: PByte(A)^ := Byte(V);
+      jw32: PCardinal(A)^ := Cardinal(V);
     else
       PUInt64(A)^ := V;
     end;
@@ -2321,12 +2729,9 @@ var
   begin
     // A source operand, W bits of it (registers whole: the callers mask).
     case TJitOpKind(O.Kind) of
-      okReg:
-        Result := R[TJitReg(O.Reg)];
-      okImm:
-        Result := UInt64(O.Imm);
-      okMem:
-        Result := Load(Address(O), W);
+      okReg: Result := R[TJitReg(O.Reg)];
+      okImm: Result := UInt64(O.Imm);
+      okMem: Result := Load(Address(O), W);
     else
       Result := Address(O);
     end;
@@ -2335,10 +2740,8 @@ var
   function Signed(V: UInt64; W: TJitWidth): Int64;
   begin
     case W of
-      jw8:
-        Result := ShortInt(Byte(V));
-      jw32:
-        Result := Integer(Cardinal(V));
+      jw8: Result := ShortInt(Byte(V));
+      jw32: Result := Integer(Cardinal(V));
     else
       Result := Int64(V);
     end;
@@ -2347,13 +2750,15 @@ var
   function ToOffset(A: UInt64): NativeInt;
   begin
     Result := NativeInt(A) - NativeInt(Base);
-    if (Result < FCodeStart) or (Result >= FUsed) then
+    if (Result < FCodeStart)
+      or ((Result >= FUsed) and ((FAuxStart = 0) or (Result < FAuxStart) or (Result >= FAuxUsed))) then
       raise EInvalidOpException.Create('JIT model: a jump out of the code');
   end;
 
 begin
   for var X := Low(TJitReg) to High(TJitReg) do
     R[X] := ModelPoison;
+  FillChar(Vectors, SizeOf(Vectors), $BD);
   FlagKind := 0;
   FlagA := 0;
   FlagB := 0;
@@ -2375,15 +2780,13 @@ begin
         begin
           var V: UInt64;
           case TJitOpKind(P.B.Kind) of
-            okReg:
-              V := R[TJitReg(P.B.Reg)] and Masks[W];
+            okReg: V := R[TJitReg(P.B.Reg)] and Masks[W];
             okImm:
               if W = jw64 then
                 V := UInt64(P.B.Imm)
               else
                 V := UInt64(P.B.Imm) and $FFFFFFFF;
-            okMem:
-              V := Load(Address(P.B), W);
+            okMem: V := Load(Address(P.B), W);
           else
             V := Address(P.B);
           end;
@@ -2392,160 +2795,205 @@ begin
         else
           Store(Address(P.A), W, Value(P.B, W));
       mcAlu:
-        begin
-          var Dst := Value(P.A, W) and Masks[W];
-          var Src := Value(P.B, W) and Masks[W];
-          case TJitAlu(P.Sub) of
-            jaAdd:
-              Dst := Dst + Src;
-            jaSub:
-              Dst := Dst - Src;
-            jaAnd:
-              Dst := Dst and Src;
-            jaOr:
-              Dst := Dst or Src;
-          else
-            Dst := Dst xor Src;
-          end;
-          Dst := Dst and Masks[W];
-          if TJitOpKind(P.A.Kind) = okReg then
-            R[TJitReg(P.A.Reg)] := Dst
-          else
-            Store(Address(P.A), W, Dst);
-          FlagKind := 0;
+      begin
+        var Dst := Value(P.A, W) and Masks[W];
+        var Src := Value(P.B, W) and Masks[W];
+        case TJitAlu(P.Sub) of
+          jaAdd: Dst := Dst + Src;
+          jaSub: Dst := Dst - Src;
+          jaAnd: Dst := Dst and Src;
+          jaOr: Dst := Dst or Src;
+        else
+          Dst := Dst xor Src;
         end;
+        Dst := Dst and Masks[W];
+        if TJitOpKind(P.A.Kind) = okReg then
+          R[TJitReg(P.A.Reg)] := Dst
+        else
+          Store(Address(P.A), W, Dst);
+        FlagKind := 0;
+      end;
       mcShift:
-        begin
-          var X := TJitReg(P.A.Reg);
-          var C := P.Count;
-          if W = jw64 then
-            case TJitShift(P.Sub) of
-              jsShl:
-                R[X] := R[X] shl C;
-              jsShr:
-                R[X] := R[X] shr C;
-            else
-              if Int64(R[X]) < 0 then
-                R[X] := not ((not R[X]) shr C)
-              else
-                R[X] := R[X] shr C;
-            end
+      begin
+        var X := TJitReg(P.A.Reg);
+        var C := P.Count;
+        if W = jw64 then
+          case TJitShift(P.Sub) of
+            jsShl: R[X] := R[X] shl C;
+            jsShr: R[X] := R[X] shr C;
           else
-          begin
-            var V := Cardinal(R[X]);
-            case TJitShift(P.Sub) of
-              jsShl:
-                V := V shl C;
-              jsShr:
-                V := V shr C;
+            if Int64(R[X]) < 0 then
+              R[X] := not ((not R[X]) shr C)
             else
-              if Integer(V) < 0 then
-                V := not ((not V) shr C)
-              else
-                V := V shr C;
-            end;
-            R[X] := V;
+              R[X] := R[X] shr C;
+          end
+        else
+        begin
+          var V := Cardinal(R[X]);
+          case TJitShift(P.Sub) of
+            jsShl: V := V shl C;
+            jsShr: V := V shr C;
+          else
+            if Integer(V) < 0 then
+              V := not ((not V) shr C)
+            else
+              V := V shr C;
           end;
-          FlagKind := 0;
+          R[X] := V;
         end;
+        FlagKind := 0;
+      end;
       mcSignExtend:
-        begin
-          var X := TJitReg(P.A.Reg);
-          R[X] := UInt64(Signed(R[X], W));
-        end;
+      begin
+        var X := TJitReg(P.A.Reg);
+        R[X] := UInt64(Signed(R[X], W));
+      end;
       mcCompare:
-        begin
-          FlagA := Value(P.A, W) and Masks[W];
-          FlagB := Value(P.B, W) and Masks[W];
-          FlagW := W;
-          FlagKind := 1;
-        end;
+      begin
+        FlagA := Value(P.A, W) and Masks[W];
+        FlagB := Value(P.B, W) and Masks[W];
+        FlagW := W;
+        FlagKind := 1;
+      end;
       mcTest:
-        begin
-          FlagA := Value(P.A, W) and Value(P.B, W) and Masks[W];
-          FlagKind := 2;
-        end;
+      begin
+        FlagA := Value(P.A, W) and Value(P.B, W) and Masks[W];
+        FlagKind := 2;
+      end;
       mcJumpIf:
+      begin
+        if FlagKind = 0 then
+          raise EInvalidOpException.Create('JIT model: a jump on flags an operation or a call changed');
+        var Taken: Boolean;
+        if FlagKind = 2 then
+          Taken := (FlagA = 0) = (TJitCond(P.Sub) = jcEq)
+        else
         begin
-          if FlagKind = 0 then
-            raise EInvalidOpException.Create('JIT model: a jump on flags an operation or a call changed');
-          var Taken: Boolean;
-          if FlagKind = 2 then
-            Taken := (FlagA = 0) = (TJitCond(P.Sub) = jcEq)
+          var SA := Signed(FlagA, FlagW);
+          var SB := Signed(FlagB, FlagW);
+          case TJitCond(P.Sub) of
+            jcEq: Taken := FlagA = FlagB;
+            jcNe: Taken := FlagA <> FlagB;
+            jcLt: Taken := SA < SB;
+            jcLe: Taken := SA <= SB;
+            jcGt: Taken := SA > SB;
+            jcGe: Taken := SA >= SB;
+            jcBelow: Taken := FlagA < FlagB;
+            jcBelowEq: Taken := FlagA <= FlagB;
+            jcAbove: Taken := FlagA > FlagB;
           else
-          begin
-            var SA := Signed(FlagA, FlagW);
-            var SB := Signed(FlagB, FlagW);
-            case TJitCond(P.Sub) of
-              jcEq:
-                Taken := FlagA = FlagB;
-              jcNe:
-                Taken := FlagA <> FlagB;
-              jcLt:
-                Taken := SA < SB;
-              jcLe:
-                Taken := SA <= SB;
-              jcGt:
-                Taken := SA > SB;
-              jcGe:
-                Taken := SA >= SB;
-              jcBelow:
-                Taken := FlagA < FlagB;
-              jcBelowEq:
-                Taken := FlagA <= FlagB;
-              jcAbove:
-                Taken := FlagA > FlagB;
-            else
-              Taken := FlagA >= FlagB;
-            end;
+            Taken := FlagA >= FlagB;
           end;
-          if Taken then
-            Next := P.Target;
         end;
-      mcJump:
-        Next := P.Target;
+        if Taken then
+          Next := P.Target;
+      end;
+      mcJump: Next := P.Target;
       mcCall, mcCallAt:
-        begin
-          var Routine: Pointer;
-          if TModelCode(P.Code) = mcCall then
-            Routine := P.Routine
-          else
-            Routine := Pointer(NativeUInt(Value(P.A, jw64)));
-          var Args: array[0..3] of NativeUInt;
-          for var K := 0 to P.Count - 1 do
-            Args[K] := NativeUInt(Value(P.Args[K], jw64));
-          var Res: NativeUInt;
-          case P.Count of
-            0:
-              Res := TFn0(Routine)();
-            1:
-              Res := TFn1(Routine)(Args[0]);
-            2:
-              Res := TFn2(Routine)(Args[0], Args[1]);
-            3:
-              Res := TFn3(Routine)(Args[0], Args[1], Args[2]);
-          else
-            Res := TFn4(Routine)(Args[0], Args[1], Args[2], Args[3]);
-          end;
-          for var X := jrT1 to jrT6 do
-            R[X] := ModelPoison;
-          R[jrT0] := Res;
-          FlagKind := 0;
+      begin
+        var Routine: Pointer;
+        if TModelCode(P.Code) = mcCall then
+          Routine := P.Routine
+        else
+          Routine := Pointer(NativeUInt(Value(P.A, jw64)));
+        var Args: array[0..3] of NativeUInt;
+        for var K := 0 to P.Count - 1 do
+          Args[K] := NativeUInt(Value(P.Args[K], jw64));
+        var Res: NativeUInt;
+        case P.Count of
+          0: Res := TFn0(Routine)();
+          1: Res := TFn1(Routine)(Args[0]);
+          2: Res := TFn2(Routine)(Args[0], Args[1]);
+          3: Res := TFn3(Routine)(Args[0], Args[1], Args[2]);
+        else
+          Res := TFn4(Routine)(Args[0], Args[1], Args[2], Args[3]);
         end;
+        for var X := jrT1 to jrT6 do
+          R[X] := ModelPoison;
+        R[jrT0] := Res;
+        FillChar(Vectors, SizeOf(Vectors), $BD);
+        FlagKind := 0;
+      end;
+      mcVectorLoad:
+      begin
+        System.Move(Pointer(Address(P.A))^, Vectors[TJitVector(P.Sub)], SizeOf(TJitVectorValue));
+        FlagKind := 0;
+      end;
+      mcVectorStore:
+      begin
+        for var K := 0 to 3 do
+          if P.Count and (1 shl K) <> 0 then
+            PCardinal(Address(P.A) + NativeUInt(K * 4))^ := Vectors[TJitVector(P.Sub)].Lane[K];
+        FlagKind := 0;
+      end;
+      mcVectorBroadcast:
+      begin
+        var Scalar := Cardinal(Value(P.A, jw32));
+        for var K := 0 to 3 do
+          Vectors[TJitVector(P.Sub)].Lane[K] := Scalar;
+        FlagKind := 0;
+      end;
+      mcVectorShuffle:
+      begin
+        var Old := Vectors[TJitVector(P.A.Imm)];
+        for var K := 0 to 3 do
+          Vectors[TJitVector(P.Sub)].Lane[K] := Old.Lane[(P.Count shr (K * 2)) and 3];
+        FlagKind := 0;
+      end;
+      mcVectorAlu:
+      begin
+        for var K := 0 to 3 do
+        begin
+          var Other := Vectors[TJitVector(P.A.Imm)].Lane[K];
+          case TJitVectorAlu(P.Sub) of
+            jvaAnd: Vectors[TJitVector(P.Count)].Lane[K] := Vectors[TJitVector(P.Count)].Lane[K] and Other;
+            jvaOr: Vectors[TJitVector(P.Count)].Lane[K] := Vectors[TJitVector(P.Count)].Lane[K] or Other;
+            jvaXor: Vectors[TJitVector(P.Count)].Lane[K] := Vectors[TJitVector(P.Count)].Lane[K] xor Other;
+          end;
+        end;
+        FlagKind := 0;
+      end;
+      mcVectorMask:
+      begin
+        var Mask: Cardinal := 0;
+        for var K := 0 to 3 do
+        begin
+          var Lane := Vectors[TJitVector(P.Count)].Lane[K];
+          if ((TJitVectorMask(P.Sub) = jvmSign) and (Lane shr 31 <> 0))
+            or ((TJitVectorMask(P.Sub) = jvmZero) and (Lane and $7FFFFFFF = 0)) then
+            Mask := Mask or (Cardinal(1) shl K);
+        end;
+        R[TJitReg(P.A.Reg)] := Mask;
+        FlagKind := 0;
+      end;
+      mcVectorCall:
+      begin
+        var ResultVector: TJitVectorValue;
+        FillChar(ResultVector, SizeOf(ResultVector), $BD);
+        var Res :=
+          TFn4(P.Routine)(NativeUInt(@Vectors[jv0]),
+          NativeUInt(@Vectors[jv1]),
+          NativeUInt(Value(P.A, jw64)),
+          NativeUInt(@ResultVector));
+        FillChar(Vectors, SizeOf(Vectors), $BD);
+        Vectors[jv0] := ResultVector;
+        for var X := jrT1 to jrT6 do
+          R[X] := ModelPoison;
+        R[jrT0] := Res;
+        FlagKind := 0;
+      end;
       mcEnter, mcEnterJump:
+      begin
+        R[jrSelf] := A0;
+        R[jrCtx] := A1;
+        if TModelCode(P.Code) = mcEnterJump then
         begin
-          R[jrSelf] := A0;
-          R[jrCtx] := A1;
-          if TModelCode(P.Code) = mcEnterJump then
-          begin
-            R[jrT1] := A3;
-            Next := ToOffset(A2);
-          end;
+          R[jrT1] := A3;
+          Next := ToOffset(A2);
         end;
-      mcLeave:
-        Exit(NativeInt(Value(P.A, jw64)));
-      mcJumpIndirect:
-        Next := ToOffset(Value(P.A, jw64));
+      end;
+      mcLeave: Exit(NativeInt(Value(P.A, jw64)));
+      mcJumpIndirect: Next := ToOffset(Value(P.A, jw64));
     else
       raise EInvalidOpException.Create('JIT model: no operation here');
     end;
@@ -2611,4 +3059,3 @@ begin
 end;
 
 end.
-

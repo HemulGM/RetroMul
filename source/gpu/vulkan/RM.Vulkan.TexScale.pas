@@ -40,10 +40,23 @@ procedure ScaleTexture(Src: PCardinal; W, H, Factor: Integer; Dst: PCardinal; Fi
 function TexScaleFilterName(Filter: TTexScaleFilter): string;
 function TexScaleFilterFromName(const Name: string): TTexScaleFilter;
 
+{$IF DEFINED(MSWINDOWS) AND DEFINED(CPUX64)}
+const
+  CachedHybrid = True;
+{$ELSE}
+const
+  CachedHybrid = False;
+{$ENDIF}
+
+procedure MakeHybridPalette(Palette: PCardinal; Count: Integer; Words: PCardinal);
+
 implementation
 
 uses
-  System.SysUtils, System.Math, System.Classes, System.Threading;
+  System.SysUtils,
+  System.Math,
+  System.Classes,
+  System.Threading;
 
 const
   FilterNames: array[TTexScaleFilter] of string = ('xbrz', 'hybrid', 'bicubic');
@@ -234,6 +247,12 @@ end;
 type
   // One texture being scaled: the texels with two of border on every side
   // (repeating the edges), the corners' types from each 2x2 of texels.
+  TFilterColumn = record
+    NextRow: Integer;
+    // Two adjacent copies of the same cyclic five-row window.
+    Samples: array[0..9, 0..1] of TPremultiplied;
+  end;
+
   TTextureScaler = class
     W, H, PW, Factor: Integer;
     Filter: TTexScaleFilter;
@@ -248,6 +267,7 @@ type
     constructor Create(Src: PCardinal; AW, AH, AFactor: Integer; ADst: PCardinal; AFilter: TTexScaleFilter);
     procedure FindCorners(Y1, Y2: Integer);
     function OnEdge(E: Integer): Boolean;
+    procedure DrawCached2(E, Y: Integer; Block: PCardinal; DW: Integer; var Column: TFilterColumn);
     procedure DrawBicubic(E: Integer; Block: PCardinal; DW: Integer);
     procedure DrawRows(Y1, Y2: Integer);
   end;
@@ -333,24 +353,109 @@ begin
     var R0 := TY.Offset + 2;
     for var OX := 0 to Factor - 1 do
     begin
-      var R := TY.W[0] * Rows[R0, OX].R + TY.W[1] * Rows[R0 + 1, OX].R + TY.W[2] * Rows[R0 + 2, OX].R +
-        TY.W[3] * Rows[R0 + 3, OX].R;
-      var G := TY.W[0] * Rows[R0, OX].G + TY.W[1] * Rows[R0 + 1, OX].G + TY.W[2] * Rows[R0 + 2, OX].G +
-        TY.W[3] * Rows[R0 + 3, OX].G;
-      var B := TY.W[0] * Rows[R0, OX].B + TY.W[1] * Rows[R0 + 1, OX].B + TY.W[2] * Rows[R0 + 2, OX].B +
-        TY.W[3] * Rows[R0 + 3, OX].B;
-      var A := TY.W[0] * Rows[R0, OX].A + TY.W[1] * Rows[R0 + 1, OX].A + TY.W[2] * Rows[R0 + 2, OX].A +
-        TY.W[3] * Rows[R0 + 3, OX].A;
+      var R :=
+        TY.W[0] * Rows[R0, OX].R
+          + TY.W[1] * Rows[R0 + 1, OX].R
+          + TY.W[2] * Rows[R0 + 2, OX].R
+          + TY.W[3] * Rows[R0 + 3, OX].R;
+      var G :=
+        TY.W[0] * Rows[R0, OX].G
+          + TY.W[1] * Rows[R0 + 1, OX].G
+          + TY.W[2] * Rows[R0 + 2, OX].G
+          + TY.W[3] * Rows[R0 + 3, OX].G;
+      var B :=
+        TY.W[0] * Rows[R0, OX].B
+          + TY.W[1] * Rows[R0 + 1, OX].B
+          + TY.W[2] * Rows[R0 + 2, OX].B
+          + TY.W[3] * Rows[R0 + 3, OX].B;
+      var A :=
+        TY.W[0] * Rows[R0, OX].A
+          + TY.W[1] * Rows[R0 + 1, OX].A
+          + TY.W[2] * Rows[R0 + 2, OX].A
+          + TY.W[3] * Rows[R0 + 3, OX].A;
       if A >= 0.5 then
       begin
         var S := 255 / A;
-        Block[OY * DW + OX] := Channel(R * S) or (Channel(G * S) shl 8) or (Channel(B * S) shl 16) or
-          (Channel(A) shl 24);
+        Block[OY * DW + OX] :=
+          Channel(R * S) or (Channel(G * S) shl 8) or (Channel(B * S) shl 16) or (Channel(A) shl 24);
       end
       else
         Block[OY * DW + OX] := Colours[E] and $FFFFFF;
     end;
   end;
+end;
+
+{$IF DEFINED(MSWINDOWS) AND DEFINED(CPUX64)}
+// Four independent Single channels in the original multiply/add order.
+procedure WeightedChannels(Dest, Src: PPremultiplied; Weights: PSingle; Stride: NativeInt);
+asm
+  .NOFRAME
+  movss xmm0,[r8]
+  shufps xmm0,xmm0,0
+  movups xmm1,[rdx]
+  mulps xmm0,xmm1
+  add rdx,r9
+  movss xmm1,[r8+4]
+  shufps xmm1,xmm1,0
+  movups xmm2,[rdx]
+  mulps xmm1,xmm2
+  addps xmm0,xmm1
+  add rdx,r9
+  movss xmm1,[r8+8]
+  shufps xmm1,xmm1,0
+  movups xmm2,[rdx]
+  mulps xmm1,xmm2
+  addps xmm0,xmm1
+  add rdx,r9
+  movss xmm1,[r8+12]
+  shufps xmm1,xmm1,0
+  movups xmm2,[rdx]
+  mulps xmm1,xmm2
+  addps xmm0,xmm1
+  movups [rcx],xmm0
+end;
+{$ENDIF}
+
+procedure TTextureScaler.DrawCached2(E, Y: Integer; Block: PCardinal; DW: Integer; var Column: TFilterColumn);
+begin
+{$IF DEFINED(MSWINDOWS) AND DEFINED(CPUX64)}
+  for var Row := Max(Y, Column.NextRow) to Y + 4 do
+  begin
+    var Id := Row mod 5;
+    for var X := 0 to 1 do
+    begin
+      var T: PBicubicTap := @BicubicTaps[2, X];
+      var P: PPremultiplied := @Premultiplied[E + (Row - Y - 2) * PW + T.Offset];
+      WeightedChannels(@Column.Samples[Id, X], P, @T.W[0], SizeOf(TPremultiplied));
+    end;
+    Column.Samples[Id + 5] := Column.Samples[Id];
+  end;
+  Column.NextRow := Y + 5;
+  for var OY := 0 to 1 do
+  begin
+    var T: PBicubicTap := @BicubicTaps[2, OY];
+    var R0 := Y mod 5 + T.Offset + 2;
+    for var OX := 0 to 1 do
+    begin
+      var C: TPremultiplied;
+      WeightedChannels(@C, @Column.Samples[R0, OX], @T.W[0], 2 * SizeOf(TPremultiplied));
+      var A: Double := C.A;
+      if A >= 0.5 then
+      begin
+        var S: Double := 255 / A;
+        Block[OY * DW + OX] :=
+          Channel(Double(C.R) * S)
+            or (Channel(Double(C.G) * S) shl 8)
+            or (Channel(Double(C.B) * S) shl 16)
+            or (Channel(C.A) shl 24);
+      end
+      else
+        Block[OY * DW + OX] := Colours[E] and $FFFFFF;
+    end;
+  end;
+{$ELSE}
+  DrawBicubic(E, Block, DW);
+{$ENDIF}
 end;
 
 // The 2x2s with top rows Y1..Y2 (from -1), of texels F G / J K in the 4x4
@@ -409,6 +514,9 @@ procedure TTextureScaler.DrawRows(Y1, Y2: Integer);
 begin
   var DW := W * Factor;
   var BW := W + 1;
+  var Columns: TArray<TFilterColumn>;
+  if CachedHybrid and (Factor = 2) and (Filter <> tfXBRZ) and (W * H >= 256) then
+    SetLength(Columns, W);
   for var Y := Y1 to Y2 do
     for var X := 0 to W - 1 do
     begin
@@ -416,7 +524,10 @@ begin
       var Block := Dst + Y * Factor * DW + X * Factor;
       if (Filter = tfBicubic) or ((Filter = tfHybrid) and not OnEdge(E)) then
       begin
-        DrawBicubic(E, Block, DW);
+        if Length(Columns) > 0 then
+          DrawCached2(E, Y, Block, DW, Columns[X])
+        else
+          DrawBicubic(E, Block, DW);
         Continue;
       end;
       var C := Colours[E];
@@ -424,8 +535,11 @@ begin
         for var I := 0 to Factor - 1 do
           Block[J * DW + I] := C;
       // Its corners (TL, TR, BL, BR from bit 0) from the 2x2s around it.
-      var Types := ((Blocks[Y * BW + X] shr 2) and 3) or (((Blocks[Y * BW + X + 1] shr 4) and 3) shl 2) or
-        (((Blocks[(Y + 1) * BW + X] shr 6) and 3) shl 4) or ((Blocks[(Y + 1) * BW + X + 1] and 3) shl 6);
+      var Types :=
+        ((Blocks[Y * BW + X] shr 2) and 3)
+          or (((Blocks[Y * BW + X + 1] shr 4) and 3) shl 2)
+          or (((Blocks[(Y + 1) * BW + X] shr 6) and 3) shl 4)
+          or ((Blocks[(Y + 1) * BW + X + 1] and 3) shl 6);
       if Types = 0 then
         Continue;
       for var R := 0 to 3 do
@@ -453,11 +567,14 @@ begin
         else if (TopRight <> CornerNone) and (Distance(Texels[E], Texels[EG]) >= EqualDistance) then
           Line := False
         else if (BottomLeft <> CornerNone) and (Distance(Texels[E], Texels[EC]) >= EqualDistance) then
-          Line := False
+          Line :=
+            False
               // An L of one colour around the corner: only the corner is rounded.
-        else if (Distance(Texels[E], Texels[EI]) >= EqualDistance) and (Distance(Texels[EG], Texels[EH]) <
-          EqualDistance) and (Distance(Texels[EH], Texels[EI]) < EqualDistance) and (Distance(Texels[EI], Texels[EF]) <
-          EqualDistance) and (Distance(Texels[EF], Texels[EC]) < EqualDistance) then
+        else if (Distance(Texels[E], Texels[EI]) >= EqualDistance)
+          and (Distance(Texels[EG], Texels[EH]) < EqualDistance)
+          and (Distance(Texels[EH], Texels[EI]) < EqualDistance)
+          and (Distance(Texels[EI], Texels[EF]) < EqualDistance)
+          and (Distance(Texels[EF], Texels[EC]) < EqualDistance) then
           Line := False
         else
           Line := True;
@@ -500,7 +617,152 @@ begin
     end;
 end;
 
-procedure ScaleTexture(Src: PCardinal; W, H, Factor: Integer; Dst: PCardinal; Filter: TTexScaleFilter);
+{$IF DEFINED(MSWINDOWS) AND DEFINED(CPUX64)}
+function EnterFilter: Cardinal;
+asm
+  .NOFRAME
+  stmxcsr [rsp+8]
+  mov eax, [rsp+8]
+  mov dword ptr [rsp+8], $1F80
+  ldmxcsr [rsp+8]
+end;
+
+procedure LeaveFilter(Word: Cardinal);
+asm
+  .NOFRAME
+  mov [rsp+8],ecx
+  ldmxcsr [rsp+8]
+end;
+{$ELSE}
+function EnterFilter: Cardinal;
+begin
+  Result := Ord(SetRoundMode(rmNearest));
+end;
+
+procedure LeaveFilter(Word: Cardinal);
+begin
+  SetRoundMode(TRoundingMode(Word));
+end;
+{$ENDIF}
+
+{$IF DEFINED(MSWINDOWS) AND DEFINED(CPUX64)}
+type
+  THybridAxes = array[0..3, 0..255] of Single;
+
+// Each packed lane is an independent Distance evaluation: round the
+// coordinate and alpha differences as Singles, and sum/sqrt in Double.
+// Never fuse the multiplication with an addition, including alpha.
+procedure MetricRow(Dest: PCardinal; Centre, Other: PSingle; Count: Integer);
+asm
+  .NOFRAME
+  mov eax, $437F0000                    // 255.0 as binary32
+  movd xmm4, eax
+  shufps xmm4, xmm4, 0
+@@Pair:
+  movss xmm0, [rdx]
+  shufps xmm0, xmm0, 0
+  movq xmm1, [r8]
+  subps xmm0, xmm1
+  cvtps2pd xmm0, xmm0
+  mulpd xmm0, xmm0
+  movss xmm1, [rdx + 1024]
+  shufps xmm1, xmm1, 0
+  movq xmm2, [r8 + 1024]
+  subps xmm1, xmm2
+  cvtps2pd xmm1, xmm1
+  mulpd xmm1, xmm1
+  addpd xmm0, xmm1
+  movss xmm1, [rdx + 2048]
+  shufps xmm1, xmm1, 0
+  movq xmm2, [r8 + 2048]
+  subps xmm1, xmm2
+  cvtps2pd xmm1, xmm1
+  mulpd xmm1, xmm1
+  addpd xmm0, xmm1
+  sqrtpd xmm0, xmm0
+  movss xmm2, [rdx + 3072]
+  shufps xmm2, xmm2, 0
+  movq xmm1, [r8 + 3072]
+  movaps xmm3, xmm2
+  minps xmm3, xmm1
+  maxps xmm2, xmm1
+  subps xmm2, xmm3
+  mulps xmm2, xmm4
+  cvtps2pd xmm3, xmm3
+  mulpd xmm0, xmm3
+  cvtps2pd xmm2, xmm2
+  addpd xmm0, xmm2
+  cvtpd2ps xmm0, xmm0
+  movq [rcx], xmm0
+  add rcx, 8
+  add r8, 8
+  sub r9d, 2
+  jnz @@Pair
+end;
+{$ENDIF}
+
+procedure MakeHybridPalette(Palette: PCardinal; Count: Integer; Words: PCardinal);
+var
+  Colours: array[0..255] of TTexelColour;
+{$IF DEFINED(MSWINDOWS) AND DEFINED(CPUX64)}
+  Axes: THybridAxes;
+{$ENDIF}
+begin
+  if (Count < 1) or (Count > Length(Colours)) then
+    raise EArgumentOutOfRangeException.Create('Invalid Hybrid palette size');
+  var Saved := EnterFilter;
+  try
+    for var I := 0 to Count - 1 do
+    begin
+      var C := Palette[I];
+      Words[I] := C;
+      Colours[I] := ColourOf(C);
+      var A: Single := C shr 24;
+      var Fraction: Single := A / 255;
+      var S: Double := Fraction;
+      var P: TPremultiplied;
+      P.R := (C and $FF) * S;
+      P.G := ((C shr 8) and $FF) * S;
+      P.B := ((C shr 16) and $FF) * S;
+      P.A := A;
+      Move(P, Words[Count + I * 4], SizeOf(P));
+    end;
+    var Off := 5 * Count;
+{$IF DEFINED(MSWINDOWS) AND DEFINED(CPUX64)}
+    if (Count = 256) then
+    begin
+      for var I := 0 to Count - 1 do
+      begin
+        Axes[0, I] := Colours[I].Y;
+        Axes[1, I] := Colours[I].Cb;
+        Axes[2, I] := Colours[I].Cr;
+        Axes[3, I] := Colours[I].A;
+      end;
+      for var I := 0 to Count - 1 do
+        MetricRow(@Words[Off + Count * I], @Axes[0, I], @Axes[0, 0], Count);
+      Inc(Off, Count * Count);
+    end
+    else
+{$ENDIF}
+      for var I := 0 to Count - 1 do
+        for var J := 0 to Count - 1 do
+        begin
+          var V: Single := Distance(Colours[I], Colours[J]);
+          Move(V, Words[Off], SizeOf(V));
+          Inc(Off);
+        end;
+    for var Shape := Low(TBlendShape) to High(TBlendShape) do
+      for var I := 0 to 3 do
+      begin
+        Words[Off] := Coverage[2, Shape, I];
+        Inc(Off);
+      end;
+  finally
+    LeaveFilter(Saved);
+  end;
+end;
+
+procedure ScaleTextureInner(Src: PCardinal; W, H, Factor: Integer; Dst: PCardinal; Filter: TTexScaleFilter);
 begin
   var S := TTextureScaler.Create(Src, W, H, EnsureRange(Factor, 2, TexScaleMax), Dst, Filter);
   try
@@ -517,18 +779,44 @@ begin
       Exit;
     end;
     if Filter <> tfBicubic then
-      TParallel.For(0, Bands - 1,
+      TParallel.For(
+        0,
+        Bands - 1,
         procedure(Band: Integer)
         begin
-          S.FindCorners(-1 + (H + 1) * Band div Bands, -1 + (H + 1) * (Band + 1) div Bands - 1);
-        end);
-    TParallel.For(0, Bands - 1,
+          var Saved := EnterFilter;
+          try
+            S.FindCorners(-1 + (H + 1) * Band div Bands, -1 + (H + 1) * (Band + 1) div Bands - 1);
+          finally
+            LeaveFilter(Saved);
+          end;
+        end
+      );
+    TParallel.For(
+      0,
+      Bands - 1,
       procedure(Band: Integer)
       begin
-        S.DrawRows(H * Band div Bands, H * (Band + 1) div Bands - 1);
-      end);
+        var Saved := EnterFilter;
+        try
+          S.DrawRows(H * Band div Bands, H * (Band + 1) div Bands - 1);
+        finally
+          LeaveFilter(Saved);
+        end;
+      end
+    );
   finally
     S.Free;
+  end;
+end;
+
+procedure ScaleTexture(Src: PCardinal; W, H, Factor: Integer; Dst: PCardinal; Filter: TTexScaleFilter);
+begin
+  var Saved := EnterFilter;
+  try
+    ScaleTextureInner(Src, W, H, Factor, Dst, Filter);
+  finally
+    LeaveFilter(Saved);
   end;
 end;
 

@@ -8269,8 +8269,7 @@ end;
 
 function FirstAVM2ReferenceSlot(Slots: NativeUInt): Integer; assembler;
 asm
-        .       NOFRAME
-        BSF     RAX, RCX
+        BSF     EAX, EAX
 end;
 {$ELSE}
 
@@ -8470,6 +8469,9 @@ var
 
 begin
   // Collection runs between VM calls, when operand stacks are empty.
+  Started := 0;
+  RootsFinished := 0;
+  MarkFinished := 0;
   Observe := Assigned(FOnCollection);
   if Observe then
   begin

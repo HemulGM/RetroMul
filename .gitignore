@@ -41,3 +41,7 @@ __recovery/
 *.sf2d
 /apps/terminal/PSPGE.Pascal.res
 /apps/retromul/PSPGE.Pascal.res
+/apps/terminal/PS2GS.Pascal.res
+/apps/retromul/PS2GS.Pascal.res
+/source/gpu/shaders/PS2GS.Pascal.res
+tests/*

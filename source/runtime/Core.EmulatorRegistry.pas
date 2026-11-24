@@ -696,26 +696,58 @@ begin
   end;
 end;
 
+// A probe's error (another platform's reader failing on this media, say a CD
+// reader on a DVD image) is raised only when no probe matched: it does not
+// hide a platform that recognizes the media.
+procedure KeepProbeFailure(var Failure: Exception);
+begin
+  if Failure = nil then
+    Failure := Exception(AcquireExceptionObject);
+end;
+
+procedure RaiseProbeFailure(var Failure: Exception; Matched: Boolean);
+begin
+  var F := Failure;
+  Failure := nil;
+  if Matched or (F = nil) then
+    F.Free
+  else
+    raise F;
+end;
+
 function CollectCoreMatches(Context: TCoreLoadContext; Stage: TCoreLoadStage): TObjectList<TCoreMatch>;
 begin
   Result := TObjectList<TCoreMatch>.Create(True);
+  var Failure: Exception := nil;
   try
-    // Container rules can replace the stream and retain their original resolver.
-    // Source/image/header probes are non-owning and must all report evidence.
-    for var Registration in Registrations do
-      for var Rule in Registration.FRules do
-        if Rule.Stage = Stage then
-        begin
-          TStorage.CheckReadCancelled;
-          var Saved := Context.Stream.Position;
-          try
-            var Match := ProbeCore(Context, Rule.Recognize);
-            if Match <> nil then
-              Result.Add(Match);
-          finally
-            Context.Stream.Position := Saved;
+    try
+      // Container rules can replace the stream and retain their original resolver.
+      // Source/image/header probes are non-owning and must all report evidence.
+      for var Registration in Registrations do
+        for var Rule in Registration.FRules do
+          if Rule.Stage = Stage then
+          begin
+            TStorage.CheckReadCancelled;
+            var Saved := Context.Stream.Position;
+            try
+              try
+                var Match := ProbeCore(Context, Rule.Recognize);
+                if Match <> nil then
+                  Result.Add(Match);
+              except
+                on E: EAbort do
+                  raise;
+                on E: Exception do
+                  KeepProbeFailure(Failure);
+              end;
+            finally
+              Context.Stream.Position := Saved;
+            end;
           end;
-        end;
+      RaiseProbeFailure(Failure, Result.Count > 0);
+    finally
+      Failure.Free;
+    end;
   except
     Result.Free;
     raise;
@@ -735,6 +767,7 @@ end;
 function SelectDiscPlatform(Context: TCoreLoadContext): TCoreMatch;
 begin
   var Matches := TObjectList<TCoreMatch>.Create(True);
+  var Failure: Exception := nil;
   try
     var Hint := ('/' + Context.RomName + ' ' + Context.SourceName).ToLower.Replace('\', '/');
     for var Registration in Registrations do
@@ -745,7 +778,15 @@ begin
           Continue;
         if Context.HasExtension(['.m3u']) and not MatchText('.m3u', Info.Extensions) then
           Continue;
-        var Match := ProbeCore(Context, Loader.Match);
+        var Match: TCoreMatch := nil;
+        try
+          Match := ProbeCore(Context, Loader.Match);
+        except
+          on E: EAbort do
+            raise;
+          on E: Exception do
+            KeepProbeFailure(Failure);
+        end;
         if Match = nil then
           Continue;
         Matches.Add(Match);
@@ -755,8 +796,10 @@ begin
           if Hint.Contains('/' + Folder.ToLower + '/') then
             Match.Confidence := TCoreMatchConfidence.Hint;
       end;
+    RaiseProbeFailure(Failure, Matches.Count > 0);
     Result := ChooseCoreMatch(Context, Matches);
   finally
+    Failure.Free;
     Matches.Free;
   end;
 end;

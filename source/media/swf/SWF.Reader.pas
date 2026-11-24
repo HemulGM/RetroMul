@@ -94,6 +94,9 @@ function SWFTwipsFromPixels(Value: Double): Integer;
 function SWFRoundCoordinate(Value: Double): Integer;
 
 function SWFMatrixProduct(A, B, C, D: Double): Double;
+// Caller must mask floating-point exceptions for the complete calculation.
+
+function SWFMatrixProductMasked(A, B, C, D: Double): Double;
 
 function SWFAddCoordinate(A, B: Integer): Integer;
 
@@ -151,17 +154,23 @@ begin
   Result := Round(Value);
 end;
 
-function SWFMatrixProduct(A, B, C, D: Double): Double;
+function SWFMatrixProductMasked(A, B, C, D: Double): Double;
 var
   Left, Right: Double;
+begin
+  Left := SWFFloat32(SWFFloat32(A) * SWFFloat32(B));
+  Right := SWFFloat32(SWFFloat32(C) * SWFFloat32(D));
+  Result := SWFFloat32(Left + Right);
+end;
+
+function SWFMatrixProduct(A, B, C, D: Double): Double;
+var
   Mask: TArithmeticExceptionMask;
 begin
   Mask := GetExceptionMask;
   SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide, exOverflow, exUnderflow, exPrecision]);
   try
-    Left := SWFFloat32(SWFFloat32(A) * SWFFloat32(B));
-    Right := SWFFloat32(SWFFloat32(C) * SWFFloat32(D));
-    Result := SWFFloat32(Left + Right);
+    Result := SWFMatrixProductMasked(A, B, C, D);
   finally
     ClearExceptions;
     SetExceptionMask(Mask);
@@ -249,13 +258,37 @@ begin
 end;
 
 function TSWFMatrix.ThenBy(const Parent: TSWFMatrix): TSWFMatrix;
+var
+  X, Y: Double;
+  Mask: TArithmeticExceptionMask;
+  TranslationsMasked: Boolean;
 begin
-  Result.A := SWFMatrixProduct(Parent.A, A, Parent.C, B);
-  Result.B := SWFMatrixProduct(Parent.B, A, Parent.D, B);
-  Result.C := SWFMatrixProduct(Parent.A, C, Parent.C, D);
-  Result.D := SWFMatrixProduct(Parent.B, C, Parent.D, D);
-  Result.TX := SWFAddCoordinate(SWFRoundCoordinate(SWFMatrixProduct(Parent.A, SWFFloat32(TX), Parent.C, SWFFloat32(TY))), Trunc(Parent.TX));
-  Result.TY := SWFAddCoordinate(SWFRoundCoordinate(SWFMatrixProduct(Parent.B, SWFFloat32(TX), Parent.D, SWFFloat32(TY))), Trunc(Parent.TY));
+  Mask := GetExceptionMask;
+  TranslationsMasked := Mask = [exInvalidOp, exDenormalized, exZeroDivide, exOverflow, exUnderflow, exPrecision];
+  X := 0;
+  Y := 0;
+  SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide, exOverflow, exUnderflow, exPrecision]);
+  try
+    Result.A := SWFMatrixProductMasked(Parent.A, A, Parent.C, B);
+    Result.B := SWFMatrixProductMasked(Parent.B, A, Parent.D, B);
+    Result.C := SWFMatrixProductMasked(Parent.A, C, Parent.C, D);
+    Result.D := SWFMatrixProductMasked(Parent.B, C, Parent.D, D);
+    if TranslationsMasked then
+    begin
+      X := SWFMatrixProductMasked(Parent.A, TX, Parent.C, TY);
+      Y := SWFMatrixProductMasked(Parent.B, TX, Parent.D, TY);
+    end;
+  finally
+    ClearExceptions;
+    SetExceptionMask(Mask);
+  end;
+  // Keep the original argument conversion under the caller's FP mask.
+  if not TranslationsMasked then
+    X := SWFMatrixProduct(Parent.A, SWFFloat32(TX), Parent.C, SWFFloat32(TY));
+  Result.TX := SWFAddCoordinate(SWFRoundCoordinate(X), Trunc(Parent.TX));
+  if not TranslationsMasked then
+    Y := SWFMatrixProduct(Parent.B, SWFFloat32(TX), Parent.D, SWFFloat32(TY));
+  Result.TY := SWFAddCoordinate(SWFRoundCoordinate(Y), Trunc(Parent.TY));
 end;
 
 constructor TSWFReader.Create(const Data: TBytes; Version: Byte);

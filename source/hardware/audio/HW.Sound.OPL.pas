@@ -29,13 +29,13 @@ type
   protected
     constructor CreateChip(IsOPL3: Boolean; Clock, SampleRate: Integer; IsOPL1: Boolean = False);
   public
-    procedure Reset;
+    procedure Reset; virtual;
     procedure WriteRegister(RegisterID: Word; Value: Byte);
     procedure WritePort(Port: Byte; Value: Byte);
     function ReadPort(Port: Byte): Byte;
     function ReadStatus: Byte;
     procedure AdvanceClocks(Cycles: Cardinal);
-    procedure GenerateNative(out Left, Right: SmallInt; Timers: Boolean = True);
+    procedure GenerateNative(out Left, Right: SmallInt; Timers: Boolean = True); virtual;
     procedure ClockNative;
     procedure CurrentSample(out Left, Right: SmallInt);
     procedure SetCSMKey(Enabled: Boolean);

@@ -76,10 +76,16 @@ type
     PropertyID: Integer;
   end;
 
+  TAVMEventMember = (emOther, emButton, emMouseMove, emEnterFrame, emResolve);
+
+  TAVMEventMembers = set of emButton..emResolve;
+
   TAVMObject = class
   private
     FNextPropertyID: Integer;
+    FEventMemberCount: array[emButton..emResolve] of Integer;
     FPrototype: TAVMObject;
+    procedure UpdateEventMember(const FoldedName: string; Delta: Integer);
     procedure SetPrototype(Value: TAVMObject);
   public
     Members: TDictionary<string, TAVMValue>;
@@ -121,6 +127,7 @@ type
     destructor Destroy; override;
     procedure StoreData(const Name: string; const Value: TAVMValue);
     procedure RemoveData(const Name: string);
+    procedure ClearMembers;
     property Prototype: TAVMObject read FPrototype write SetPrototype;
   end;
 
@@ -172,6 +179,8 @@ type
     procedure Timeline(Target: TAVMObject; const Command: string; const Value: TAVMValue); virtual;
     procedure CallFrame(Target: TAVMObject; const Value: TAVMValue; Stack: TList<TAVMValue>; const Pool: TArray<string>); virtual;
     procedure VisitRoots(const Visit: TProc<TAVMObject>); virtual;
+    procedure VisitObjectReferences(O: TAVMObject; const Visit: TProc<TAVMObject>); virtual;
+    procedure SweepUnreachable; virtual;
   end;
 
   TAVMPendingCall = record
@@ -238,8 +247,10 @@ type
     function NewObject(const ClassName: string = 'Object'): TAVMObject;
     function NativeFunction(const Name: string): TAVMValue;
     function Get(O: TAVMObject; const Name: string): TAVMValue;
+    function GetBoundVariable(Target: TAVMObject; const Name: string): TAVMValue;
     function TryGet(O: TAVMObject; const Name: string; out Value: TAVMValue; Resolve: Boolean = True): Boolean;
     function GetSpecial(O: TAVMObject; const Name: string): TAVMValue;
+    function MayHaveEventMember(O: TAVMObject; Events: TAVMEventMembers): Boolean;
     function GetData(O: TAVMObject; const Name: string): TAVMValue;
     function GetOwnStored(O: TAVMObject; const Name: string): TAVMValue;
     function TryGetOwnStored(O: TAVMObject; const Name: string; out Value: TAVMValue): Boolean;
@@ -707,18 +718,44 @@ begin
   inherited;
 end;
 
+function EventMemberKind(const FoldedName: string): TAVMEventMember;
+begin
+  if FoldedName = '__resolve' then
+    Exit(emResolve);
+  if not FoldedName.StartsWith('on') then
+    Exit(emOther);
+  if FoldedName = 'onmousemove' then
+    Exit(emMouseMove);
+  if FoldedName = 'onenterframe' then
+    Exit(emEnterFrame);
+  if (FoldedName = 'onpress') or (FoldedName = 'onrelease') or (FoldedName = 'onreleaseoutside') or
+    (FoldedName = 'onrollover') or (FoldedName = 'onrollout') or (FoldedName = 'ondragover') or (FoldedName = 'ondragout') then
+    Exit(emButton);
+  Result := emOther;
+end;
+
+procedure TAVMObject.UpdateEventMember(const FoldedName: string; Delta: Integer);
+var
+  Event: TAVMEventMember;
+begin
+  Event := EventMemberKind(FoldedName);
+  if Event <> emOther then
+    Inc(FEventMemberCount[Event], Delta);
+end;
+
 procedure TAVMObject.StoreData(const Name: string; const Value: TAVMValue);
 var
   Folded: string;
 begin
+  Folded := AVMLowerName(Name);
   if not Members.ContainsKey(Name) then
   begin
+    UpdateEventMember(Folded, 1);
     MemberOrder.Add(Name);
     Inc(FNextPropertyID);
     PropertyIDs.AddOrSetValue(Name, FNextPropertyID);
   end;
   Members.AddOrSetValue(Name, Value);
-  Folded := AVMLowerName(Name);
   if not CaseNames.ContainsKey(Folded) then
     CaseNames.Add(Folded, Name);
 end;
@@ -727,13 +764,15 @@ procedure TAVMObject.RemoveData(const Name: string);
 var
   Folded, Key: string;
 begin
+  Folded := AVMLowerName(Name);
+  if Members.ContainsKey(Name) then
+    UpdateEventMember(Folded, -1);
   Members.Remove(Name);
   MemberOrder.Remove(Name);
   Attributes.Remove(Name);
   PropertyIDs.Remove(Name);
   if Accessors <> nil then
     Accessors.Remove(Name);
-  Folded := AVMLowerName(Name);
   CaseNames.Remove(Folded);
   for Key in MemberOrder do
     if Members.ContainsKey(Key) and (AVMLowerName(Key) = Folded) then
@@ -743,6 +782,18 @@ begin
     end;
   if Name = '__proto__' then
     FPrototype := nil;
+end;
+
+procedure TAVMObject.ClearMembers;
+begin
+  Members.Clear;
+  MemberOrder.Clear;
+  Attributes.Clear;
+  CaseNames.Clear;
+  if Accessors <> nil then
+    Accessors.Clear;
+  PropertyIDs.Clear;
+  FillChar(FEventMemberCount, SizeOf(FEventMemberCount), 0);
 end;
 
 procedure TAVMObject.SetPrototype(Value: TAVMObject);
@@ -961,6 +1012,14 @@ begin
 end;
 
 procedure TAVMHost.VisitRoots(const Visit: TProc<TAVMObject>);
+begin
+end;
+
+procedure TAVMHost.VisitObjectReferences(O: TAVMObject; const Visit: TProc<TAVMObject>);
+begin
+end;
+
+procedure TAVMHost.SweepUnreachable;
 begin
 end;
 
@@ -1344,6 +1403,7 @@ begin
       Mark(O.WithObject);
       Mark(O.MovieRoot);
       Mark(O.SuperThis);
+      FHost.VisitObjectReferences(O, Mark);
       for var Intf in O.Interfaces do
         Mark(Intf);
       if O.IsBoxed then
@@ -1368,6 +1428,7 @@ begin
     for O in FObjects do
       if O.IsTransform and (O.TransformTarget <> nil) and not O.TransformTarget.Marked then
         O.TransformTarget := nil;
+    FHost.SweepUnreachable;
     for I := FObjects.Count - 1 downto 0 do
       if not FObjects[I].Marked then
         FObjects.Delete(I);
@@ -1669,27 +1730,16 @@ begin
 end;
 
 function TAVM1.FindOwnKey(O: TAVMObject; const Name: string; out Key: string; IgnoreCase: Boolean): Boolean;
-var
-  Folded, Candidate: string;
 begin
   Key := Name;
   if O = nil then
     Exit(False);
   if (FSWFVersion >= 7) and not IgnoreCase then
     Exit(O.Members.ContainsKey(Name));
-  Folded := AVMLowerName(Name);
-  if O.CaseNames.TryGetValue(Folded, Key) and O.Members.ContainsKey(Key) then
-    Exit(True);
-  O.CaseNames.Remove(Folded);
-  for Candidate in O.MemberOrder do
-    if O.Members.ContainsKey(Candidate) and (AVMLowerName(Candidate) = Folded) then
-    begin
-      Key := Candidate;
-      O.CaseNames.AddOrSetValue(Folded, Key);
-      Exit(True);
-    end;
-  Key := Name;
-  Result := False;
+  // StoreData and RemoveData maintain the first spelling for every folded key.
+  Result := O.CaseNames.TryGetValue(AVMLowerName(Name), Key);
+  if not Result then
+    Key := Name;
 end;
 
 function PropertyVisible(O: TAVMObject; const Key: string; Version: Byte): Boolean;
@@ -1716,7 +1766,7 @@ function TAVM1.TryGet(O: TAVMObject; const Name: string; out Value: TAVMValue; R
 var
   Current, Receiver: TAVMObject;
   Depth: Integer;
-  Key, Alias: string;
+  Key: string;
   Accessor: TAVMAccessor;
   Resolver: TAVMValue;
 begin
@@ -1754,10 +1804,6 @@ begin
     if Depth > 128 then
       raise ESWFError.Create('AVM1 prototype cycle');
   end;
-  Alias := Name;
-  if FSWFVersion < 7 then
-    Alias := AVMLowerName(Alias);
-
   if Resolve then
   begin
     Current := O;
@@ -1798,6 +1844,24 @@ end;
 function TAVM1.GetSpecial(O: TAVMObject; const Name: string): TAVMValue;
 begin
   TryGet(O, Name, Result, False);
+end;
+
+function TAVM1.MayHaveEventMember(O: TAVMObject; Events: TAVMEventMembers): Boolean;
+begin
+  // A folded spelling may be hidden by case or version. The caller still
+  // performs the normal lookup when a candidate exists.
+  for var Depth := 0 to 128 do
+  begin
+    if O = nil then
+      Exit(False);
+    if O.SuperThis <> nil then
+      Exit(True);
+    for var Event in Events do
+      if O.FEventMemberCount[Event] <> 0 then
+        Exit(True);
+    O := O.Prototype;
+  end;
+  Result := True;
 end;
 
 function TAVM1.GetData(O: TAVMObject; const Name: string): TAVMValue;
@@ -1932,7 +1996,7 @@ function TAVM1.HasProperty(O: TAVMObject; const Name: string): Boolean;
 var
   Current: TAVMObject;
   Depth: Integer;
-  Key, Alias: string;
+  Key: string;
   Value: TAVMValue;
 begin
   if (O <> nil) and (O.SuperThis <> nil) then
@@ -1950,9 +2014,6 @@ begin
     if Depth > 128 then
       raise ESWFError.Create('AVM1 prototype cycle');
   end;
-  Alias := Name;
-  if FSWFVersion < 7 then
-    Alias := AVMLowerName(Alias);
   Result := False;
 end;
 
@@ -2406,6 +2467,27 @@ begin
       Exit(TAVMValue.Ref(O));
   end;
   Result := Default(TAVMValue);
+end;
+
+function TAVM1.GetBoundVariable(Target: TAVMObject; const Name: string): TAVMValue;
+var
+  Separator: Integer;
+  Path: string;
+begin
+  Separator := LastDelimiter(':.', Name);
+  if Separator > 1 then
+  begin
+    Path := Copy(Name, 1, Separator - 1);
+    if (Pos('/', Path) <> 0) or (Path = '..') then
+      Target := FHost.ResolveTimelineTarget(Target, Path)
+    else if Path <> 'this' then
+    begin
+      if Path.StartsWith('this.') then
+        Delete(Path, 1, 5);
+      Target := FindVariable(Path, nil, Target).Obj;
+    end;
+  end;
+  Result := Get(Target, Copy(Name, Separator + 1, MaxInt));
 end;
 
 function TAVM1.DeleteVariable(const Name: string; Scope, Target: TAVMObject): Boolean;

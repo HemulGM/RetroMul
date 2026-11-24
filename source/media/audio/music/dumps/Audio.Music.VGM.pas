@@ -3,9 +3,9 @@
 interface
 
 uses
-  Audio.Types, System.SysUtils, Audio.Decoder, MD.Sound, NES.APU, GB.Sound, GB.GPU, GB.Timer,
-  GB.InterruptManager, GB.Joypad, Audio.Music.GBS, Core.AudioFilter,
-  HW.Sound.OPL, HW.Sound.OPL2, HW.Sound.OPL3, HW.Sound.YM2149;
+  Audio.Types, System.SysUtils, Audio.Decoder, MD.Sound, NES.APU, GB.Sound,
+  GB.GPU, GB.Timer, GB.InterruptManager, GB.Joypad, Audio.Music.GBS,
+  Core.AudioFilter, HW.Sound.OPL, HW.Sound.OPL2, HW.Sound.OPL3, HW.Sound.YM2149;
 
 type
   TVGMDataBank = record
@@ -82,10 +82,72 @@ function CreateVGM(const Data: TBytes): IAudioSource;
 implementation
 
 uses
-  System.Classes, System.ZLib, System.Math, NES.Types, Audio.Binary;
+  System.Classes, System.ZLib, System.Math, System.Generics.Collections,
+  NES.Types, Audio.Binary;
 
 const
   OPLChipIDs: array[0..2] of Integer = ($09, $0C, $0A);
+
+type
+  TVGMOPL2 = class(TOPL2)
+  private
+    const
+      NativeSampleClocks = 72;
+    // The YM3812 requires 12 clocks after the address and 84 after the data.
+      RegisterWriteClocks = 12 + 84;
+  private
+    FWrites: TQueue<Word>;
+    FClocksUntilWrite: Integer;
+  public
+    constructor Create(Clock, SampleRate: Integer);
+    destructor Destroy; override;
+    procedure Reset; override;
+    procedure QueueWrite(RegisterID, Value: Byte);
+    procedure GenerateNative(out Left, Right: SmallInt; Timers: Boolean = True); override;
+  end;
+
+constructor TVGMOPL2.Create(Clock, SampleRate: Integer);
+begin
+  inherited Create(Clock, SampleRate);
+  FWrites := TQueue<Word>.Create;
+end;
+
+destructor TVGMOPL2.Destroy;
+begin
+  FWrites.Free;
+  inherited;
+end;
+
+procedure TVGMOPL2.Reset;
+begin
+  inherited;
+  if FWrites <> nil then
+    FWrites.Clear;
+  FClocksUntilWrite := 0;
+end;
+
+procedure TVGMOPL2.QueueWrite(RegisterID, Value: Byte);
+begin
+  if FWrites.Count = 0 then
+    FClocksUntilWrite := Max(0, FClocksUntilWrite);
+  FWrites.Enqueue((Word(RegisterID) shl 8) or Value);
+end;
+
+procedure TVGMOPL2.GenerateNative(out Left, Right: SmallInt; Timers: Boolean);
+begin
+  // Preserve the order of same-time VGM writes. In particular, the envelope
+  // generator must clock between a key-off and a new key-on.
+  if (FClocksUntilWrite <= 0) and (FWrites.Count <> 0) then
+  begin
+    var Write := FWrites.Dequeue;
+    WriteRegister(Write shr 8, Byte(Write and $FF));
+    // Keep the fractional part of the interval while draining a burst.
+    Inc(FClocksUntilWrite, RegisterWriteClocks);
+  end;
+  if FClocksUntilWrite > 0 then
+    Dec(FClocksUntilWrite, NativeSampleClocks);
+  inherited;
+end;
 
 function UnpackVGM(const Data: TBytes): TBytes;
 begin
@@ -448,7 +510,7 @@ begin
         if (K = 1) and (FSecondClocks[ChipID] <> 0) then
           Clock := FSecondClocks[ChipID];
         if J = 0 then
-          FOPL[J, K] := TOPL2.Create(Clock, 44100)
+          FOPL[J, K] := TVGMOPL2.Create(Clock, 44100)
         else if J = 1 then
           FOPL[J, K] := TOPL3.Create(Clock, 44100)
         else
@@ -593,7 +655,10 @@ begin
         if Command in [$5F, $AF] then
           Inc(RegisterID, $100);
         if not Validate then
-          FOPL[ChipIndex, Instance].WriteRegister(RegisterID, FData[P + 1]);
+          if ChipIndex = 0 then
+            TVGMOPL2(FOPL[ChipIndex, Instance]).QueueWrite(FData[P], FData[P + 1])
+          else
+            FOPL[ChipIndex, Instance].WriteRegister(RegisterID, FData[P + 1]);
       end;
     $B3:
       begin

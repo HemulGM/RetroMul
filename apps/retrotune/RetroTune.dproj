@@ -477,6 +477,7 @@
         <DCCReference Include="ui\RetroTune.FormatsForm.pas"/>
         <DCCReference Include="..\..\source\cores\nes\NES.Audio.FDS.pas"/>
         <DCCReference Include="..\..\source\media\audio\processing\Audio.Spectrum.pas"/>
+        <DCCReference Include="..\..\source\hardware\HW.EEPROM93Cxx.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>
@@ -526,6 +527,12 @@
                 </DeployFile>
                 <DeployFile LocalName="Win32\Debug\RetroTune.exe" Configuration="Debug" Class="ProjectOutput">
                     <Platform Name="Win32">
+                        <RemoteName>RetroTune.exe</RemoteName>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="Win64\Release\RetroTune.exe" Configuration="Release" Class="ProjectOutput">
+                    <Platform Name="Win64">
                         <RemoteName>RetroTune.exe</RemoteName>
                         <Overwrite>true</Overwrite>
                     </Platform>

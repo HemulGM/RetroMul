@@ -35,7 +35,7 @@ type
   public
     constructor Create;
     destructor Destroy; override;
-    procedure Start(Sound: TSWFSound; Owner: TObject; const Info: TSWFSoundInfo; Client: TObject = nil);
+    function Start(Sound: TSWFSound; Owner: TObject; const Info: TSWFSoundInfo; Client: TObject = nil): Boolean;
     procedure StartStream(Sound: TSWFSound; Owner: TObject; FirstFrame, EndFrame: Integer);
     procedure StopStream(Owner: TObject);
     procedure StopSound(Sound: TSWFSound);
@@ -103,11 +103,12 @@ begin
   inherited;
 end;
 
-procedure TFlashAudio.Start(Sound: TSWFSound; Owner: TObject; const Info: TSWFSoundInfo; Client: TObject);
+function TFlashAudio.Start(Sound: TSWFSound; Owner: TObject; const Info: TSWFSoundInfo; Client: TObject): Boolean;
 var
   I: Integer;
   Voice: TFlashSoundVoice;
 begin
+  Result := False;
   if Sound = nil then
     Exit;
   if Info.Stop then
@@ -135,6 +136,7 @@ begin
   Voice.Loops := Max(1, Info.Loops);
   Voice.Envelope := Info.Envelope;
   FVoices.Add(Voice);
+  Result := True;
 end;
 
 procedure TFlashAudio.StopSound(Sound: TSWFSound);

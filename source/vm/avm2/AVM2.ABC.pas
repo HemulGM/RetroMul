@@ -11,14 +11,14 @@ type
   TABCReader = record
     Data: TBytes;
     Position: Integer;
-    function Remaining: Integer;
-    function U8: Byte;
+    function Remaining: Integer; inline;
+    function U8: Byte; inline;
     function U16: Word;
     function U32: Cardinal;
-    function U30: Integer;
-    function S24: Integer;
+    function U30: Integer; inline;
+    function S24: Integer; inline;
     function Bytes(Count: Integer): TBytes;
-    procedure Need(Count: Integer);
+    procedure Need(Count: Integer); inline;
   end;
 
   TABCNamespace = record
@@ -156,8 +156,24 @@ end;
 
 function TABCReader.U30: Integer;
 var
-  Value: Cardinal;
+  Value, Next: Cardinal;
 begin
+  Need(1);
+  Value := Data[Position];
+  if Value < $80 then
+  begin
+    Inc(Position);
+    Exit(Integer(Value));
+  end;
+  if Remaining >= 2 then
+  begin
+    Next := Data[Position + 1];
+    if Next < $80 then
+    begin
+      Inc(Position, 2);
+      Exit(Integer((Value and $7F) or (Next shl 7)));
+    end;
+  end;
   Value := U32;
   if Value > $3FFFFFFF then
     raise EAVM2Error.Create('Invalid ABC encoded U30');

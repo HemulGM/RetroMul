@@ -170,6 +170,8 @@ begin
     Exit;
   end;
   var State := Context.Data('input.screen.touch') as IScreenTouchState;
+  if (Phase = TEmulationTouchPhase.Move) and ((State = nil) or not State.Down) then
+    Exit;
   if State = nil then
   begin
     State := TScreenTouchState.Create;

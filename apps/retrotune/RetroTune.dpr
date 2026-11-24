@@ -1,7 +1,8 @@
 ﻿program RetroTune;
 
 uses
-  Audio.Types, RetroTune.Formats in 'RetroTune.Formats.pas',
+  Audio.Types,
+  RetroTune.Formats in 'RetroTune.Formats.pas',
   A5200.Arithmetic in '..\..\source\cores\at5200\A5200.Arithmetic.pas',
   A5200.ASAP.CPU in '..\..\source\cores\at5200\A5200.ASAP.CPU.pas',
   A5200.ASAP.Info in '..\..\source\cores\at5200\A5200.ASAP.Info.pas',
@@ -116,7 +117,8 @@ uses
   RetroTune.ReferenceForm in 'ui\RetroTune.ReferenceForm.pas',
   RetroTune.FormatsForm in 'ui\RetroTune.FormatsForm.pas',
   NES.Audio.FDS in '..\..\source\cores\nes\NES.Audio.FDS.pas',
-  Audio.Spectrum in '..\..\source\media\audio\processing\Audio.Spectrum.pas';
+  Audio.Spectrum in '..\..\source\media\audio\processing\Audio.Spectrum.pas',
+  HW.EEPROM93Cxx in '..\..\source\hardware\HW.EEPROM93Cxx.pas';
 
 {$R *.res}
 

@@ -145,7 +145,7 @@ begin
   end;
 end;
 
-function ReadMP3Frame(Stream: TStream; Decoder: TMP3Layer3Decoder; SampleRate, Channels: Integer; var Reservoir: TBytes; out Left, Right: TArray<Single>): Boolean;
+function ReadMP3Frame(Stream: TStream; Decoder: TMP3Layer3Decoder; SampleRate, Channels: Integer; var Reservoir: TBytes; out Left, Right: TArray<Single>; AllowMissingHistory: Boolean = False): Boolean;
 var
   Reader: TMP3BitStream;
   Header: TMP3FrameHeader;
@@ -182,13 +182,26 @@ begin
   for Granule := 0 to Ord(HDR_TEST_MPEG1(Header.hdr)) do
     for Channel := 0 to Channels - 1 do
       Inc(Needed, Side.Granules[Granule, Channel].Part2_3_Length);
-  if (Side.MainDataBegin > Length(Reservoir)) or (Needed > (Side.MainDataBegin + MainSize) * 8) then
+  if Needed > (Side.MainDataBegin + MainSize) * 8 then
     raise ESWFError.Create('Invalid SWF MP3 sample reservoir');
-  Payload := Copy(Reservoir, Length(Reservoir) - Side.MainDataBegin, Side.MainDataBegin) + Main;
-  SetLength(Payload, Length(Payload) + 16);
-  Decoder.DecodeFrame(Header, Side, Payload, 0, Left, Right);
-  if (Channels = 2) and (Length(Right) <> Length(Left)) then
-    raise ESWFError.Create('Invalid SWF MP3 stereo frame');
+  if Side.MainDataBegin > Length(Reservoir) then
+  begin
+    if not AllowMissingHistory then
+      raise ESWFError.Create('Invalid SWF MP3 sample reservoir');
+    // A cropped event sound may begin before its bit reservoir is available.
+    // Keep the sample positions and retain this frame's data for following frames.
+    SetLength(Left, 576 * (1 + Ord(HDR_TEST_MPEG1(Header.hdr))));
+    if Channels = 2 then
+      SetLength(Right, Length(Left));
+  end
+  else
+  begin
+    Payload := Copy(Reservoir, Length(Reservoir) - Side.MainDataBegin, Side.MainDataBegin) + Main;
+    SetLength(Payload, Length(Payload) + 16);
+    Decoder.DecodeFrame(Header, Side, Payload, 0, Left, Right);
+    if (Channels = 2) and (Length(Right) <> Length(Left)) then
+      raise ESWFError.Create('Invalid SWF MP3 stereo frame');
+  end;
   Reservoir := Reservoir + Main;
   if Length(Reservoir) > 511 then
     Reservoir := Copy(Reservoir, Length(Reservoir) - 511, 511);
@@ -216,7 +229,7 @@ begin
   try
     Decoder := TMP3Layer3Decoder.Create;
     while (Output < Length(Sound.Samples)) and
-      ReadMP3Frame(Stream, Decoder, Sound.SampleRate, Sound.Channels, Reservoir, Left, Right) do
+      ReadMP3Frame(Stream, Decoder, Sound.SampleRate, Sound.Channels, Reservoir, Left, Right, True) do
     begin
       for Index := 0 to High(Left) do
       begin

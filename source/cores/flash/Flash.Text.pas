@@ -20,6 +20,7 @@ type
     FSpans: TObjectList<TFlashTextSpan>;
     FDefault: TAVMTextFormatData;
     FForceUpdate, FMarkupDirty: Boolean;
+    FRevision: UInt64;
     procedure SplitAt(Index: Integer);
     procedure Append(const Value: string; Format: TAVMTextFormatData);
   public
@@ -35,6 +36,8 @@ type
     procedure SetFormat(First, Last: Integer; Data: TAVMTextFormatData);
     function FormatAt(Index: Integer): TAVMTextFormatData;
     property Text: string read FText;
+    // Tracks changes to text or its effective formats.
+    property Revision: UInt64 read FRevision;
     property DefaultFormat: TAVMTextFormatData read FDefault;
   end;
 
@@ -84,6 +87,7 @@ begin
     raise ESWFError.Create('Flash text length limit');
   if (FText = Value) and not Force then
     Exit;
+  Inc(FRevision);
   FText := Value;
   FMarkup := Value;
   FMarkupDirty := False;
@@ -186,6 +190,7 @@ begin
   FForceUpdate := False;
   if (FMarkup = Value) and not FMarkupDirty and not Force then
     Exit;
+  Inc(FRevision);
   FText := '';
   FSpans.Clear;
   FMarkup := Value;
@@ -417,6 +422,7 @@ end;
 
 procedure TFlashTextDocument.SetDefault(Data: TAVMTextFormatData; ForceUpdate: Boolean);
 begin
+  Inc(FRevision);
   AVMMixTextFormat(FDefault, Data);
   FForceUpdate := FForceUpdate or ForceUpdate;
 end;
@@ -470,6 +476,7 @@ begin
   Last := Min(Last, Length(FText));
   if First >= Last then
     Exit;
+  Inc(FRevision);
   SplitAt(First);
   SplitAt(Last);
   Effective := Data.Clone;

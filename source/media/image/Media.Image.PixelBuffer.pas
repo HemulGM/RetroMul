@@ -9,6 +9,7 @@ type
     function GetHeight: Integer;
     function GetTransparent: Boolean;
     function GetDisposed: Boolean;
+    function GetContentVersion: UInt64;
     function Pixel(X, Y: Integer): Cardinal;
     function PixelPremultiplied(X, Y: Integer): Cardinal;
     procedure SetPixelPremultiplied(X, Y: Integer; Color: Cardinal);
@@ -16,10 +17,16 @@ type
     // Shared, read-only view valid for immediate rendering on the VM thread.
     function SnapshotPremultiplied: TArray<Cardinal>;
     procedure Dispose;
+    // Copies a fully in-bounds rectangle, applying the destination's opacity rule.
+    function TryCopyPremultiplied(const Source: IImagePixelBuffer; SourceX, SourceY, DestX, DestY, Width, Height: Integer): Boolean;
+    // Stores a tightly packed renderer result, with SetPixelPremultiplied semantics.
+    function TryWritePremultiplied(const Pixels: TArray<Cardinal>; X, Y, Width, Height: Integer): Boolean;
     property Width: Integer read GetWidth;
     property Height: Integer read GetHeight;
     property Transparent: Boolean read GetTransparent;
     property Disposed: Boolean read GetDisposed;
+    // Compare versions from snapshots of the same storage on the VM thread.
+    property ContentVersion: UInt64 read GetContentVersion;
   end;
 
   IImagePixelPool = interface
@@ -53,6 +60,7 @@ type
     FOwner: IImagePixelPool;
     FWidth, FHeight: Integer;
     FTransparent, FDisposed: Boolean;
+    FContentVersion: UInt64;
     FPixels: TArray<Cardinal>;
   public
     constructor Create(const Owner: IImagePixelPool; Width, Height: Integer; Transparent: Boolean; Color: Cardinal);
@@ -61,12 +69,16 @@ type
     function GetHeight: Integer;
     function GetTransparent: Boolean;
     function GetDisposed: Boolean;
+    function GetContentVersion: UInt64;
     function Pixel(X, Y: Integer): Cardinal;
     function PixelPremultiplied(X, Y: Integer): Cardinal;
     procedure SetPixelPremultiplied(X, Y: Integer; Color: Cardinal);
     procedure SetPixel(X, Y: Integer; Color: Cardinal);
     function SnapshotPremultiplied: TArray<Cardinal>;
     procedure Dispose;
+    function TryCopyPremultiplied(const Source: IImagePixelBuffer; SourceX, SourceY, DestX, DestY, Width, Height: Integer): Boolean;
+    // Stores a tightly packed renderer result, with SetPixelPremultiplied semantics.
+    function TryWritePremultiplied(const Pixels: TArray<Cardinal>; X, Y, Width, Height: Integer): Boolean;
   end;
 
 function CreateImagePixelPool(PixelLimit: Integer): IImagePixelPool;
@@ -196,6 +208,11 @@ begin
   Result := FDisposed;
 end;
 
+function TImagePixelBuffer.GetContentVersion: UInt64;
+begin
+  Result := FContentVersion;
+end;
+
 function TImagePixelBuffer.Pixel(X, Y: Integer): Cardinal;
 begin
   Result := UnpremultiplyBitmapColor(PixelPremultiplied(X, Y));
@@ -204,7 +221,10 @@ end;
 procedure TImagePixelBuffer.SetPixel(X, Y: Integer; Color: Cardinal);
 begin
   if (X >= 0) and (Y >= 0) and (X < FWidth) and (Y < FHeight) then
+  begin
     FPixels[Y * FWidth + X] := PremultiplyBitmapColor(Color, FTransparent);
+    Inc(FContentVersion);
+  end;
 end;
 
 function BlendPremultiplied(Dest, Source: Cardinal): Cardinal;
@@ -235,6 +255,7 @@ begin
     if not FTransparent then
       Color := Color or $FF000000;
     FPixels[Y * FWidth + X] := Color;
+    Inc(FContentVersion);
   end;
 end;
 
@@ -243,11 +264,94 @@ begin
   Result := FPixels;
 end;
 
+function TImagePixelBuffer.TryCopyPremultiplied(const Source: IImagePixelBuffer; SourceX, SourceY, DestX, DestY, Width, Height: Integer): Boolean;
+var
+  SourcePixels: TArray<Cardinal>;
+  SourceWidth, SourceHeight, Row, Step, RowsLeft, Column: Integer;
+  Input, Output: PCardinal;
+  MakeOpaque: Boolean;
+begin
+  Result := False;
+  if (Source = nil) or FDisposed or Source.Disposed or (Width <= 0) or (Height <= 0) or
+    (SourceX < 0) or (SourceY < 0) or (DestX < 0) or (DestY < 0) or
+    (DestX > FWidth - Width) or (DestY > FHeight - Height) then
+    Exit;
+  SourceWidth := Source.Width;
+  SourceHeight := Source.Height;
+  if (SourceX > SourceWidth - Width) or (SourceY > SourceHeight - Height) then
+    Exit;
+  SourcePixels := Source.SnapshotPremultiplied;
+  if Int64(SourceWidth) * SourceHeight <> Length(SourcePixels) then
+    Exit;
+
+  // Move handles horizontal overlap. For vertical overlap read the lower
+  // rows first when the destination starts below the source.
+  Row := 0;
+  Step := 1;
+  if (SourcePixels = FPixels) and (DestY > SourceY) then
+  begin
+    Row := Height - 1;
+    Step := -1;
+  end;
+  MakeOpaque := not FTransparent and Source.Transparent;
+  for RowsLeft := Height downto 1 do
+  begin
+    Input := @SourcePixels[(SourceY + Row) * SourceWidth + SourceX];
+    Output := @FPixels[(DestY + Row) * FWidth + DestX];
+    if MakeOpaque then
+      for Column := 1 to Width do
+      begin
+        Output^ := UnpremultiplyBitmapColor(Input^) or $FF000000;
+        Inc(Input);
+        Inc(Output);
+      end
+    else
+      Move(Input^, Output^, NativeInt(Width) * SizeOf(Cardinal));
+    Inc(Row, Step);
+  end;
+  Inc(FContentVersion, Width * Height);
+  Result := True;
+end;
+
+function TImagePixelBuffer.TryWritePremultiplied(const Pixels: TArray<Cardinal>; X, Y, Width, Height: Integer): Boolean;
+var
+  Row, Column, DestOffset, SourceOffset: Integer;
+  Count: Int64;
+begin
+  Result := False;
+  Count := Int64(Width) * Height;
+  if FDisposed or (Width <= 0) or (Height <= 0) or (X < 0) or (Y < 0) or
+    (X > FWidth - Width) or (Y > FHeight - Height) or
+    (Count <> Length(Pixels)) or (Pixels = FPixels) then
+    Exit;
+
+  DestOffset := Y * FWidth + X;
+  if FTransparent and (Width = FWidth) then
+    Move(Pixels[0], FPixels[DestOffset], NativeInt(Count) * SizeOf(Cardinal))
+  else
+  begin
+    SourceOffset := 0;
+    for Row := 0 to Height - 1 do
+    begin
+      if FTransparent then
+        Move(Pixels[SourceOffset], FPixels[DestOffset], NativeInt(Width) * SizeOf(Cardinal))
+      else
+        for Column := 0 to Width - 1 do
+          FPixels[DestOffset + Column] := Pixels[SourceOffset + Column] or $FF000000;
+      Inc(SourceOffset, Width);
+      Inc(DestOffset, FWidth);
+    end;
+  end;
+  Inc(FContentVersion, UInt64(Count));
+  Result := True;
+end;
+
 procedure TImagePixelBuffer.Dispose;
 begin
   if FDisposed then
     Exit;
   FDisposed := True;
+  Inc(FContentVersion);
   if FOwner <> nil then
     FOwner.ReleasePixels(Length(FPixels));
   FOwner := nil;

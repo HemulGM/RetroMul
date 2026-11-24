@@ -126,13 +126,13 @@ begin
     raise ESWFError.Create('Flash frame rendering work limit');
 end;
 
-procedure BlurAxis(const Input: TArray<Cardinal>; var Output: TArray<Cardinal>; Lines, Length, LineStride, PixelStride: Integer; Kernel: Double);
+procedure BlurAxis(const Input: TArray<Cardinal>; var Output: TArray<Cardinal>; Lines, Length, LineStride, PixelStride: Integer; Kernel: Double; AlphaOnly: Boolean);
 const
   ChannelShifts: array[0..3] of Integer = (0, 8, 16, 24);
 var
   Sum: array[0..3] of Integer;
   Radius: Double;
-  Inner, Weight, Line, Start, Position, I, J, Channel: Integer;
+  Inner, Weight, Line, Start, Position, I, J, Channel, FirstChannel: Integer;
   Divide, Weighted: Int64;
   Left, Right, Old, Added, Color: Cardinal;
 
@@ -149,6 +149,7 @@ begin
   Inner := Ceil(Radius) - 1;
   Weight := Floor((Radius - Inner) * 255);
   Divide := Round(Kernel * 65536) * 255;
+  FirstChannel := 3 * Ord(AlphaOnly);
   for Line := 0 to Lines - 1 do
   begin
     Start := Line * LineStride;
@@ -156,7 +157,7 @@ begin
     for I := 0 to Min(Inner, Length - 1) do
     begin
       Color := ReadPixel(I);
-      for J := 0 to 3 do
+      for J := FirstChannel to 3 do
         Inc(Sum[J], (Color shr ChannelShifts[J]) and 255);
     end;
     for Position := 0 to Length - 1 do
@@ -166,7 +167,7 @@ begin
       Old := ReadPixel(Position - Inner);
       Added := Right;
       Color := 0;
-      for J := 0 to 3 do
+      for J := FirstChannel to 3 do
       begin
         Weighted := Int64(Sum[J]) * 255 + Integer(((Left shr ChannelShifts[J]) and 255) +
             ((Right shr ChannelShifts[J]) and 255)) * Weight;
@@ -180,7 +181,7 @@ begin
   end;
 end;
 
-function BlurredPixels(const Pixels: TArray<Cardinal>; Width, Height: Integer; const Filter: TSWFFilter; var Work: Int64): TArray<Cardinal>;
+function BlurredPixels(const Pixels: TArray<Cardinal>; Width, Height: Integer; const Filter: TSWFFilter; var Work: Int64; AlphaOnly: Boolean = False): TArray<Cardinal>;
 var
   Pass, Axis, WorkIndex: Integer;
   Horizontal, Vertical: Boolean;
@@ -203,13 +204,13 @@ begin
       begin
         if not Horizontal then
           Continue;
-        BlurAxis(Result, Buffers[WorkIndex], Height, Width, Width, 1, Filter.BlurX);
+        BlurAxis(Result, Buffers[WorkIndex], Height, Width, Width, 1, Filter.BlurX, AlphaOnly);
       end
       else
       begin
         if not Vertical then
           Continue;
-        BlurAxis(Result, Buffers[WorkIndex], Width, Height, 1, Width, Filter.BlurY);
+        BlurAxis(Result, Buffers[WorkIndex], Width, Height, 1, Width, Filter.BlurY, AlphaOnly);
       end;
       Result := Buffers[WorkIndex];
       WorkIndex := 1 - WorkIndex;
@@ -225,6 +226,13 @@ function ScaleEffect(Base, Color: Cardinal; BaseWeight, EffectAlpha: Double): Ca
 var
   Shift, Channel: Integer;
 begin
+  if EffectAlpha = 0 then
+  begin
+    if BaseWeight = 0 then
+      Exit(0);
+    if BaseWeight = 1 then
+      Exit(Base);
+  end;
   Result := Cardinal(Round((Base shr 24) * BaseWeight + EffectAlpha * 255)) shl 24;
   for Shift in [0, 8, 16] do
   begin
@@ -311,7 +319,8 @@ begin
     ChargeFilterWork(Work, Length(Ramp) + Integer(Filter.GradientCount) * Filter.GradientCount div 2);
     BuildGradientRamp(Filter, Ramp);
   end;
-  Blurred := BlurredPixels(Pixels, Width, Height, Filter, Work);
+  // Alpha effects only sample the blurred coverage, never its color.
+  Blurred := BlurredPixels(Pixels, Width, Height, Filter, Work, True);
   ChargeFilterWork(Work, Int64(Width) * Height);
   if Gradient then
     Output := Copy(Pixels)

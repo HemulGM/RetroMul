@@ -54,6 +54,8 @@ type
   end;
 
   TJitAlu = (jaAdd, jaSub, jaAnd, jaOr, jaXor);
+
+  TJitDoubleAlu = (jdAdd, jdSub, jdMul, jdDiv);
   // Left, right logical, right arithmetic (8 bits: as 32).
 
   TJitShift = (jsShl, jsShr, jsSar);
@@ -72,6 +74,7 @@ type
   private
     FBase: PByte;
     FSize, FUsed, FCodeStart, FFlushed: NativeInt;
+    FSealable, FPublished: Boolean;
     // Labels: where each is (-1: not yet), and the jumps to ones not yet
     // bound (their fields). Kept from function to function, so that writing
     // code calls no memory manager once they are long enough.
@@ -79,6 +82,7 @@ type
     FFixLabel: TArray<TJitLabel>;
     FFixField: TArray<NativeInt>;
     FLabelCount, FFixCount: Integer;
+    procedure RequireWritable; inline;
     procedure Fix(Field: NativeInt; L: TJitLabel);
   protected
     // Room's estimates times this (the model's operations take more bytes
@@ -92,6 +96,7 @@ type
     function Allocate(Size: NativeInt; out CodeStart: NativeInt): PByte; virtual; abstract;
     procedure Release(Base: PByte); virtual; abstract;
     procedure FlushCode(P: PByte; Len: NativeInt); virtual; abstract;
+    procedure MakeExecutable; virtual;
     // A comparison of A with B, a test of A and B; a jump (conditional on
     // the flags they leave) with a field for its target, which the result
     // is; that field's target, set and read.
@@ -109,7 +114,7 @@ type
     // Whether the backend has a register for S4.
     function HasS4: Boolean; virtual;
   public
-    constructor Create(Size: NativeInt);
+    constructor Create(Size: NativeInt; Sealable: Boolean = False);
     destructor Destroy; override;
     // Drops all code.
     procedure Reset;
@@ -122,6 +127,8 @@ type
     procedure Move(W: TJitWidth; const Dst, Src: TJitOp); virtual; abstract;
     // Dst := Dst op Src.
     procedure Alu(Op: TJitAlu; W: TJitWidth; const Dst, Src: TJitOp); virtual; abstract;
+    // Dst := Dst op Src for two memory operands containing IEEE doubles.
+    procedure AluDouble(Op: TJitDoubleAlu; const Dst, Src: TJitOp); virtual;
     procedure Shift(Op: TJitShift; W: TJitWidth; Dst: TJitReg; Count: Integer); virtual; abstract;
     // Dst := its low W bits sign-extended to 64.
     procedure SignExtend(W: TJitWidth; Dst: TJitReg); virtual; abstract;
@@ -166,6 +173,8 @@ type
     procedure Redirect(Site, Target: NativeInt);
     // The code written since the last Flush made ready to run.
     procedure Flush;
+    // Finalizes a sealable buffer. Its code is immutable after publication.
+    procedure Publish;
     // Runs the function at Code (written with Enter or EnterJump) with four
     // pointer-sized arguments (unused ones ignored): its result.
     function Invoke(Code: Pointer; A0, A1, A2, A3: NativeUInt): NativeInt; virtual;
@@ -199,6 +208,9 @@ const
 
 // This target's code generator with Size bytes of code (nil: none here).
 function CreateJitAsm(Size: NativeInt): TJitAsm;
+
+// Win64 buffer with separate write and execute phases. Nil where unavailable.
+function CreateJitSealableAsm(Size: NativeInt): TJitAsm;
 
 // AAPCS64 leaf routines: no calls or EnterJump; other hosts use the regular ABI.
 function CreateJitLeafAsm(Size: NativeInt): TJitAsm;
@@ -252,9 +264,10 @@ end;
 
 { TJitAsm }
 
-constructor TJitAsm.Create(Size: NativeInt);
+constructor TJitAsm.Create(Size: NativeInt; Sealable: Boolean);
 begin
   inherited Create;
+  FSealable := Sealable;
   FRoomScale := 1;
   FSize := Size;
   FBase := Allocate(Size, FCodeStart);
@@ -270,6 +283,7 @@ end;
 
 procedure TJitAsm.Reset;
 begin
+  RequireWritable;
   FUsed := FCodeStart;
   FFlushed := FCodeStart;
   FLabelCount := 0;
@@ -303,11 +317,18 @@ end;
 
 function TJitAsm.Room(Bytes: NativeInt): Boolean;
 begin
-  Result := (FBase <> nil) and (FUsed + Bytes * FRoomScale <= FSize);
+  Result := (FBase <> nil) and not FPublished and (FUsed + Bytes * FRoomScale <= FSize);
+end;
+
+procedure TJitAsm.RequireWritable;
+begin
+  if FPublished then
+    raise EInvalidOpException.Create('JIT: code is already published');
 end;
 
 procedure TJitAsm.Need(Bytes: NativeInt);
 begin
+  RequireWritable;
   if FUsed + Bytes > FSize then
     raise EInvalidOpException.Create('JIT buffer overflow');
 end;
@@ -378,6 +399,7 @@ end;
 
 procedure TJitAsm.Bind(L: TJitLabel);
 begin
+  RequireWritable;
   FLabelAt[L] := FUsed;
   var K := 0;
   while K < FFixCount do
@@ -439,6 +461,7 @@ end;
 
 procedure TJitAsm.Redirect(Site, Target: NativeInt);
 begin
+  RequireWritable;
   // (Code that may be running: the field is written at once.)
   PatchJump(Site, Target);
   FlushCode(FBase + Site, 4);
@@ -451,10 +474,36 @@ begin
   FFlushed := FUsed;
 end;
 
+procedure TJitAsm.AluDouble(Op: TJitDoubleAlu; const Dst, Src: TJitOp);
+begin
+  raise EInvalidOpException.Create('JIT: double arithmetic is unsupported on this backend');
+end;
+
+procedure TJitAsm.MakeExecutable;
+begin
+  raise EInvalidOpException.Create('JIT: publishing code is unsupported on this backend');
+end;
+
+procedure TJitAsm.Publish;
+begin
+  if FPublished then
+    Exit;
+  if not FSealable then
+    raise EInvalidOpException.Create('JIT: this buffer is mutable');
+  if (FFixCount <> 0) or (FUsed = FCodeStart) then
+    raise EInvalidOpException.Create('JIT: incomplete code');
+  Flush;
+  MakeExecutable;
+  FPublished := True;
+end;
+
 function TJitAsm.Invoke(Code: Pointer; A0, A1, A2, A3: NativeUInt): NativeInt;
 type
   TJitFunction = function(A0, A1, A2, A3: NativeUInt): NativeInt;
 begin
+  if FSealable and (not FPublished or (NativeUInt(Code) < NativeUInt(FBase + FCodeStart)) or
+    (NativeUInt(Code) >= NativeUInt(FBase + FUsed))) then
+    raise EInvalidOpException.Create('JIT: entry point is outside published code');
   Result := TJitFunction(Code)(A0, A1, A2, A3);
 end;
 
@@ -508,6 +557,7 @@ type
   public
     procedure Move(W: TJitWidth; const Dst, Src: TJitOp); override;
     procedure Alu(Op: TJitAlu; W: TJitWidth; const Dst, Src: TJitOp); override;
+    procedure AluDouble(Op: TJitDoubleAlu; const Dst, Src: TJitOp); override;
     procedure Shift(Op: TJitShift; W: TJitWidth; Dst: TJitReg; Count: Integer); override;
     procedure SignExtend(W: TJitWidth; Dst: TJitReg); override;
     procedure Call(Routine: Pointer; const Args: array of TJitOp); override;
@@ -675,6 +725,21 @@ begin
     ModRM(W = jw64, [AluToRM[Op] + 2 - Ord(W = jw8)], A.Reg, W = jw8, B, False)
   else
     raise EInvalidOpException.Create('JIT: no such operation');
+end;
+
+procedure TJitAsmX64.AluDouble(Op: TJitDoubleAlu; const Dst, Src: TJitOp);
+const
+  Opcode: array[TJitDoubleAlu] of Byte = ($58, $5C, $59, $5E);
+begin
+  if (Dst.Kind <> okMem) or (Src.Kind <> okMem) then
+    raise EInvalidOpException.Create('JIT: double arithmetic requires memory operands');
+  // XMM0 is volatile under both x64 ABIs. Legacy prefixes precede REX.
+  Emit([$F2]);
+  ModRM(False, [$0F, $10], 0, False, X(Dst), False);
+  Emit([$F2]);
+  ModRM(False, [$0F, Opcode[Op]], 0, False, X(Src), False);
+  Emit([$F2]);
+  ModRM(False, [$0F, $11], 0, False, X(Dst), False);
 end;
 
 procedure TJitAsmX64.Shift(Op: TJitShift; W: TJitWidth; Dst: TJitReg; Count: Integer);
@@ -1618,8 +1683,9 @@ type
     function Allocate(Size: NativeInt; out CodeStart: NativeInt): PByte; override;
     procedure Release(Base: PByte); override;
     procedure FlushCode(P: PByte; Len: NativeInt); override;
+    procedure MakeExecutable; override;
   public
-    constructor Create(Size: NativeInt);
+    constructor Create(Size: NativeInt; Sealable: Boolean = False);
     procedure Enter; override;
     procedure Leave(const Value: TJitOp); override;
   end;
@@ -1641,7 +1707,7 @@ const
     0, 0);
   Win64CodeStart = 64;
 
-constructor TJitAsmWin64.Create(Size: NativeInt);
+constructor TJitAsmWin64.Create(Size: NativeInt; Sealable: Boolean);
 const
   Phys: array[TJitReg] of Byte = (rBX, rSI, rDI, r12, r13, r14, rAX, rCX, rDX, r8, r9, r10, r11, rAX);
 begin
@@ -1651,13 +1717,19 @@ begin
   FArgs[1] := rDX;
   FArgs[2] := r8;
   FArgs[3] := r9;
-  inherited Create(Size);
+  inherited Create(Size, Sealable);
 end;
 
 function TJitAsmWin64.Allocate(Size: NativeInt; out CodeStart: NativeInt): PByte;
+var
+  Protection: DWORD;
 begin
-  // Read, write and execute: code is written while other code runs.
-  Result := VirtualAlloc(nil, Size, MEM_COMMIT or MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+  // Mutable caches keep compiling while their previously emitted code runs.
+  if FSealable then
+    Protection := PAGE_READWRITE
+  else
+    Protection := PAGE_EXECUTE_READWRITE;
+  Result := VirtualAlloc(nil, Size, MEM_COMMIT or MEM_RESERVE, Protection);
   if Result = nil then
     RaiseLastOSError;
   System.Move(UnwindInfo, Result^, SizeOf(UnwindInfo));
@@ -1679,7 +1751,18 @@ procedure TJitAsmWin64.FlushCode(P: PByte; Len: NativeInt);
 begin
   // (x64 keeps the instruction cache coherent; Windows asks for the call for
   // code written at run time.)
-  FlushInstructionCache(GetCurrentProcess, P, Len);
+  if not FlushInstructionCache(GetCurrentProcess, P, Len) and FSealable then
+    RaiseLastOSError;
+end;
+
+procedure TJitAsmWin64.MakeExecutable;
+var
+  PreviousProtection: DWORD;
+begin
+  if not FRegistered then
+    raise EInvalidOpException.Create('JIT: unable to register Win64 unwind information');
+  if not VirtualProtect(Base, Size, PAGE_EXECUTE_READ, PreviousProtection) then
+    RaiseLastOSError;
 end;
 
 procedure TJitAsmWin64.Enter;
@@ -2489,6 +2572,22 @@ begin
   except
     // No executable memory here (a system that forbids it): the blocks run
     // interpreted.
+    on EOSError do
+      Result := nil;
+  end;
+  {$ELSE}
+  Result := nil;
+  {$ENDIF}
+end;
+
+function CreateJitSealableAsm(Size: NativeInt): TJitAsm;
+begin
+  {$IF JitSupported and Defined(MSWINDOWS)}
+  if (Size <= Win64CodeStart) or (Size > High(Cardinal)) then
+    raise EArgumentOutOfRangeException.Create('JIT code buffer size');
+  try
+    Result := TJitAsmWin64.Create(Size, True);
+  except
     on EOSError do
       Result := nil;
   end;

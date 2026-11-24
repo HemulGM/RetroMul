@@ -134,14 +134,59 @@ begin
   OutY := SWFAddCoordinate(SWFRoundCoordinate(SWFMatrixProduct(Matrix.B, SWFFloat32(X), Matrix.D, SWFFloat32(Y))), Trunc(Matrix.TY));
 end;
 
+function IsSWFZero(const Value: Double): Boolean; inline;
+var
+  Bits: UInt64;
+begin
+  Move(Value, Bits, SizeOf(Bits));
+  Result := Bits and $7FFFFFFFFFFFFFFF = 0;
+end;
+
 function TSWFBounds.Transformed(const Matrix: TSWFMatrix): TSWFBounds;
 var
   I, X, Y, PX, PY: Integer;
   Corner: TSWFBounds;
+  Left, Top, Right, Bottom, TX, TY: Integer;
+  Mask: TArithmeticExceptionMask;
 begin
   Result := Empty;
   if not Valid then
     Exit;
+  if IsSWFZero(Matrix.B) and IsSWFZero(Matrix.C) then
+  begin
+    Mask := GetExceptionMask;
+    // Larger integers can raise a precision exception when the caller asks
+    // for one. In that case preserve the original per-point conversion.
+    if (exPrecision in Mask) or
+      ((Rect.Left >= -16777216) and (Rect.Left <= 16777216) and
+      (Rect.Right >= -16777216) and (Rect.Right <= 16777216) and
+      (Rect.Top >= -16777216) and (Rect.Top <= 16777216) and
+      (Rect.Bottom >= -16777216) and (Rect.Bottom <= 16777216)) then
+    begin
+      SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide, exOverflow, exUnderflow, exPrecision]);
+      try
+        Left := SWFRoundCoordinate(SWFMatrixProductMasked(Matrix.A, Rect.Left, 0, 0));
+        Right := SWFRoundCoordinate(SWFMatrixProductMasked(Matrix.A, Rect.Right, 0, 0));
+        Top := SWFRoundCoordinate(SWFMatrixProductMasked(Matrix.D, Rect.Top, 0, 0));
+        Bottom := SWFRoundCoordinate(SWFMatrixProductMasked(Matrix.D, Rect.Bottom, 0, 0));
+      finally
+        ClearExceptions;
+        SetExceptionMask(Mask);
+      end;
+      TX := Trunc(Matrix.TX);
+      TY := Trunc(Matrix.TY);
+      Left := SWFAddCoordinate(Left, TX);
+      Right := SWFAddCoordinate(Right, TX);
+      Top := SWFAddCoordinate(Top, TY);
+      Bottom := SWFAddCoordinate(Bottom, TY);
+      Result.Valid := True;
+      Result.Rect.Left := Min(Left, Right);
+      Result.Rect.Right := Max(Left, Right);
+      Result.Rect.Top := Min(Top, Bottom);
+      Result.Rect.Bottom := Max(Top, Bottom);
+      Exit;
+    end;
+  end;
   for I := 0 to 3 do
   begin
     if (I and 1) = 0 then
@@ -171,7 +216,7 @@ begin
   Mask := GetExceptionMask;
   SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide, exOverflow, exUnderflow, exPrecision]);
   try
-    Det := SWFMatrixProduct(Value.A, Value.D, -Value.B, Value.C);
+    Det := SWFMatrixProductMasked(Value.A, Value.D, -Value.B, Value.C);
     Result := Abs(Det) > 1.1920928955078125e-7;
     if not Result then
       Exit;
@@ -181,9 +226,9 @@ begin
     Inverse.D := SWFFloat32(Value.A / Det);
     X := SWFFloat32(Value.TX);
     Y := SWFFloat32(Value.TY);
-    Numerator := SWFMatrixProduct(Value.D, X, -Value.C, Y);
+    Numerator := SWFMatrixProductMasked(Value.D, X, -Value.C, Y);
     Inverse.TX := SWFRoundCoordinate(SWFFloat32(Numerator /  - Det));
-    Numerator := SWFMatrixProduct(Value.B, X, -Value.A, Y);
+    Numerator := SWFMatrixProductMasked(Value.B, X, -Value.A, Y);
     Inverse.TY := SWFRoundCoordinate(SWFFloat32(Numerator / Det));
   finally
     ClearExceptions;

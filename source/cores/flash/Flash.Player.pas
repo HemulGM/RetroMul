@@ -3,9 +3,10 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Generics.Collections, SWF.Reader,
-  SWF.Movie, SWF.Geometry, SWF.Sound, AVM1.Runtime, Flash.Text, Flash.Audio,
-  Media.Image.PixelBuffer, SWF.Video, Flash.Net, AVM2.ABC, AVM2.Runtime;
+  System.SysUtils, System.Classes, System.Generics.Collections, System.Math,
+  SWF.Reader, SWF.Movie, SWF.Geometry, SWF.Sound, AVM1.Runtime, Flash.Text,
+  Flash.Audio, Media.Image.PixelBuffer, SWF.Video, Flash.Net, AVM2.ABC,
+  AVM2.Runtime;
 
 type
   TFlashQuality = (fqLow, fqMedium, fqHigh, fqBest, fq8x8, fq8x8Linear, fq16x16, fq16x16Linear);
@@ -42,6 +43,7 @@ type
     FStoredMatrix: TSWFMatrix;
     FMatrixSnapshot: array[0..5] of Double;
     FMatrixValid: Boolean;
+    FSerial: UInt64;
     FTextDocument: TFlashTextDocument;
     FStrokePoints: TList<TSWFPoint>;
     FDrawingEdgeCount: Integer;
@@ -66,7 +68,7 @@ type
     MovieLibrary: TFlashLibrary;
     MovieRoot, Unloaded, IsLevel, Removing, UnloadDispatching: Boolean;
     FrameScriptPending: Boolean;
-    AVM2ConstructionPending: Boolean;
+    AVM2ConstructionPending, HasAVM2Handle: Boolean;
     PendingAVM2Playing, ApplyingAVM2Goto, ExecutingFrameScript: Boolean;
     LevelIndex: Integer;
     LoadGeneration, ContentGeneration, UnloadGeneration: Cardinal;
@@ -162,9 +164,83 @@ type
     Coverage, MaskOutput: TBytes;
   end;
 
+  TFlashRasterSpan = record
+    Y, Left, Right: Integer;
+    Coverage: Word;
+  end;
+
+  PFlashShapeRaster = ^TFlashShapeRaster;
+
+  TFlashShapeRaster = record
+    Fills: TArray<TSWFFill>;
+    Matrix: TSWFMatrix;
+    Stage: TSWFRect;
+    Width, Height: Integer;
+    Quality: TFlashQuality;
+    Spans: TArray<TFlashRasterSpan>;
+    StyleOffsets: TArray<Integer>;
+    LastUsed: UInt64;
+    TooManySpans: Boolean;
+  end;
+
+  TFlashTextureRowState = (trUnfilled, trMixed, trOpaque);
+
+  PFlashTextureSamples = ^TFlashTextureSamples;
+
+  TFlashTextureSamples = record
+    Source: TArray<Cardinal>;
+    Inverse: TSWFMatrix;
+    SourceWidth, TargetWidth, TargetHeight: Integer;
+    ContentVersion, LastUsed: UInt64;
+    RepeatPixels, Premultiplied: Boolean;
+    Colors: TArray<Cardinal>;
+    Valid: TBytes;
+    Rows: TArray<TFlashTextureRowState>;
+  end;
+
+  PFlashFilteredRaster = ^TFlashFilteredRaster;
+
+  TFlashFilteredRaster = record
+    Owner: TFlashClip;
+    Filters: TSWFFilters;
+    Content: TSWFRect;
+    Width, Height: Integer;
+    Input, Output: TArray<Cardinal>;
+    Work, RasterWork: Int64;
+    LastUsed: UInt64;
+    State: TBytes;
+  end;
+
+  PFlashFillHit = ^TFlashFillHit;
+
+  TFlashFillHit = record
+    Edges: TArray<TSWFEdge>;
+    Indices, Offsets: TArray<Integer>;
+    MinY, MaxY, BinScale: Double;
+    LastUsed: UInt64;
+  end;
+
+  TFlashStrokeHitOutline = record
+    Edges: TArray<TSWFEdge>;
+    MinY, MaxY: Double;
+    Built: Boolean;
+  end;
+
+  PFlashStrokeHit = ^TFlashStrokeHit;
+
+  TFlashStrokeHit = record
+    Paths: TArray<TSWFStrokePath>;
+    Fills: TArray<TSWFFill>;
+    Matrix: TSWFMatrix;
+    Outlines: TArray<TFlashStrokeHitOutline>;
+    EdgeCount: Integer;
+    LastUsed: UInt64;
+  end;
+
   TFlashPlayer = class(TAVMHost)
   private
     FClips: TObjectList<TFlashClip>;
+    FClipSerial: UInt64;
     FAudio: TFlashAudio;
     FVideoPool: IImagePixelPool;
     FNet: TFlashNetRuntime;
@@ -175,6 +251,10 @@ type
     FLoads: TList<TFlashLoadRequest>;
     FUnloads: TList<TFlashUnloadRequest>;
     FReadResource: TFlashResourceReader;
+    FReadSharedObject: TAVM2SharedReader;
+    FWriteSharedObject: TAVM2SharedWriter;
+    FOnAVM2Collection: TAVM2CollectionObserver;
+    FOnAVM2Reclaim: TAVM2ReclaimObserver;
     FLoadedBytes: Int64;
     FActions: TList<TFlashQueuedAction>;
     FConstructClips: TList<TFlashQueuedConstruct>;
@@ -183,7 +263,7 @@ type
     FAVM2FrameDepth: Integer;
     FCollectingAVM2Timeline: Boolean;
     FAVM2FrameScriptsChanged: Boolean;
-    FRoot, FPressed, FHovered, FTextFocus: TFlashClip;
+    FRoot, FPressed, FHovered, FTextFocus, FAVM2Stage: TFlashClip;
     FKeys: array[0..255] of Boolean;
     FMouseX, FMouseY, FLastKey: Integer;
     FMouseValid: Boolean;
@@ -192,6 +272,15 @@ type
     FAVM2PointerDown: Boolean;
     FFrameNumber: UInt64;
     FRender: TFlashRenderState;
+    FShapeRasters: array[0..127] of TFlashShapeRaster;
+    FShapeRasterSpanCount: Integer;
+    FTextureSamples: array[0..3] of TFlashTextureSamples;
+    FTextureSampleUse: UInt64;
+    FFilteredRasters: array[0..63] of TFlashFilteredRaster;
+    FFilteredPixels: Integer;
+    FFilterSequence: UInt64;
+    FFillHits: array[0..7] of TFlashFillHit;
+    FStrokeHits: array[0..15] of TFlashStrokeHit;
     FQuality: TFlashQuality;
     FPreferBest: Boolean;
     FViewportQuad: TSWFCharacter;
@@ -205,12 +294,15 @@ type
     FDragLocked, FDragConstrained, FUpdatingDrag: Boolean;
     FDragBounds: TSWFRect;
     procedure SetQuality(Value: TFlashQuality);
+    procedure SetAVM2CollectionObserver(const Observer: TAVM2CollectionObserver);
+    procedure SetAVM2ReclaimObserver(const Observer: TAVM2ReclaimObserver);
     procedure ConfigureSamples;
     procedure BeginRender(Width, Height: Integer; const Stage: TSWFRect; Color: TSWFColorTransform; WithAlpha: Boolean; Quality: TFlashQuality; out Previous: TFlashRenderState);
     procedure EndRender(const Previous: TFlashRenderState);
     procedure ResolveSamples(var Pixels: TArray<Cardinal>);
     procedure UpdateDrag;
     function BitmapTextGlyph(Character: Char): TSWFCharacter;
+    function CreateClip: TFlashClip;
     function AddClip(Parent: TFlashClip; const Name: string; Depth: Integer; Character: TSWFCharacter; ReplaceDepth: Boolean = True): TFlashClip;
     function Clip(O: TAVMObject): TFlashClip;
     procedure RegisterFrameExports(MovieLibrary: TFlashLibrary; const Frame: TSWFFrame);
@@ -235,6 +327,7 @@ type
     procedure ProcessUnloads(Removals: Boolean; Finalize: Boolean = True);
     procedure FinishInput;
     procedure InitializeTextField(C: TFlashClip);
+    function ReadBoundTextVariable(C: TFlashClip): TAVMValue;
     function TextFieldCall(const Name: string; C: TFlashClip; const Args: TArray<TAVMValue>): TAVMValue;
     procedure FinalizeRemoval(C: TFlashClip);
     procedure LoaderEvent(const Request: TFlashLoadRequest; const Name: string; const Args: TArray<TAVMValue>);
@@ -244,6 +337,7 @@ type
     procedure ConstructAVM2Clip(C: TFlashClip);
     procedure BroadcastAVM2FrameEvent(Phase: TAVM2FrameEvent);
     procedure CompleteAVM2Frame;
+    function AVM2TimelineRoot(LibraryItem: TFlashLibrary): TFlashClip;
     procedure RunAVM2FrameScripts;
     procedure ApplyPendingSeeks(C: TFlashClip);
     procedure ApplyAVM2Goto(C: TFlashClip);
@@ -263,6 +357,10 @@ type
     function ResolveSoundExport(Owner: TFlashClip; const Name: string): TSWFSound;
     function ReadSoundTransform(Owner: TObject): TFlashSoundTransform;
     procedure UpdateSoundProgress(Client: TObject; Position: UInt32; Finished: Boolean);
+    function FindFillHit(Shape: TSWFCharacter): PFlashFillHit;
+    function PointInShapeFill(Shape: TSWFCharacter; X, Y: Double; DrawingClip: TFlashClip): Boolean;
+    function FindStrokeHit(Shape: TSWFCharacter; const Matrix: TSWFMatrix): PFlashStrokeHit;
+    function PointOnStroke(Shape: TSWFCharacter; const M: TSWFMatrix; X, Y: Double; DrawingClip: TFlashClip): Boolean;
     function ContainsPoint(C: TFlashClip; X, Y: Double; const ParentMatrix: TSWFMatrix; HitState: Boolean; IgnoreVisibility: Boolean = False; MaskGeometry: Boolean = False; MaskRoot: Boolean = False; Depth: Integer = 0): Boolean;
     function PointInMask(Mask: TFlashClip; X, Y: Double; const ParentMatrix: TSWFMatrix; Depth: Integer = 0): Boolean;
     function PointChildren(C: TFlashClip; X, Y: Double; const Matrix: TSWFMatrix; HitState: Boolean; Depth: Integer = 0): TArray<TFlashClip>;
@@ -287,6 +385,9 @@ type
     procedure ResolveIndexedProperty(Start: TAVMObject; const Path, Index: TAVMValue; out Target: TFlashClip; out PropertyIndex: Integer);
     procedure RenderClip(C: TFlashClip; const ParentMatrix: TSWFMatrix; Opacity: Double; var Pixels: TArray<Cardinal>);
     procedure RenderClipWithMask(C: TFlashClip; const Matrix: TSWFMatrix; Opacity: Double; var Pixels: TArray<Cardinal>);
+    function FindFilteredRaster(C: TFlashClip): PFlashFilteredRaster;
+    function FilteredLayerState(C: TFlashClip; const Matrix: TSWFMatrix; const Stage: TSWFRect; Opacity: Double): TBytes;
+    procedure FilterLayer(C: TFlashClip; var Layer: TArray<Cardinal>; Width, Height: Integer; const Content: TSWFRect; const Filters: TSWFFilters; const State: TBytes; RasterWork: Int64);
     procedure RenderClipGroup(C: TFlashClip; const Matrix: TSWFMatrix; Opacity: Double; var Pixels: TArray<Cardinal>);
     function EnsureSampleDetail(Index: Integer; Color: Cardinal): Integer;
     function CoverageAt(Index: Integer): Word;
@@ -301,8 +402,9 @@ type
     function RenderScrollCoverage(C: TFlashClip; const Matrix: TSWFMatrix; var Pixels: TArray<Cardinal>): TBytes;
     procedure RenderClipViewport(C: TFlashClip; const Matrix: TSWFMatrix; Opacity: Double; var Pixels: TArray<Cardinal>);
     procedure PlotPixel(Index: Integer; Color: Cardinal; Opacity: Double; var Pixels: TArray<Cardinal>; Coverage: Word);
+    function FindShapeRaster(Shape: TSWFCharacter; const Matrix: TSWFMatrix; Glyph: Boolean): PFlashShapeRaster;
     procedure RenderShape(Shape: TSWFCharacter; const M: TSWFMatrix; Opacity: Double; var Pixels: TArray<Cardinal>; ColorOverride: Int64 = -1; LibraryMovie: TSWFMovie = nil; DrawingClip: TFlashClip = nil);
-    procedure RenderBitmap(Width, Height: Integer; const ImagePixels: TArray<Cardinal>; const Matrix: TSWFMatrix; Smooth, Premultiplied: Boolean; Opacity: Double; var Pixels: TArray<Cardinal>; SnapPixels: Boolean = True);
+    procedure RenderBitmap(Width, Height: Integer; const ImagePixels: TArray<Cardinal>; const Matrix: TSWFMatrix; Smooth, Premultiplied: Boolean; Opacity: Double; var Pixels: TArray<Cardinal>; SnapPixels: Boolean = True; SourceOpaque: Boolean = False);
     function ReadBitmapFillMatrix(const Value: TAVMValue): TSWFMatrix;
     procedure AttachBitmap(C: TFlashClip; const Args: TArray<TAVMValue>);
     procedure BeginBitmapFill(C: TFlashClip; const Args: TArray<TAVMValue>);
@@ -344,6 +446,8 @@ type
     procedure Timeline(Target: TAVMObject; const Command: string; const Value: TAVMValue); override;
     procedure CallFrame(Target: TAVMObject; const Value: TAVMValue; Stack: TList<TAVMValue>; const Pool: TArray<string>); override;
     procedure VisitRoots(const Visit: TProc<TAVMObject>); override;
+    procedure VisitObjectReferences(O: TAVMObject; const Visit: TProc<TAVMObject>); override;
+    procedure SweepUnreachable; override;
     procedure Tick;
     procedure Key(Code: Integer; Pressed: Boolean);
     procedure Pointer(X, Y: Integer; Valid: Boolean; Buttons: Byte);
@@ -352,34 +456,75 @@ type
     function MixAudio(Frames: Integer): TArray<SmallInt>;
     property FrameNumber: UInt64 read FFrameNumber;
     property Quality: TFlashQuality read FQuality write SetQuality;
+    property OnAVM2Collection: TAVM2CollectionObserver read FOnAVM2Collection write SetAVM2CollectionObserver;
+    property OnAVM2Reclaim: TAVM2ReclaimObserver read FOnAVM2Reclaim write SetAVM2ReclaimObserver;
     property RootClip: TFlashClip read FRoot;
+    property ReadSharedObject: TAVM2SharedReader read FReadSharedObject write FReadSharedObject;
+    property WriteSharedObject: TAVM2SharedWriter read FWriteSharedObject write FWriteSharedObject;
   end;
 
 implementation
 
 uses
-  System.Math, System.StrUtils, System.Generics.Defaults, Media.Font.Bitmap,
-  Flash.Filters, AVM1.Names, AVM1.Coercion, AVM1.Filters, AVM1.Transforms,
-  AVM1.Trigonometry, AVM1.Numeric, AVM1.Broadcaster, AVM1.TextFormat,
+  System.StrUtils, System.Generics.Defaults, Media.Font.Bitmap, Flash.Filters,
+  AVM1.Names, AVM1.Coercion, AVM1.Filters, AVM1.Transforms, AVM1.Trigonometry,
+  AVM1.Numeric, AVM1.Broadcaster, AVM1.TextFormat, AVM1.BitmapData,
   Audio.MP3.Metadata;
 
 const
   FlashLibraryMemoryLimit = 256 * 1024 * 1024;
   AVM2ScriptDepth = 65536;
+  FlashCachedShapeMinEdges = 24;
+  FlashCachedShapeWays = 4;
+  FlashCachedShapeTotalSpans = 2 * 1024 * 1024;
+  FlashCachedShapeStyleLimit = 512;
+  FlashCachedShapeSpanLimit = 131072;
+  FlashTextureCacheMinSourcePixels = 64 * 1024;
+  FlashTextureCacheMaxSourcePixels = 1024 * 1024;
+  FlashTextureCacheMaxTargetPixels = 512 * 1024;
+  FlashFillHitBins = 64;
+  FlashFillHitMinEdges = 1024;
+  FlashFillHitMaxEdges = 131072;
+  FlashStrokeHitMinPaths = 16;
+  FlashStrokeHitMaxPaths = 1024;
+  FlashStrokeHitMaxEdges = 32768;
 
 type
   TFlashAVM2Display = class(TAVM2DisplayHost)
   private
     FPlayer: TFlashPlayer;
     FRoot: TFlashClip;
+    function FindSound(const ClassName: string): TSWFSound;
   public
     constructor Create(Player: TFlashPlayer; Root: TFlashClip);
+    function CreateStage: TObject; override;
+    function EmbeddedBytes(const ClassName: string; out Data: TBytes): Boolean; override;
+    function MovieBytes: TBytes; override;
+    function LoadTimeline(const Data: TBytes; out Info: TAVM2LoadedMovie): TObject; override;
+    procedure StopTimeline(Display: TObject); override;
+    function SoundLength(const ClassName: string): Double; override;
+    function StartSound(const ClassName: string; Channel: TAVM2Object; Start: Double; Loops: Integer): Boolean; override;
+    procedure StopSound(Channel: TAVM2Object); override;
+    function EmbeddedBitmap(const ClassName: string): IImagePixelBuffer; override;
+    procedure AttachBitmap(Display: TObject; const Buffer: IImagePixelBuffer; Smooth: Boolean); override;
+    procedure BeginBitmapFill(Display: TObject; const Buffer: IImagePixelBuffer; const Matrix: TAVM2Matrix; RepeatFill, Smoothing: Boolean); override;
+    procedure DrawBitmap(const Target: IImagePixelBuffer; Source: TAVM2Object; const Options: TAVM2BitmapDraw); override;
+    function GetColorTransform(Display: TObject): TSWFColorTransform; override;
+    procedure SetColorTransform(Display: TObject; const Value: TSWFColorTransform); override;
+    function GetFilters(Display: TObject): TSWFFilters; override;
+    procedure SetFilters(Display: TObject; const Filters: TSWFFilters); override;
+    procedure SetMask(Display, Mask: TObject); override;
+    procedure InitializeText(Display: TObject); override;
+    function GetTextProperty(Display: TObject; const Name: string; out Value: TAVM2Value): Boolean; override;
+    function SetTextProperty(Display: TObject; const Name: string; const Value: TAVM2Value): Boolean; override;
+    procedure SetTextFormat(Display: TObject; Format: TAVM2Object; First, Last: Integer); override;
     function CreateDisplay(Document: Boolean; const Classes: TArray<string>; out Name: string): TObject; override;
     procedure Place(Child, Parent: TObject; Position: Integer); override;
     procedure RequestFrameScript(Display: TObject; Frame: Integer); override;
     procedure SetPlaying(Display: TObject; Playing: Boolean); override;
     function GotoFrame(Display: TObject; const Target, Scene: string; HasScene, Playing: Boolean): Boolean; override;
     function TimelineFrame(Display: TObject; Total: Boolean): Integer; override;
+    function TimelineLabels(Display: TObject): TArray<TAVM2FrameLabel>; override;
     procedure SetProperty(Display: TObject; const Name: string; Value: Double); override;
     procedure Draw(Display: TObject; Command: TAVM2DisplayMethod; const Args: TArray<Double>); override;
     procedure TransformPoint(Display: TObject; ToGlobal: Boolean; var X, Y: Double); override;
@@ -416,6 +561,391 @@ begin
   FRoot := Root;
 end;
 
+function TFlashAVM2Display.CreateStage: TObject;
+var
+  Stage: TFlashClip;
+begin
+  Result := nil;
+  if FRoot <> FPlayer.FRoot then
+    Exit;
+  Stage := FPlayer.FAVM2Stage;
+  if Stage = nil then
+  begin
+    Stage := FPlayer.CreateClip;
+    Stage.HasAVM2Handle := True;
+    Stage.MovieLibrary := FRoot.MovieLibrary;
+    Stage.Script := FPlayer.VM.NewObject('MovieClip');
+    Stage.Script.HostData := Stage;
+    Stage.Children.Add(FRoot);
+    FRoot.Parent := Stage;
+    FRoot.Depth := AVM2ScriptDepth;
+    FPlayer.FAVM2Stage := Stage;
+  end;
+  Result := Stage;
+end;
+
+function TFlashAVM2Display.EmbeddedBytes(const ClassName: string; out Data: TBytes): Boolean;
+var
+  Id: Integer;
+  Movie: TSWFMovie;
+begin
+  Movie := FRoot.MovieLibrary.Movie;
+  Result := Movie.AVM2ExportNames.TryGetValue(ClassName, Id) and Movie.BinaryAssets.TryGetValue(Id, Data);
+end;
+
+function TFlashAVM2Display.MovieBytes: TBytes;
+begin
+  Result := FRoot.MovieLibrary.Movie.AVM2MovieBytes;
+end;
+
+function TFlashAVM2Display.LoadTimeline(const Data: TBytes; out Info: TAVM2LoadedMovie): TObject;
+var
+  LibraryItem: TFlashLibrary;
+  Clip: TFlashClip;
+  LibraryBytes: Int64;
+begin
+  Result := nil;
+  Info := Default(TAVM2LoadedMovie);
+  if FPlayer.FLibraries.Count >= 64 then
+    Exit;
+  try
+    LibraryItem := TFlashLibrary.Create(Data, FRoot.MovieLibrary.URI);
+  except
+    on ESWFError do
+      Exit;
+  end;
+  try
+    // Scriptless AS3 timelines can be wrapped by the Loader's own runtime.
+    if not LibraryItem.Movie.UsesAVM2 or (LibraryItem.Movie.DocumentClass <> '') or
+      (Length(LibraryItem.Movie.Frames) = 0) then
+      Exit;
+    for var Frame in LibraryItem.Movie.Frames do
+      for var Tag in Frame.Tags do
+        if Tag.Code in [72, 82] then
+          Exit;
+    LibraryBytes := Int64(LibraryItem.Movie.DecodedSize) + LibraryItem.Movie.BitmapMemorySize +
+      LibraryItem.Movie.SoundMemorySize;
+    if FPlayer.FLoadedBytes + Int64(FPlayer.FExternalSoundSamples) * SizeOf(SmallInt) +
+      LibraryBytes > FlashLibraryMemoryLimit then
+      Exit;
+    Clip := FPlayer.CreateClip;
+    Clip.MovieLibrary := LibraryItem;
+    Clip.MovieRoot := True;
+    Clip.CreatedFrame := FPlayer.FFrameNumber;
+    Clip.Script := FPlayer.VM.NewObject('MovieClip');
+    Clip.Script.HostData := Clip;
+    LibraryItem.Root := Clip;
+    FPlayer.FLibraries.Add(LibraryItem);
+    Inc(FPlayer.FLoadedBytes, LibraryBytes);
+    Info.Width := LibraryItem.Movie.Width;
+    Info.Height := LibraryItem.Movie.Height;
+    Info.Version := LibraryItem.Movie.Version;
+    Info.FrameRate := LibraryItem.Movie.FPS;
+    LibraryItem := nil;
+    try
+      FPlayer.StepClip(Clip, False);
+    except
+      on ESWFError do
+      begin
+        FPlayer.RemoveClip(Clip);
+        Clip.MovieLibrary.Root := nil;
+        Exit;
+      end;
+    end;
+    Clip.HasAVM2Handle := True;
+    Result := Clip;
+  finally
+    LibraryItem.Free;
+  end;
+end;
+
+procedure TFlashAVM2Display.StopTimeline(Display: TObject);
+var
+  Clip: TFlashClip;
+begin
+  Clip := TFlashClip(Display);
+  if Clip = nil then
+    Exit;
+  Clip.Playing := False;
+  FPlayer.FAudio.StopOwner(Clip);
+  for var Child in Clip.Children do
+    StopTimeline(Child);
+end;
+
+function TFlashAVM2Display.FindSound(const ClassName: string): TSWFSound;
+var
+  Id: Integer;
+  Movie: TSWFMovie;
+begin
+  Result := nil;
+  Movie := FRoot.MovieLibrary.Movie;
+  if Movie.AVM2ExportNames.TryGetValue(ClassName, Id) then
+    Movie.Sounds.TryGetValue(Id, Result);
+end;
+
+function TFlashAVM2Display.SoundLength(const ClassName: string): Double;
+var
+  Sound: TSWFSound;
+begin
+  Sound := FindSound(ClassName);
+  Result := 0;
+  if Sound <> nil then
+    Result := 1000.0 * Sound.FrameCount / Sound.SampleRate;
+end;
+
+function TFlashAVM2Display.StartSound(const ClassName: string; Channel: TAVM2Object; Start: Double; Loops: Integer): Boolean;
+var
+  Sound: TSWFSound;
+  Info: TSWFSoundInfo;
+begin
+  Sound := FindSound(ClassName);
+  if (Sound = nil) or (Start >= 1000.0 * Sound.FrameCount / Sound.SampleRate) then
+    Exit(False);
+  Info := Default(TSWFSoundInfo);
+  Info.First := Trunc(Start * SWFSoundRate / 1000.0);
+  Info.Loops := Min(Loops, High(Integer) - 1) + 1;
+  Result := FPlayer.FAudio.Start(Sound, Channel, Info, Channel);
+end;
+
+procedure TFlashAVM2Display.StopSound(Channel: TAVM2Object);
+begin
+  FPlayer.FAudio.StopOwner(Channel);
+end;
+
+function TFlashAVM2Display.EmbeddedBitmap(const ClassName: string): IImagePixelBuffer;
+var
+  Movie: TSWFMovie;
+  Definition: TSWFCharacter;
+  Id, X, Y: Integer;
+begin
+  Result := nil;
+  Movie := FRoot.MovieLibrary.Movie;
+  if not Movie.AVM2ExportNames.TryGetValue(ClassName, Id) or
+    not Movie.Characters.TryGetValue(Id, Definition) or (Definition.BitmapWidth = 0) then
+    Exit;
+  Result := FPlayer.FVideoPool.Allocate(Definition.BitmapWidth, Definition.BitmapHeight, True, 0);
+  if Result <> nil then
+    for Y := 0 to Definition.BitmapHeight - 1 do
+      for X := 0 to Definition.BitmapWidth - 1 do
+        Result.SetPixel(X, Y, Definition.BitmapPixels[Y * Definition.BitmapWidth + X]);
+end;
+
+procedure TFlashAVM2Display.AttachBitmap(Display: TObject; const Buffer: IImagePixelBuffer; Smooth: Boolean);
+var
+  Clip: TFlashClip;
+  Bounds: TSWFRect;
+begin
+  Clip := TFlashClip(Display);
+  Clip.AttachedBitmap := Buffer;
+  Clip.AttachedBitmapSmooth := Smooth;
+  Clip.AttachedBitmapBounds := TSWFBounds.Empty;
+  if Buffer <> nil then
+  begin
+    Bounds := Default(TSWFRect);
+    Bounds.Right := Buffer.Width * 20;
+    Bounds.Bottom := Buffer.Height * 20;
+    Clip.AttachedBitmapBounds := TSWFBounds.FromRect(Bounds);
+  end;
+end;
+
+procedure TFlashAVM2Display.BeginBitmapFill(Display: TObject; const Buffer: IImagePixelBuffer; const Matrix: TAVM2Matrix; RepeatFill, Smoothing: Boolean);
+var
+  Style: TSWFFill;
+begin
+  Style := Default(TSWFFill);
+  Style.BitmapData := Buffer;
+  Style.BitmapRepeat := RepeatFill;
+  Style.BitmapSmooth := Smoothing;
+  Style.BitmapMatrix.A := SWFFloat32(Matrix.A * 20);
+  Style.BitmapMatrix.B := SWFFloat32(Matrix.B * 20);
+  Style.BitmapMatrix.C := SWFFloat32(Matrix.C * 20);
+  Style.BitmapMatrix.D := SWFFloat32(Matrix.D * 20);
+  Style.BitmapMatrix.TX := SWFTwipsFromPixels(Matrix.TX);
+  Style.BitmapMatrix.TY := SWFTwipsFromPixels(Matrix.TY);
+  FPlayer.SetDrawingFill(TFlashClip(Display), Style, True);
+end;
+
+procedure TFlashAVM2Display.DrawBitmap(const Target: IImagePixelBuffer; Source: TAVM2Object; const Options: TAVM2BitmapDraw);
+var
+  Drawing: TAVMBitmapDrawOptions;
+  SourceValue: TAVMValue;
+  I: Integer;
+begin
+  Drawing := Default(TAVMBitmapDrawOptions);
+  Drawing.Matrix.A := Options.Matrix.A;
+  Drawing.Matrix.B := Options.Matrix.B;
+  Drawing.Matrix.C := Options.Matrix.C;
+  Drawing.Matrix.D := Options.Matrix.D;
+  Drawing.Matrix.TX := SWFTwipsFromPixels(Options.Matrix.TX);
+  Drawing.Matrix.TY := SWFTwipsFromPixels(Options.Matrix.TY);
+  for I := 0 to 3 do
+  begin
+    Drawing.ColorTransform.Mult[I] := Options.Color[I];
+    if not IsNan(Options.Color[I + 4]) then
+      Drawing.ColorTransform.Add[I] := Trunc(EnsureRange(Options.Color[I + 4], -65535.0, 65535.0));
+  end;
+  Drawing.HasClip := Options.HasClip;
+  Drawing.Smooth := Options.Smooth;
+  if Options.HasClip then
+  begin
+    Drawing.ClipRect.Left := SWFTwipsFromPixels(Options.Clip.X);
+    Drawing.ClipRect.Top := SWFTwipsFromPixels(Options.Clip.Y);
+    Drawing.ClipRect.Right := SWFTwipsFromPixels(Options.Clip.Right);
+    Drawing.ClipRect.Bottom := SWFTwipsFromPixels(Options.Clip.Bottom);
+  end;
+  I := IndexText(Options.Blend, ['normal', 'layer', 'multiply', 'screen', 'lighten', 'darken',
+      'difference', 'add', 'subtract', 'invert', 'alpha', 'erase', 'overlay', 'hardlight']);
+  if I >= 0 then
+    Drawing.Blend := TAVMBitmapBlend(I);
+  if Source.BitmapData <> nil then
+    SourceValue := AVMBitmapReference(FPlayer.VM, Source.BitmapData)
+  else
+    SourceValue := TAVMValue.Ref(TFlashClip(Source.DisplayData).Script);
+  FPlayer.DrawBitmapData(Target, SourceValue, Drawing);
+end;
+
+function TFlashAVM2Display.GetColorTransform(Display: TObject): TSWFColorTransform;
+begin
+  Result := TSWFColorTransform.Identity;
+  if Display <> nil then
+    Result := TFlashClip(Display).ColorTransform;
+end;
+
+procedure TFlashAVM2Display.SetColorTransform(Display: TObject; const Value: TSWFColorTransform);
+begin
+  if Display <> nil then
+    TFlashClip(Display).ColorTransform := Value;
+end;
+
+function TFlashAVM2Display.GetFilters(Display: TObject): TSWFFilters;
+begin
+  Result := nil;
+  if Display <> nil then
+    Result := TFlashClip(Display).Filters;
+end;
+
+procedure TFlashAVM2Display.SetFilters(Display: TObject; const Filters: TSWFFilters);
+begin
+  if Display <> nil then
+    TFlashClip(Display).Filters := Filters;
+end;
+
+procedure TFlashAVM2Display.SetMask(Display, Mask: TObject);
+var
+  Value: TAVMValue;
+begin
+  Value := TAVMValue.Ref(nil);
+  if Mask <> nil then
+    Value := TAVMValue.Ref(TFlashClip(Mask).Script);
+  FPlayer.SetClipMask(TFlashClip(Display), [Value]);
+end;
+
+procedure TFlashAVM2Display.InitializeText(Display: TObject);
+var
+  Clip: TFlashClip;
+begin
+  Clip := TFlashClip(Display);
+  Clip.TextWidth := 100;
+  Clip.TextHeight := 100;
+  Clip.TextSize := 12;
+  Clip.TextColor := $FF000000;
+  FPlayer.InitializeTextField(Clip);
+end;
+
+function TFlashAVM2Display.GetTextProperty(Display: TObject; const Name: string; out Value: TAVM2Value): Boolean;
+var
+  Clip: TFlashClip;
+begin
+  Clip := TFlashClip(Display);
+  Result := True;
+  if Name = 'text' then
+    Value := TAVM2Value.Str(Clip.Text)
+  else if Name = 'htmlText' then
+    Value := TAVM2Value.Str(Clip.HTMLText)
+  else if Name = 'length' then
+    Value := TAVM2Value.Num(Length(Clip.Text), a2Int)
+  else if Name = 'width' then
+    Value := TAVM2Value.Num(Clip.TextWidth)
+  else if Name = 'height' then
+    Value := TAVM2Value.Num(Clip.TextHeight)
+  else if Name = 'textColor' then
+    Value := TAVM2Value.Num(Cardinal(Trunc(Clip.TextDocument.DefaultFormat.Values[2].Number)) and $FFFFFF, a2UInt)
+  else if Name = 'multiline' then
+    Value := TAVM2Value.Num(Ord(Clip.TextMultiline), a2Boolean)
+  else if Name = 'type' then
+  begin
+    if Clip.IsEditable then
+      Value := TAVM2Value.Str('input')
+    else
+      Value := TAVM2Value.Str('dynamic');
+  end
+  else
+    Result := False;
+end;
+
+procedure TFlashAVM2Display.SetTextFormat(Display: TObject; Format: TAVM2Object; First, Last: Integer);
+var
+  Clip: TFlashClip;
+  Data: TAVMTextFormatData;
+  Value: TAVM2Value;
+  I: Integer;
+begin
+  if Format = nil then
+    Exit;
+  Clip := TFlashClip(Display);
+  Data := TAVMTextFormatData.Create;
+  try
+    for I := Low(AVMFormatNames) to High(AVMFormatNames) do
+      if Format.Props.TryGetValue(#0 + AVMFormatNames[I], Value) then
+        case Value.Kind of
+          a2String:
+            Data.Values[I] := TAVMValue.Str(Value.Text);
+          a2Boolean:
+            Data.Values[I] := TAVMValue.Bool(Value.Number <> 0);
+          a2Int, a2UInt, a2Number:
+            Data.Values[I] := TAVMValue.Num(Value.Number);
+        end;
+    if First < 0 then
+      Clip.TextDocument.SetDefault(Data)
+    else
+    begin
+      if Last < 0 then
+        Last := Length(Clip.Text);
+      Clip.TextDocument.SetFormat(First, Last, Data);
+    end;
+  finally
+    Data.Free;
+  end;
+end;
+
+function TFlashAVM2Display.SetTextProperty(Display: TObject; const Name: string; const Value: TAVM2Value): Boolean;
+var
+  Clip: TFlashClip;
+begin
+  Clip := TFlashClip(Display);
+  Result := True;
+  if Name = 'text' then
+    Clip.Text := Value.Text
+  else if Name = 'htmlText' then
+    Clip.HTMLText := Value.Text
+  else if Name = 'multiline' then
+  begin
+    Clip.TextMultiline := Value.Number <> 0;
+    Clip.TextDocument.Multiline := Clip.TextMultiline;
+  end
+  else if Name = 'type' then
+    Clip.IsEditable := Value.Text = 'input'
+  else if Name = 'textColor' then
+    FPlayer.TextFieldCall('set.textColor', Clip, [TAVMValue.Num(Value.Number)])
+  else if Name = 'defaultTextFormat' then
+  begin
+    SetTextFormat(Display, Value.Obj, -1, -1);
+    Result := False;
+  end
+  else
+    Result := False;
+end;
+
 function TFlashAVM2Display.CreateDisplay(Document: Boolean; const Classes: TArray<string>; out Name: string): TObject;
 var
   Clip: TFlashClip;
@@ -425,11 +955,12 @@ var
 begin
   Name := '';
   if Document then
+  begin
+    FRoot.HasAVM2Handle := True;
     Exit(FRoot);
-  if FPlayer.FClips.Count >= 65536 then
-    raise ESWFError.Create('Flash clip limit');
-  Clip := TFlashClip.Create;
-  FPlayer.FClips.Add(Clip);
+  end;
+  Clip := FPlayer.CreateClip;
+  Clip.HasAVM2Handle := True;
   Clip.MovieLibrary := FRoot.MovieLibrary;
   Clip.CreatedFrame := FPlayer.FFrameNumber;
   Clip.Script := FPlayer.VM.NewObject('MovieClip');
@@ -441,7 +972,7 @@ begin
       Clip.Character := Definition;
       Break;
     end;
-  Name := 'instance' + IntToStr(FPlayer.FClips.Count - 1);
+  Name := 'instance' + UIntToStr(FPlayer.FClipSerial - 1);
   Clip.Name := Name;
   Clip.FrameScriptPending := True;
   if Clip.Character <> nil then
@@ -495,7 +1026,11 @@ begin
   else if Name = 'alpha' then
     Clip.Alpha := Value
   else if Name = 'visible' then
-    Clip.Visible := Value <> 0;
+    Clip.Visible := Value <> 0
+  else if Name = 'width' then
+    FPlayer.SetDisplaySize(Clip, Value, True)
+  else if Name = 'height' then
+    FPlayer.SetDisplaySize(Clip, Value, False);
 end;
 
 procedure TFlashAVM2Display.RequestFrameScript(Display: TObject; Frame: Integer);
@@ -645,6 +1180,49 @@ begin
   Inc(Result);
 end;
 
+function TFlashAVM2Display.TimelineLabels(Display: TObject): TArray<TAVM2FrameLabel>;
+var
+  Clip: TFlashClip;
+  Frames: TArray<TSWFFrame>;
+  Labels: TList<TAVM2FrameLabel>;
+  Entry: TAVM2FrameLabel;
+  Tag: TSWFTag;
+  Reader: TSWFReader;
+  Scene: TSWFScene;
+  I, First, Last: Integer;
+begin
+  Clip := TFlashClip(Display);
+  Frames := FPlayer.ClipFrames(Clip);
+  First := 0;
+  Last := High(Frames);
+  if Clip.MovieRoot then
+  begin
+    First := SceneStart(Clip.MovieLibrary.Movie.SceneLabels, Max(0, Clip.Frame));
+    for Scene in Clip.MovieLibrary.Movie.SceneLabels do
+      if Scene.StartFrame > First then
+        Last := Min(Last, Scene.StartFrame - 1);
+  end;
+  Labels := TList<TAVM2FrameLabel>.Create;
+  try
+    for I := First to Last do
+      for Tag in Frames[I].Tags do
+        if Tag.Code = 43 then
+        begin
+          Reader := TSWFReader.Create(Tag.Data, Clip.MovieLibrary.Movie.Version);
+          try
+            Entry.Name := Reader.Str;
+            Entry.Frame := I - First + 1;
+            Labels.Add(Entry);
+          finally
+            Reader.Free;
+          end;
+        end;
+    Result := Labels.ToArray;
+  finally
+    Labels.Free;
+  end;
+end;
+
 procedure TFlashAVM2Display.TransformPoint(Display: TObject; ToGlobal: Boolean; var X, Y: Double);
 var
   Matrix, Inverse: TSWFMatrix;
@@ -765,12 +1343,16 @@ end;
 function ChildrenInDepthOrder(Clip: TFlashClip): TArray<TFlashClip>;
 begin
   Result := Clip.Children.ToArray;
-  if Length(Result) > 1 then
-    TArray.Sort<TFlashClip>(Result, TComparer<TFlashClip>.Construct(
-      function(const A, B: TFlashClip): Integer
-      begin
-        Result := CompareValue(A.Depth, B.Depth);
-      end));
+  for var I := 1 to High(Result) do
+    if Result[I - 1].Depth >= Result[I].Depth then
+    begin
+      TArray.Sort<TFlashClip>(Result, TComparer<TFlashClip>.Construct(
+        function(const A, B: TFlashClip): Integer
+        begin
+          Result := CompareValue(A.Depth, B.Depth);
+        end));
+      Exit;
+    end;
 end;
 
 function TFlashAVM2Display.DisplayChildren(Display: TObject): TArray<TAVM2TimelineChild>;
@@ -790,6 +1372,7 @@ begin
   begin
     if Child.Dead or Child.Removing then
       Continue;
+    Child.HasAVM2Handle := True;
     Entry.Handle := Child;
     Entry.Name := Child.Name;
     Entry.SymbolClass := '';
@@ -802,8 +1385,12 @@ begin
     Entry.Rotation := Child.Rotation;
     Entry.Alpha := Child.Alpha;
     Entry.Visible := Child.Visible;
-    if (Child.Character = nil) or (Child.Character.Kind = 39) then
+    if Child.IsText then
+      Entry.ClassName := 'TextField'
+    else if (Child.Character = nil) or (Child.Character.Kind = 39) then
       Entry.ClassName := 'MovieClip'
+    else if Child.Character.Kind in [7, 34] then
+      Entry.ClassName := 'SimpleButton'
     else if Child.Character.Kind in [46, 84] then
       Entry.ClassName := 'MorphShape'
     else
@@ -911,7 +1498,7 @@ const
 var
   Clip: TFlashClip;
   Fill: TSWFFill;
-  X, Y, W, H: Double;
+  X, Y, W, H, RX, RY: Double;
   Arc: Integer;
 
   function Arg(Index: Integer; DefaultValue: Double): Double;
@@ -975,6 +1562,29 @@ begin
         LineTo(X + W, Y + H);
         LineTo(X, Y + H);
         LineTo(X, Y);
+      end;
+    adDrawRoundRect:
+      begin
+        X := Args[0];
+        Y := Args[1];
+        W := Args[2];
+        H := Args[3];
+        if (W <= 0) or (H <= 0) then
+          Exit;
+        RX := Max(0.0, Min(W, Args[4])) / 2;
+        RY := Arg(5, Args[4]);
+        if IsNan(RY) then
+          RY := Args[4];
+        RY := Max(0.0, Min(H, RY)) / 2;
+        MoveTo(X + RX, Y);
+        LineTo(X + W - RX, Y);
+        CurveTo(X + W, Y, X + W, Y + RY);
+        LineTo(X + W, Y + H - RY);
+        CurveTo(X + W, Y + H, X + W - RX, Y + H);
+        LineTo(X + RX, Y + H);
+        CurveTo(X, Y + H, X, Y + H - RY);
+        LineTo(X, Y + RY);
+        CurveTo(X, Y, X + RX, Y);
       end;
     adDrawCircle, adDrawEllipse:
       begin
@@ -1221,8 +1831,7 @@ begin
   Context := FRoot.MovieLibrary;
   if VM.MovieContext is TFlashLibrary then
     Context := TFlashLibrary(VM.MovieContext);
-  Result := TFlashClip.Create;
-  FClips.Add(Result);
+  Result := CreateClip;
   Result.MovieLibrary := Context;
   Result.IsLevel := True;
   Result.LevelIndex := Index;
@@ -1255,7 +1864,11 @@ begin
   TArray.Sort<Integer>(Keys);
   SetLength(Result, Length(Keys));
   for I := 0 to High(Keys) do
+  begin
     Result[I] := FLevels[Keys[I]];
+    if (Result[I] = FRoot) and (FAVM2Stage <> nil) then
+      Result[I] := FAVM2Stage;
+  end;
 end;
 
 function TFlashPlayer.HitStage(X, Y: Double): TFlashClip;
@@ -1486,13 +2099,7 @@ begin
   C.ClipActions.Clear;
   if FTextFocus = C then
     FTextFocus := nil;
-  C.Script.Members.Clear;
-  C.Script.MemberOrder.Clear;
-  C.Script.Attributes.Clear;
-  C.Script.CaseNames.Clear;
-  if C.Script.Accessors <> nil then
-    C.Script.Accessors.Clear;
-  C.Script.PropertyIDs.Clear;
+  C.Script.ClearMembers;
   if C.Script.Watchers <> nil then
   begin
     C.Script.Watchers.Clear;
@@ -2087,8 +2694,7 @@ begin
   StageObject.Attributes.AddOrSetValue('width', 0);
   StageObject.Attributes.AddOrSetValue('height', 0);
   VM.Global.Attributes.AddOrSetValue('Stage', 1);
-  FRoot := TFlashClip.Create;
-  FClips.Add(FRoot);
+  FRoot := CreateClip;
   FRoot.Script := VM.Root;
   VM.Root.HostData := FRoot;
   FRoot.MovieLibrary := MovieLibrary;
@@ -2180,8 +2786,8 @@ begin
   FClips.Free;
   VM.Free;
   FNet.Free;
-  FAudio.Free;
   FLibraries.Free;
+  FAudio.Free;
   inherited;
 end;
 
@@ -2877,6 +3483,16 @@ begin
   InitializeAttachedClip(Result, Initial);
 end;
 
+function TFlashPlayer.CreateClip: TFlashClip;
+begin
+  if FClips.Count >= 65536 then
+    raise ESWFError.Create('Flash clip limit');
+  Result := TFlashClip.Create;
+  FClips.Add(Result);
+  Inc(FClipSerial);
+  Result.FSerial := FClipSerial;
+end;
+
 function TFlashPlayer.AddClip(Parent: TFlashClip; const Name: string; Depth: Integer; Character: TSWFCharacter; ReplaceDepth: Boolean): TFlashClip;
 var
   SymbolName: string;
@@ -2898,10 +3514,7 @@ begin
     for var C in Parent.Children.ToArray do
       if C.Depth = Depth then
         RemoveClip(C);
-  if FClips.Count >= 65536 then
-    raise ESWFError.Create('Flash clip limit');
-  Result := TFlashClip.Create;
-  FClips.Add(Result);
+  Result := CreateClip;
   Result.Parent := Parent;
   Result.MovieLibrary := Parent.MovieLibrary;
   Result.Name := Name;
@@ -2980,7 +3593,6 @@ begin
       begin
         Result.TextAlign := R.U8;
         Result.TextLeftMargin := R.U16 / 20;
-        Result.TextLeft := Result.TextLeft + Result.TextLeftMargin;
         Result.TextRight := R.U16 / 20;
         Result.TextIndent := R.U16 / 20;
         Result.TextLeading := R.S16 / 20;
@@ -3112,6 +3724,29 @@ begin
   Listeners := VM.CreateArray([TAVMValue.Ref(C.Script)]);
   VM.PutData(C.Script, '_listeners', TAVMValue.Ref(Listeners));
   C.Script.Attributes.AddOrSetValue('_listeners', 3);
+end;
+
+function TFlashPlayer.ReadBoundTextVariable(C: TFlashClip): TAVMValue;
+var
+  PreviousRoot: TAVMObject;
+  PreviousVersion: Byte;
+  PreviousContext: TObject;
+begin
+  if C.Parent = nil then
+    Exit(Default(TAVMValue));
+  PreviousRoot := VM.Root;
+  PreviousVersion := VM.SWFVersion;
+  PreviousContext := VM.MovieContext;
+  VM.Root := ClipRoot(C).Script;
+  VM.SWFVersion := C.MovieLibrary.Movie.Version;
+  VM.MovieContext := C.MovieLibrary;
+  try
+    Result := VM.GetBoundVariable(C.Parent.Script, C.VariableName);
+  finally
+    VM.Root := PreviousRoot;
+    VM.SWFVersion := PreviousVersion;
+    VM.MovieContext := PreviousContext;
+  end;
 end;
 
 function TFlashPlayer.TextFieldCall(const Name: string; C: TFlashClip; const Args: TArray<TAVMValue>): TAVMValue;
@@ -3431,6 +4066,22 @@ const
   FlashQualityNames: array[TFlashQuality] of string =
     ('LOW', 'MEDIUM', 'HIGH', 'BEST', '8X8', '8X8LINEAR', '16X16', '16X16LINEAR');
 
+procedure TFlashPlayer.SetAVM2CollectionObserver(const Observer: TAVM2CollectionObserver);
+begin
+  FOnAVM2Collection := Observer;
+  for var LibraryItem in FLibraries do
+    if LibraryItem.AVM2 <> nil then
+      LibraryItem.AVM2.OnCollection := Observer;
+end;
+
+procedure TFlashPlayer.SetAVM2ReclaimObserver(const Observer: TAVM2ReclaimObserver);
+begin
+  FOnAVM2Reclaim := Observer;
+  for var LibraryItem in FLibraries do
+    if LibraryItem.AVM2 <> nil then
+      LibraryItem.AVM2.OnReclaim := Observer;
+end;
+
 procedure TFlashPlayer.SetQuality(Value: TFlashQuality);
 begin
   FQuality := Value;
@@ -3457,10 +4108,12 @@ var
   Bounds: TSWFBounds;
 begin
   Value := Default(TAVMValue);
-  Result := True;
+  if (RequestedName = '') or (RequestedName[1] <> '_') then
+    Exit(False);
   C := Clip(O);
   if C = nil then
     Exit(False);
+  Result := True;
   Name := NativePropertyName(RequestedName, VM.SWFVersion < 7);
   if (C.MovieLibrary.Movie.Version < 5) and MatchStr(Name, ['_xscale', '_yscale', '_rotation']) then
     C.SetMatrix(C.Matrix);
@@ -4722,11 +5375,10 @@ begin
   begin
     Timeline(ThisObj, S, Arg(0));
     if (C.PendingFrame >= 0) and (C.Frame >= 0) and
-      MatchStr(S, ['gotoAndPlay', 'gotoAndStop']) and (VM.CurrentTarget <> nil) and
-      (VM.CurrentTarget <> ThisObj) then
+      MatchStr(S, ['gotoAndPlay', 'gotoAndStop']) and (VM.CurrentTarget <> nil) then
     begin
-      // Other clips expose the new display list to the caller immediately.
-      // Frame actions use the normal queue so the caller can finish first.
+      // Expose the destination display list immediately, even on the current
+      // clip. Queue frame actions so the calling script can finish first.
       C.SynchronousSeekTick := FFrameNumber + 1;
       Inc(FDeferFrameActions);
       try
@@ -5069,8 +5721,6 @@ begin
                 if Origins <> nil then
                   Child.SeekGeneration := FSeekGeneration;
               end;
-              Child.TextWidth := (Character.Bounds.Right - Character.Bounds.Left) / 20;
-              Child.TextHeight := (Character.Bounds.Bottom - Character.Bounds.Top) / 20;
             end;
             if Child = nil then
               raise ESWFError.Create('SWF move targets an absent character');
@@ -5229,7 +5879,14 @@ begin
                   if VM.Trace.Count < VM.TraceLimit then
                     VM.Trace.Add(Text);
                 end, TFlashAVM2Display.Create(Self, C), C.MovieLibrary.Movie.Version);
+              C.MovieLibrary.AVM2.OnCollection := FOnAVM2Collection;
+              C.MovieLibrary.AVM2.OnReclaim := FOnAVM2Reclaim;
               C.MovieLibrary.AVM2.SetStageSize(C.MovieLibrary.Movie.Width, C.MovieLibrary.Movie.Height);
+              C.MovieLibrary.AVM2.ReadResource := TAVM2ResourceReader(FReadResource);
+              C.MovieLibrary.AVM2.ReadSharedObject := FReadSharedObject;
+              C.MovieLibrary.AVM2.WriteSharedObject := FWriteSharedObject;
+              C.MovieLibrary.AVM2.SetMovieInfo(C.MovieLibrary.URI, C.MovieLibrary.SourceBytes,
+                C.MovieLibrary.Movie.Width, C.MovieLibrary.Movie.Height, C.MovieLibrary.Movie.FPS);
               C.MovieLibrary.AVM2.BeginFrame(VM.Milliseconds);
             end;
             Flags := 0;
@@ -5577,6 +6234,13 @@ begin
     end;
 end;
 
+function TFlashPlayer.AVM2TimelineRoot(LibraryItem: TFlashLibrary): TFlashClip;
+begin
+  Result := LibraryItem.Root;
+  if (Result = FRoot) and (FAVM2Stage <> nil) then
+    Result := FAVM2Stage;
+end;
+
 procedure TFlashPlayer.CompleteAVM2Frame;
 var
   MovieLibrary: TFlashLibrary;
@@ -5601,7 +6265,7 @@ begin
     for MovieLibrary in FLibraries.ToArray do
       if (MovieLibrary.AVM2 <> nil) and (MovieLibrary.Root <> nil) and
         (MovieLibrary.Root.MovieLibrary = MovieLibrary) then
-        ConstructTree(MovieLibrary.Root);
+        ConstructTree(AVM2TimelineRoot(MovieLibrary));
     BroadcastAVM2FrameEvent(afConstructed);
     RunAVM2FrameScripts;
     BroadcastAVM2FrameEvent(afExit);
@@ -5662,7 +6326,7 @@ begin
       for LibraryItem in FLibraries.ToArray do
         if (LibraryItem.AVM2 <> nil) and (LibraryItem.Root <> nil) and (LibraryItem.Root.MovieLibrary = LibraryItem) then
         try
-          Visit(LibraryItem.Root, LibraryItem.AVM2);
+          Visit(AVM2TimelineRoot(LibraryItem), LibraryItem.AVM2);
         except
           on E: EAVM2Error do
             raise ESWFError.Create('AVM2 frame script: ' + E.Message);
@@ -5680,7 +6344,9 @@ var
 begin
   if (C = nil) or C.Dead then
     Exit;
-  if Name <> '' then
+  if (Name <> '') and
+    ((Name <> 'onMouseMove') or VM.MayHaveEventMember(C.Script, [emMouseMove, emResolve])) and
+    ((Name <> 'onEnterFrame') or VM.MayHaveEventMember(C.Script, [emEnterFrame, emResolve])) then
   begin
     Value := VM.Get(C.Script, Name);
     VM.Call(Value, C.Script, nil);
@@ -6134,8 +6800,22 @@ end;
 function TFlashPlayer.ReadSoundTransform(Owner: TObject): TFlashSoundTransform;
 var
   C: TFlashClip;
+  Transform: TAVM2Object;
+  Value: TAVM2Value;
 begin
   Result := TFlashSoundTransform.Identity;
+  if Owner is TAVM2Object then
+  begin
+    Transform := TAVM2Object(Owner).Props[#0 + 'soundTransform'].Obj;
+    if Transform <> nil then
+    begin
+      if Transform.Props.TryGetValue(#0 + 'volume', Value) and not IsNan(Value.Number) then
+        Result.Volume := Round(EnsureRange(Value.Number, 0.0, 1.0) * 10000);
+      if Transform.Props.TryGetValue(#0 + 'pan', Value) and not IsNan(Value.Number) then
+        Result.SetPan(Round(EnsureRange(Value.Number, -1.0, 1.0) * 10000));
+    end;
+    Exit(Result.ThenBy(FGlobalSoundTransform));
+  end;
   if Owner is TFlashSoundState then
     Exit(Result.ThenBy(TFlashSoundState(Owner).ExternalTransform).ThenBy(FGlobalSoundTransform));
   if Owner is TFlashStreamState then
@@ -6152,7 +6832,15 @@ end;
 procedure TFlashPlayer.UpdateSoundProgress(Client: TObject; Position: UInt32; Finished: Boolean);
 var
   O: TAVMObject;
+  Channel: TAVM2Object;
 begin
+  if Client is TAVM2Object then
+  begin
+    Channel := TAVM2Object(Client);
+    Channel.Props[#0 + 'position'] := TAVM2Value.Num(Position);
+    Channel.SoundFinished := Finished;
+    Exit;
+  end;
   O := TAVMObject(Client);
   if O.OwnedNativeData is TFlashSoundState then
     TFlashSoundState(O.OwnedNativeData).Position := Position;
@@ -6197,7 +6885,6 @@ type
     PreviousInside: Boolean;
   end;
 var
-  Items: TArray<TFlashClip>;
   Child: TFlashClip;
   Stack: TStack<TPointMask>;
   Entry: TPointMask;
@@ -6207,20 +6894,15 @@ begin
   Result := nil;
   if C.Children.Count = 0 then
     Exit;
-  Items := C.Children.ToArray;
-  TArray.Sort<TFlashClip>(Items, TComparer<TFlashClip>.Construct(
-    function(const A, B: TFlashClip): Integer
-    begin
-      Result := CompareValue(A.Depth, B.Depth);
-    end));
-  SetLength(Result, Length(Items));
+  Result := ChildrenInDepthOrder(C);
   Inside := True;
   ClipEnd := 0;
   Count := 0;
   Stack := nil;
   try
-    for Child in Items do
+    for var I := 0 to High(Result) do
     begin
+      Child := Result[I];
       while (ClipEnd > 0) and (Child.Depth > ClipEnd) do
       begin
         Entry := Stack.Pop;
@@ -6545,31 +7227,101 @@ begin
     Sector(First, Point(HalfWidth, 0), Point(HalfWidth, 0), 2 * Pi);
 end;
 
-function PointOnStroke(Shape: TSWFCharacter; const M: TSWFMatrix; X, Y: Double; DrawingClip: TFlashClip): Boolean;
+function TFlashPlayer.FindStrokeHit(Shape: TSWFCharacter; const Matrix: TSWFMatrix): PFlashStrokeHit;
+var
+  Cache, Replacement: PFlashStrokeHit;
+begin
+  Result := nil;
+  if not (Shape.Kind in [2, 22, 32, 83]) or (Shape.Fills = nil) or
+    (Length(Shape.StrokePaths) < FlashStrokeHitMinPaths) or
+    (Length(Shape.StrokePaths) > FlashStrokeHitMaxPaths) then
+    Exit;
+  Replacement := @FStrokeHits[Low(FStrokeHits)];
+  for var I := Low(FStrokeHits) to High(FStrokeHits) do
+  begin
+    Cache := @FStrokeHits[I];
+    if (Cache.Paths <> nil) and (@Cache.Paths[0] = @Shape.StrokePaths[0]) and
+      (@Cache.Fills[0] = @Shape.Fills[0]) and CompareMem(@Cache.Matrix, @Matrix, SizeOf(Matrix)) then
+    begin
+      Cache.LastUsed := FFrameNumber;
+      Exit(Cache);
+    end;
+    if (Replacement.Paths <> nil) and ((Cache.Paths = nil) or (Cache.LastUsed < Replacement.LastUsed)) then
+      Replacement := Cache;
+  end;
+  Replacement^ := Default(TFlashStrokeHit);
+  Replacement.Paths := Shape.StrokePaths;
+  Replacement.Fills := Shape.Fills;
+  Replacement.Matrix := Matrix;
+  Replacement.LastUsed := FFrameNumber;
+  SetLength(Replacement.Outlines, Length(Replacement.Paths));
+  Result := Replacement;
+end;
+
+function RayWinding(const Edge: TSWFEdge; X, Y: Double): Integer; forward;
+
+function TFlashPlayer.PointOnStroke(Shape: TSWFCharacter; const M: TSWFMatrix; X, Y: Double; DrawingClip: TFlashClip): Boolean;
 var
   FrameMatrix: TSWFMatrix;
   Edges: TList<TSWFEdge>;
-  Path, Pending: TSWFStrokePath;
+  Cache: PFlashStrokeHit;
+  Pending: TSWFStrokePath;
   HasPending: Boolean;
 
-  function Inside(const Stroke: TSWFStrokePath): Boolean;
+  function Inside(const Outline: TArray<TSWFEdge>; Count: Integer): Boolean;
   var
-    E: TSWFEdge;
     Winding: Integer;
   begin
-    Edges.Clear;
-    BuildStrokeEdges(Stroke, Shape.Fills[Stroke.Fill - 1].Line, FrameMatrix, Edges);
     Winding := 0;
-    for E in Edges do
-      if (Y >= Min(E.Y1, E.Y2)) and (Y < Max(E.Y1, E.Y2)) and
-        (E.X1 + (Y - E.Y1) * (E.X2 - E.X1) / (E.Y2 - E.Y1) > X) then
-      begin
-        if E.Y2 > E.Y1 then
-          Inc(Winding)
-        else
-          Dec(Winding);
-      end;
+    for var I := 0 to Count - 1 do
+      Inc(Winding, RayWinding(Outline[I], X, Y));
     Result := Winding <> 0;
+  end;
+
+  procedure Build(const Stroke: TSWFStrokePath);
+  begin
+    if Edges = nil then
+      Edges := TList<TSWFEdge>.Create
+    else
+      Edges.Clear;
+    BuildStrokeEdges(Stroke, Shape.Fills[Stroke.Fill - 1].Line, FrameMatrix, Edges);
+  end;
+
+  function HitPath(Index: Integer): Boolean;
+  var
+    Outline: ^TFlashStrokeHitOutline;
+  begin
+    if Cache = nil then
+    begin
+      Build(Shape.StrokePaths[Index]);
+      Exit(Inside(Edges.List, Edges.Count));
+    end;
+    Outline := @Cache.Outlines[Index];
+    if not Outline.Built then
+    begin
+      Build(Shape.StrokePaths[Index]);
+      Outline.MinY := Infinity;
+      Outline.MaxY := NegInfinity;
+      for var I := 0 to Edges.Count - 1 do
+      begin
+        var E := Edges[I];
+        Outline.MinY := Min(Outline.MinY, Min(E.Y1, E.Y2));
+        Outline.MaxY := Max(Outline.MaxY, Max(E.Y1, E.Y2));
+      end;
+      if Cache.EdgeCount + Edges.Count <= FlashStrokeHitMaxEdges then
+      begin
+        Outline.Edges := Edges.ToArray;
+        Inc(Cache.EdgeCount, Edges.Count);
+      end;
+      Outline.Built := True;
+      Exit(Inside(Edges.List, Edges.Count));
+    end;
+    if (Y < Outline.MinY) or (Y >= Outline.MaxY) then
+      Exit(False);
+    if Outline.Edges <> nil then
+      Exit(Inside(Outline.Edges, Length(Outline.Edges)));
+    Build(Shape.StrokePaths[Index]);
+    Result := Inside(Edges.List, Edges.Count);
   end;
 
 begin
@@ -6582,12 +7334,18 @@ begin
   FrameMatrix.D := M.D / 20;
   FrameMatrix.TX := M.TX / 20;
   FrameMatrix.TY := M.TY / 20;
-  Edges := TList<TSWFEdge>.Create;
+  Cache := nil;
+  if DrawingClip = nil then
+    Cache := FindStrokeHit(Shape, FrameMatrix);
+  Edges := nil;
   try
-    for Path in Shape.StrokePaths do
-      if Inside(Path) then
+    for var I := 0 to High(Shape.StrokePaths) do
+      if HitPath(I) then
         Exit(True);
-    Result := HasPending and Inside(Pending);
+    if not HasPending then
+      Exit(False);
+    Build(Pending);
+    Result := Inside(Edges.List, Edges.Count);
   finally
     Edges.Free;
   end;
@@ -6607,6 +7365,156 @@ begin
   end;
 end;
 
+function FillHitBin(Cache: PFlashFillHit; Y: Double): Integer;
+begin
+  Result := Min(FlashFillHitBins - 1, Trunc((Y - Cache.MinY) * Cache.BinScale));
+end;
+
+function TFlashPlayer.FindFillHit(Shape: TSWFCharacter): PFlashFillHit;
+var
+  Cache, Replacement: PFlashFillHit;
+  Counts: array[0..FlashFillHitBins] of Integer;
+  First, Last: Integer;
+
+  procedure EdgeBins(const Edge: TSWFEdge);
+  begin
+    First := FillHitBin(Replacement, Min(Edge.Y1, Edge.Y2));
+    Last := FillHitBin(Replacement, Max(Edge.Y1, Edge.Y2));
+    // Wide edges share a bin to cap the number of stored indices.
+    if Last - First >= 4 then
+    begin
+      First := FlashFillHitBins;
+      Last := First;
+    end;
+  end;
+
+begin
+  Result := nil;
+  if not (Shape.Kind in [2, 22, 32, 83]) or
+    (Length(Shape.Edges) < FlashFillHitMinEdges) or (Length(Shape.Edges) > FlashFillHitMaxEdges) then
+    Exit;
+  Replacement := @FFillHits[Low(FFillHits)];
+  for var I := Low(FFillHits) to High(FFillHits) do
+  begin
+    Cache := @FFillHits[I];
+    if (Cache.Edges <> nil) and (@Cache.Edges[0] = @Shape.Edges[0]) then
+    begin
+      Cache.LastUsed := FFrameNumber;
+      Exit(Cache);
+    end;
+    if (Replacement.Edges <> nil) and ((Cache.Edges = nil) or (Cache.LastUsed < Replacement.LastUsed)) then
+      Replacement := Cache;
+  end;
+  Replacement^ := Default(TFlashFillHit);
+  Replacement.Edges := Shape.Edges;
+  Replacement.LastUsed := FFrameNumber;
+  Replacement.MinY := Infinity;
+  Replacement.MaxY := NegInfinity;
+  for var Edge in Shape.Edges do
+  begin
+    Replacement.MinY := Min(Replacement.MinY, Min(Edge.Y1, Edge.Y2));
+    Replacement.MaxY := Max(Replacement.MaxY, Max(Edge.Y1, Edge.Y2));
+  end;
+  Result := Replacement;
+  if Replacement.MaxY <= Replacement.MinY then
+    Exit;
+  Replacement.BinScale := FlashFillHitBins / (Replacement.MaxY - Replacement.MinY);
+  FillChar(Counts, SizeOf(Counts), 0);
+  for var Edge in Shape.Edges do
+    if Edge.Y1 <> Edge.Y2 then
+    begin
+      EdgeBins(Edge);
+      for var Bin := First to Last do
+        Inc(Counts[Bin]);
+    end;
+  SetLength(Replacement.Offsets, Length(Counts) + 1);
+  for var Bin := 0 to High(Counts) do
+  begin
+    Replacement.Offsets[Bin + 1] := Replacement.Offsets[Bin] + Counts[Bin];
+    Counts[Bin] := Replacement.Offsets[Bin];
+  end;
+  SetLength(Replacement.Indices, Replacement.Offsets[High(Replacement.Offsets)]);
+  for var I := 0 to High(Shape.Edges) do
+    if Shape.Edges[I].Y1 <> Shape.Edges[I].Y2 then
+    begin
+      EdgeBins(Shape.Edges[I]);
+      for var Bin := First to Last do
+      begin
+        Replacement.Indices[Counts[Bin]] := I;
+        Inc(Counts[Bin]);
+      end;
+    end;
+end;
+
+function TFlashPlayer.PointInShapeFill(Shape: TSWFCharacter; X, Y: Double; DrawingClip: TFlashClip): Boolean;
+var
+  local: array[0..31] of Integer;
+  Allocated: TArray<Integer>;
+  Cache: PFlashFillHit;
+  FillCount, Row: Integer;
+
+  function Inside(var Windings: array of Integer): Boolean;
+  var
+    Edge: TSWFEdge;
+    Winding: Integer;
+
+    procedure CountEdge(const Value: TSWFEdge);
+    begin
+      if (Value.Fill > 0) and (Value.Fill <= FillCount) then
+        Inc(Windings[Value.Fill - 1], RayWinding(Value, X, Y));
+    end;
+
+    procedure CountBin(Bin: Integer);
+    begin
+      for var I := Cache.Offsets[Bin] to Cache.Offsets[Bin + 1] - 1 do
+        CountEdge(Cache.Edges[Cache.Indices[I]]);
+    end;
+
+  begin
+    FillChar(Windings[0], FillCount * SizeOf(Integer), 0);
+    // Each edge contributes to a single style.
+    if Cache <> nil then
+    begin
+      CountBin(Row);
+      CountBin(FlashFillHitBins);
+    end
+    else
+      for Edge in Shape.Edges do
+        CountEdge(Edge);
+    if (DrawingClip <> nil) and DrawingClip.PendingFillEdge(Edge) and
+      (Edge.Fill > 0) and (Edge.Fill <= FillCount) then
+      Inc(Windings[Edge.Fill - 1], RayWinding(Edge, X, Y));
+    for var I := 0 to FillCount - 1 do
+      if not Shape.Fills[I].Stroke then
+      begin
+        Winding := Windings[I];
+        if Shape.EvenOddFills then
+          Winding := Winding and 1;
+        if Winding <> 0 then
+          Exit(True);
+      end;
+    Result := False;
+  end;
+
+begin
+  FillCount := Length(Shape.Fills);
+  if FillCount = 0 then
+    Exit(False);
+  Cache := nil;
+  if DrawingClip = nil then
+    Cache := FindFillHit(Shape);
+  if Cache <> nil then
+  begin
+    if not ((Y >= Cache.MinY) and (Y < Cache.MaxY)) then
+      Exit(False);
+    Row := FillHitBin(Cache, Y);
+  end;
+  if FillCount <= Length(local) then
+    Exit(Inside(local));
+  SetLength(Allocated, FillCount);
+  Result := Inside(Allocated);
+end;
+
 function TFlashPlayer.ContainsPoint(C: TFlashClip; X, Y: Double; const ParentMatrix: TSWFMatrix; HitState, IgnoreVisibility, MaskGeometry, MaskRoot: Boolean; Depth: Integer): Boolean;
 var
   Matrix, MaskParent: TSWFMatrix;
@@ -6614,8 +7522,6 @@ var
   WorldBounds: TSWFRect;
   DrawingClip: TFlashClip;
   Visual: TSWFCharacter;
-  Closing: TSWFEdge;
-  HasClosing: Boolean;
 begin
   Result := False;
   if (Depth >= 256) or C.Dead or C.Removing or (not IgnoreVisibility and not C.Visible) or
@@ -6672,26 +7578,13 @@ begin
       DrawingClip := nil;
       if Shape = C.Drawing then
         DrawingClip := C;
-      HasClosing := (DrawingClip <> nil) and DrawingClip.PendingFillEdge(Closing);
-      for var Fill := 1 to Length(Shape.Fills) do
-      begin
-        if Shape.Fills[Fill - 1].Stroke then
-          Continue;
-        var Winding := 0;
-        for var E in Shape.Edges do
-          if E.Fill = Fill then
-            Inc(Winding, RayWinding(E, LX, LY));
-        if HasClosing and (Closing.Fill = Fill) then
-          Inc(Winding, RayWinding(Closing, LX, LY));
-        if Shape.EvenOddFills then
-          Winding := Winding and 1;
-        if Winding <> 0 then
-          Exit(True);
-      end;
+      if PointInShapeFill(Shape, LX, LY, DrawingClip) then
+        Exit(True);
       if not MaskGeometry and PointOnStroke(Shape, M, X, Y, DrawingClip) then
         Exit(True);
     end;
-  if C.IsText and (LX >= 0) and (LY >= 0) and (LX < C.TextWidth * 20) and (LY < C.TextHeight * 20) then
+  if C.IsText and (LX >= C.TextLeft * 20) and (LY >= C.TextTop * 20) and
+    (LX < (C.TextLeft + C.TextWidth) * 20) and (LY < (C.TextTop + C.TextHeight) * 20) then
     Exit(True);
   for var Child in PointChildren(C, X, Y, M, HitState, Depth) do
     if ContainsPoint(Child, X, Y, M, HitState, IgnoreVisibility, MaskGeometry, False, Depth + 1) then
@@ -6761,7 +7654,7 @@ begin
   BroadcastAVM2FrameEvent(afEnter);
   CompleteAVM2Frame;
   EndMilliseconds := Round((FFrameNumber + 1) * 1000 / Movie.FPS);
-  for MovieLibrary in FLibraries do
+  for MovieLibrary in FLibraries.ToArray do
     if (MovieLibrary.AVM2 <> nil) and (MovieLibrary.Root <> nil) and
       (MovieLibrary.Root.MovieLibrary = MovieLibrary) and not MovieLibrary.Root.Dead then
     try
@@ -6777,29 +7670,79 @@ begin
 end;
 
 procedure TFlashPlayer.VisitRoots(const Visit: TProc<TAVMObject>);
-begin
-  for var C in FClips do
-    if not C.Dead then
-    begin
+
+  procedure VisitClip(C: TFlashClip);
+  begin
+    if C <> nil then
       Visit(C.Script);
-      Visit(C.RegisteredConstructor);
-      Visit(C.NetStream);
-    end;
+  end;
+
+begin
+  VisitClip(FPressed);
+  VisitClip(FHovered);
+  VisitClip(FTextFocus);
+  VisitClip(FDragClip);
+  for var C in FClips do
+    if not C.Dead or C.HasAVM2Handle then
+      Visit(C.Script);
+  for var MovieLibrary in FLibraries do
+    VisitClip(MovieLibrary.Root);
   FNet.VisitRoots(Visit);
   for var Request in FLoads do
   begin
+    Visit(Request.Target.Script);
     Visit(Request.Loader);
     Visit(Request.CallerRoot);
   end;
   for var Pending in FUnloads do
     Visit(Pending.Clip.Script);
+  for var Action in FActions do
+    Visit(Action.Clip.Script);
+  for var Construction in FConstructClips do
+    Visit(Construction.Clip.Script);
   for var V in FNativeMethods.Values do
     Visit(V.Obj);
   FAudio.VisitClients(
     procedure(Client: TObject)
     begin
-      Visit(TAVMObject(Client));
+      if Client is TAVMObject then
+        Visit(TAVMObject(Client));
     end);
+end;
+
+procedure TFlashPlayer.VisitObjectReferences(O: TAVMObject; const Visit: TProc<TAVMObject>);
+var
+  C: TFlashClip;
+begin
+  C := Clip(O);
+  if C = nil then
+    Exit;
+  Visit(C.RegisteredConstructor);
+  Visit(C.NetStream);
+  if C.Parent <> nil then
+    Visit(C.Parent.Script);
+  if C.DropTarget <> nil then
+    Visit(C.DropTarget.Script);
+  for var Child in C.Children do
+    Visit(Child.Script);
+end;
+
+procedure TFlashPlayer.SweepUnreachable;
+var
+  I: Integer;
+  C: TFlashClip;
+begin
+  // AVM1 still owns the script objects here, including their mark bits.
+  for I := FClips.Count - 1 downto 0 do
+  begin
+    C := FClips[I];
+    if C.Dead and not C.Script.Marked then
+    begin
+      FAudio.StopOwner(C);
+      C.Script.HostData := nil;
+      FClips.Delete(I);
+    end;
+  end;
 end;
 
 procedure TFlashPlayer.ClearInput;
@@ -6969,7 +7912,10 @@ begin
   end;
   StageX := X + Movie.Stage.Left / 20;
   StageY := Y + Movie.Stage.Top / 20;
-  Clip := Hit(FRoot, StageX, StageY, TSWFMatrix.Identity, False);
+  Clip := FRoot;
+  if FAVM2Stage <> nil then
+    Clip := FAVM2Stage;
+  Clip := Hit(Clip, StageX, StageY, TSWFMatrix.Identity, False);
   Target := nil;
   while (Clip <> nil) and (Target = nil) do
   begin
@@ -7117,11 +8063,22 @@ var
   M, MaskParent: TSWFMatrix;
   Items: TArray<TFlashClip>;
   Child: TFlashClip;
-  Enabled, Value: TAVMValue;
-  Interactive: Boolean;
-  Name: string;
-  Action: TSWFClipAction;
+  Enabled: TAVMValue;
+  PickParentFirst: Boolean;
   I: Integer;
+
+  function HasButtonHandlers: Boolean;
+  begin
+    for var Action in C.ClipActions do
+      if (Action.Events and ButtonFlags) <> 0 then
+        Exit(True);
+    if VM.MayHaveEventMember(C.Script, [emButton]) then
+      for var Name in HandlerNames do
+        if VM.GetSpecial(C.Script, Name).Obj <> nil then
+          Exit(True);
+    Result := False;
+  end;
+
 begin
   Result := nil;
   if C.Dead or C.Removing or not C.Visible or (C.Maskee <> nil) then
@@ -7147,6 +8104,11 @@ begin
       Exit(C);
     Exit;
   end;
+  // An AVM1 movie clip with button handlers picks against its whole shape
+  // before checking the children for their own handlers.
+  PickParentFirst := RequireInteractive and not C.MovieLibrary.Movie.UsesAVM2;
+  if PickParentFirst and HasButtonHandlers and ContainsPoint(C, X, Y, ParentMatrix, False) then
+    Exit(C);
   Items := PointChildren(C, X, Y, M, False);
   for I := High(Items) downto 0 do
   begin
@@ -7155,30 +8117,43 @@ begin
     if Result <> nil then
       Exit;
   end;
-  Interactive := False;
-  for Name in HandlerNames do
-  begin
-    Value := VM.GetSpecial(C.Script, Name);
-    Interactive := Interactive or (Value.Obj <> nil);
-  end;
-  for Action in C.ClipActions do
-    Interactive := Interactive or ((Action.Events and ButtonFlags) <> 0);
-  if (Interactive or not RequireInteractive) and ContainsPoint(C, X, Y, ParentMatrix, False) then
+  if (not RequireInteractive or (not PickParentFirst and HasButtonHandlers)) and
+    ContainsPoint(C, X, Y, ParentMatrix, False) then
     Result := C;
+end;
+
+// Each 16-bit lane contains a channel product no greater than 255 * 255.
+function DivideColorLanesBy255(Value: Cardinal): Cardinal; inline;
+begin
+  Inc(Value, $00800080);
+  Result := ((Value + ((Value shr 8) and $00FF00FF)) shr 8) and $00FF00FF;
 end;
 
 procedure Blend(var Pixel: Cardinal; Color: Cardinal; Opacity: Double; WithAlpha: Boolean);
 begin
-  var A := EnsureRange(Round((Color shr 24) * Opacity), 0, 255);
-  var Inv := 255 - A;
-  var R := (((Color shr 16) and 255) * Cardinal(A) + ((Pixel shr 16) and 255) * Cardinal(Inv) + 127) div 255;
-  var G := (((Color shr 8) and 255) * Cardinal(A) + ((Pixel shr 8) and 255) * Cardinal(Inv) + 127) div 255;
-  var B := ((Color and 255) * Cardinal(A) + (Pixel and 255) * Cardinal(Inv) + 127) div 255;
+  var A := Integer(Color shr 24);
+  if Opacity <> 1 then
+    A := EnsureRange(Round(A * Opacity), 0, 255);
+  if A = 255 then
+  begin
+    Pixel := Color or $FF000000;
+    Exit;
+  end;
+  if A = 0 then
+  begin
+    if not WithAlpha then
+      Pixel := Pixel or $FF000000;
+    Exit;
+  end;
+  var Inv := Cardinal(255 - A);
+  var RedBlue := DivideColorLanesBy255((Color and $00FF00FF) * Cardinal(A) +
+    (Pixel and $00FF00FF) * Inv);
+  var Green := (((Color shr 8) and 255) * Cardinal(A) + ((Pixel shr 8) and 255) * Inv + 127) div 255;
   if WithAlpha then
-    A := A + (Integer(Pixel shr 24) * Inv + 127) div 255
+    A := A + Integer(((Pixel shr 24) * Inv + 127) div 255)
   else
     A := 255;
-  Pixel := (Cardinal(A) shl 24) or (R shl 16) or (G shl 8) or B;
+  Pixel := (Cardinal(A) shl 24) or (Green shl 8) or RedBlue;
 end;
 
 procedure TFlashPlayer.ConfigureSamples;
@@ -7289,12 +8264,24 @@ begin
     raise ESWFError.Create('Flash frame rendering work limit');
   if Detail < 0 then
     Detail := EnsureSampleDetail(Index, Pixels[Index]);
-  for Sample := 0 to FRender.SampleCount - 1 do
-    if Coverage and (Word(1) shl Sample) <> 0 then
-      Blend(FRender.DetailColors[Detail + Sample], Color, Opacity, FRender.WithAlpha);
+  if (Color shr 24 = 255) and (Opacity = 1) then
+  begin
+    for Sample := 0 to FRender.SampleCount - 1 do
+      if Coverage and (Word(1) shl Sample) <> 0 then
+        FRender.DetailColors[Detail + Sample] := Color;
+  end
+  else
+    for Sample := 0 to FRender.SampleCount - 1 do
+      if Coverage and (Word(1) shl Sample) <> 0 then
+        Blend(FRender.DetailColors[Detail + Sample], Color, Opacity, FRender.WithAlpha);
 end;
 
 type
+  TFlashBilinearAxis = record
+    First, Next: Integer;
+    Fraction: Double;
+  end;
+
   TFlashBitmapSampler = record
     Width, Height: Integer;
     Pixels: TArray<Cardinal>;
@@ -7302,6 +8289,10 @@ type
     RepeatPixels, Smooth, Premultiplied: Boolean;
     function Initialize(ImageWidth, ImageHeight: Integer; const ImagePixels: TArray<Cardinal>; const TextureToFrame: TSWFMatrix; RepeatTexture, SmoothTexture, PremultipliedTexture: Boolean): Boolean;
     procedure Locate(X, Y: Double; out U, V: Double);
+    function Coordinate(Value: Double; Extent: Integer): Double;
+    function NearestIndex(Value: Double; Extent: Integer): Integer;
+    function BilinearAxis(Value: Double; Extent: Integer): TFlashBilinearAxis;
+    function BilinearColor(const X, Y: TFlashBilinearAxis): Cardinal;
     function ColorAt(U, V: Double): Cardinal;
   end;
 
@@ -7349,36 +8340,77 @@ begin
   LocatePaint(Inverse, X, Y, U, V);
 end;
 
-function TFlashBitmapSampler.ColorAt(U, V: Double): Cardinal;
+function TFlashBitmapSampler.Coordinate(Value: Double; Extent: Integer): Double;
+begin
+  if not RepeatPixels then
+    Exit(EnsureRange(Value, 0.0, Double(Extent)));
+  if Abs(Value) < 4503599627370496.0 then
+    Result := Value - Int(Value / Extent) * Extent
+  else
+    Result := AVMBinaryNumber($3F, Value, Extent);
+  if Result < 0 then
+    Result := Result + Extent;
+  if Result >= Extent then
+    Result := 0;
+end;
+
+function TFlashBitmapSampler.NearestIndex(Value: Double; Extent: Integer): Integer;
+begin
+  if IsNan(Value) or IsInfinite(Value) then
+    Exit(-1);
+  Result := Min(Floor(Coordinate(Value, Extent)), Extent - 1);
+end;
+
+function StraightBitmapSample(Color: Cardinal): Cardinal; inline;
 var
-  X, Y, XNext, YNext: Integer;
-  Sample: Cardinal;
-  FX, FY, Alpha, Red, Green, Blue: Double;
+  Alpha: Cardinal;
+begin
+  Alpha := Color shr 24;
+  if Alpha = 0 then
+    Exit(0);
+  if Alpha = 255 then
+    Exit(Color);
+  Result := (Alpha shl 24) or
+    (Cardinal(Min(255, Round(((Color shr 16) and 255) * 255.0 / Alpha))) shl 16) or
+    (Cardinal(Min(255, Round(((Color shr 8) and 255) * 255.0 / Alpha))) shl 8) or
+    Cardinal(Min(255, Round((Color and 255) * 255.0 / Alpha)));
+end;
 
-  function Coordinate(Value: Double; Extent: Integer): Double;
+function TFlashBitmapSampler.BilinearAxis(Value: Double; Extent: Integer): TFlashBilinearAxis;
+var
+  Index: Integer;
+begin
+  Result := Default(TFlashBilinearAxis);
+  if IsNan(Value) or IsInfinite(Value) then
   begin
-    if not RepeatPixels then
-      Exit(EnsureRange(Value, 0.0, Double(Extent)));
-    if Abs(Value) < 4503599627370496.0 then
-      Result := Value - Int(Value / Extent) * Extent
-    else
-      Result := AVMBinaryNumber($3F, Value, Extent);
-    if Result < 0 then
-      Result := Result + Extent;
-    if Result >= Extent then
-      Result := 0;
+    Result.First := -1;
+    Exit;
   end;
-
-  function PixelIndex(Index, Extent: Integer): Integer;
+  Value := Coordinate(Value, Extent);
+  Value := Value - 0.5;
+  Index := Floor(Value);
+  Result.Fraction := Value - Index;
+  if RepeatPixels then
   begin
-    if not RepeatPixels then
-      Exit(EnsureRange(Index, 0, Extent - 1));
+    Result.First := Index;
+    Result.Next := Index + 1;
     if Index < 0 then
-      Exit(Extent - 1);
-    if Index = Extent then
-      Exit(0);
-    Result := Index;
+      Result.First := Extent - 1;
+    if Result.Next = Extent then
+      Result.Next := 0;
+  end
+  else
+  begin
+    Result.First := Max(0, Index);
+    Result.Next := Min(Index + 1, Extent - 1);
   end;
+end;
+
+function TFlashBitmapSampler.BilinearColor(const X, Y: TFlashBilinearAxis): Cardinal;
+var
+  Top, Bottom: Integer;
+  A, B, C, D: Cardinal;
+  FX, FY, Alpha, Red, Green, Blue: Double;
 
   procedure Add(Color: Cardinal; Weight: Double);
   var
@@ -7395,49 +8427,46 @@ var
   end;
 
 begin
-  Result := 0;
-  if IsNan(U) or IsInfinite(U) or IsNan(V) or IsInfinite(V) then
-    Exit;
-  U := Coordinate(U, Width);
-  V := Coordinate(V, Height);
-  if not Smooth then
-  begin
-    Sample := Pixels[Min(Floor(V), Height - 1) * Width + Min(Floor(U), Width - 1)];
-    if not Premultiplied then
-      Exit(Sample);
-    Alpha := Sample shr 24;
-    if Alpha = 0 then
-      Exit;
-    Red := ((Sample shr 16) and 255) * 255.0;
-    Green := ((Sample shr 8) and 255) * 255.0;
-    Blue := (Sample and 255) * 255.0;
-  end
-  else
-  begin
+  if (X.First < 0) or (Y.First < 0) then
+    Exit(0);
+  Top := Y.First * Width;
+  Bottom := Y.Next * Width;
+  A := Pixels[Top + X.First];
+  B := Pixels[Top + X.Next];
+  C := Pixels[Bottom + X.First];
+  D := Pixels[Bottom + X.Next];
+  if ((A = 0) or (A shr 24 = 255)) and (A = B) and (A = C) and (A = D) then
+    Exit(A);
   // Filter in premultiplied space before applying the display transform.
-    U := U - 0.5;
-    V := V - 0.5;
-    X := Floor(U);
-    Y := Floor(V);
-    FX := U - X;
-    FY := V - Y;
-    XNext := PixelIndex(X + 1, Width);
-    YNext := PixelIndex(Y + 1, Height);
-    X := PixelIndex(X, Width);
-    Y := PixelIndex(Y, Height);
-    Alpha := 0;
-    Red := 0;
-    Green := 0;
-    Blue := 0;
-    Add(Pixels[Y * Width + X], (1 - FX) * (1 - FY));
-    Add(Pixels[Y * Width + XNext], FX * (1 - FY));
-    Add(Pixels[YNext * Width + X], (1 - FX) * FY);
-    Add(Pixels[YNext * Width + XNext], FX * FY);
-  end;
+  FX := X.Fraction;
+  FY := Y.Fraction;
+  Alpha := 0;
+  Red := 0;
+  Green := 0;
+  Blue := 0;
+  Add(A, (1 - FX) * (1 - FY));
+  Add(B, FX * (1 - FY));
+  Add(C, (1 - FX) * FY);
+  Add(D, FX * FY);
   if Alpha < 0.5 then
-    Exit;
+    Exit(0);
   Result := (Cardinal(Round(Alpha)) shl 24) or (Cardinal(Min(255, Round(Red / Alpha))) shl 16) or
     (Cardinal(Min(255, Round(Green / Alpha))) shl 8) or Cardinal(Min(255, Round(Blue / Alpha)));
+end;
+
+function TFlashBitmapSampler.ColorAt(U, V: Double): Cardinal;
+var
+  X, Y: Integer;
+begin
+  if Smooth then
+    Exit(BilinearColor(BilinearAxis(U, Width), BilinearAxis(V, Height)));
+  X := NearestIndex(U, Width);
+  Y := NearestIndex(V, Height);
+  if (X < 0) or (Y < 0) then
+    Exit(0);
+  Result := Pixels[Y * Width + X];
+  if Premultiplied then
+    Result := StraightBitmapSample(Result);
 end;
 
 function BitmapToFrame(const Matrix: TSWFMatrix; const Stage: TSWFRect): TSWFMatrix;
@@ -7582,15 +8611,26 @@ begin
   Result := Lower.Color;
 end;
 
-procedure TFlashPlayer.RenderBitmap(Width, Height: Integer; const ImagePixels: TArray<Cardinal>; const Matrix: TSWFMatrix; Smooth, Premultiplied: Boolean; Opacity: Double; var Pixels: TArray<Cardinal>; SnapPixels: Boolean);
+function HasPaintColorTransform(const Color: TSWFColorTransform): Boolean;
+begin
+  for var I := 0 to 3 do
+    if (Color.Mult[I] <> 1) or (Color.Add[I] <> 0) then
+      Exit(True);
+  Result := False;
+end;
+
+procedure TFlashPlayer.RenderBitmap(Width, Height: Integer; const ImagePixels: TArray<Cardinal>; const Matrix: TSWFMatrix; Smooth, Premultiplied: Boolean; Opacity: Double; var Pixels: TArray<Cardinal>; SnapPixels, SourceOpaque: Boolean);
 var
   Transform: TSWFMatrix;
   Sampler: TFlashBitmapSampler;
   X, Y, I, Left, Right, Top, Bottom: Integer;
   XCorner, YCorner, U, V, MinX, MaxX, MinY, MaxY, MinU, MaxU, MinV, MaxV, DU, DV: Double;
   SampleU, SampleV: array[0..15] of Double;
-  Color: Cardinal;
   Coverage: Word;
+  TransformPaint, AxisAligned: Boolean;
+  Horizontal: TArray<TFlashBilinearAxis>;
+  Vertical: TFlashBilinearAxis;
+  Centers: TArray<Double>;
 
   function Snap(Value: Double): Double;
   begin
@@ -7598,6 +8638,67 @@ var
       Result := Int(Value + 0.5)
     else
       Result := -Int(0.5 - Value);
+  end;
+
+  procedure PaintPixel(Index: Integer; PixelColor: Cardinal; Samples: Word);
+  begin
+    if PixelColor shr 24 = 0 then
+      Exit;
+    if TransformPaint then
+      PixelColor := FRender.Color.Apply(PixelColor);
+    PlotPixel(Index, PixelColor, Opacity, Pixels, Samples);
+  end;
+
+  procedure PaintUnscaled(OriginX, OriginY: Integer);
+  var
+    SourceRow, DestRow, RowBytes: Integer;
+    PixelColor: Cardinal;
+  begin
+    if (Opacity = 1) and not TransformPaint and (FRender.Coverage = nil) and
+      ((FRender.DetailPixels = nil) or (FRender.DetailPixels.Count = 0)) then
+    begin
+      if SourceOpaque then
+      begin
+        RowBytes := (Right - Left) * SizeOf(Cardinal);
+        for var Row := Top to Bottom - 1 do
+          Move(ImagePixels[(Row - OriginY) * Width + Left - OriginX],
+            Pixels[Row * FRender.Width + Left], RowBytes);
+      end
+      else
+        for var Row := Top to Bottom - 1 do
+        begin
+          SourceRow := (Row - OriginY) * Width - OriginX;
+          DestRow := Row * FRender.Width;
+          for var Column := Left to Right - 1 do
+          begin
+            PixelColor := ImagePixels[SourceRow + Column];
+            case PixelColor shr 24 of
+              0:
+                ;
+              255:
+                Pixels[DestRow + Column] := PixelColor;
+            else
+              if Premultiplied then
+                PixelColor := StraightBitmapSample(PixelColor);
+              Blend(Pixels[DestRow + Column], PixelColor, 1, FRender.WithAlpha);
+            end;
+          end;
+        end;
+      Exit;
+    end;
+    for var Row := Top to Bottom - 1 do
+    begin
+      SourceRow := (Row - OriginY) * Width - OriginX;
+      DestRow := Row * FRender.Width;
+      for var Column := Left to Right - 1 do
+      begin
+        PixelColor := ImagePixels[SourceRow + Column];
+        // The samples lie inside the pixel and the filter is centered on its texel.
+        if Premultiplied and (PixelColor shr 24 <> 255) and (PixelColor shr 24 <> 0) then
+          PixelColor := StraightBitmapSample(PixelColor);
+        PaintPixel(DestRow + Column, PixelColor, FRender.FullCoverage);
+      end;
+    end;
   end;
 
 begin
@@ -7644,6 +8745,16 @@ begin
   Inc(FRender.Work, Int64(Right - Left) * (Bottom - Top));
   if FRender.Work > FlashRenderWorkLimit then
     raise ESWFError.Create('Flash frame rendering work limit');
+  if (Right <= Left) or (Bottom <= Top) then
+    Exit;
+
+  TransformPaint := HasPaintColorTransform(FRender.Color);
+  if (FRender.MaskOutput = nil) and (Transform.A = 1) and (Transform.D = 1) and
+    (Transform.B = 0) and (Transform.C = 0) and (Frac(Transform.TX) = 0) and (Frac(Transform.TY) = 0) then
+  begin
+    PaintUnscaled(Trunc(Transform.TX), Trunc(Transform.TY));
+    Exit;
+  end;
 
   MinU := 0;
   MaxU := 0;
@@ -7660,10 +8771,33 @@ begin
     MinV := Min(MinV, SampleV[I]);
     MaxV := Max(MaxV, SampleV[I]);
   end;
-  for Y := Top to Bottom - 1 do
+  AxisAligned := Sampler.Smooth and (FRender.MaskOutput = nil) and
+    (Sampler.Inverse.B = 0) and (Sampler.Inverse.C = 0);
+  if AxisAligned then
+  begin
+    // Each column and row has the same source coordinates throughout the bitmap.
+    SetLength(Horizontal, Right - Left);
+    SetLength(Centers, Right - Left);
     for X := Left to Right - 1 do
     begin
-      Sampler.Locate(X + 0.5, Y + 0.5, U, V);
+      Sampler.Locate(X + 0.5, 0.5, U, V);
+      Centers[X - Left] := U;
+      Horizontal[X - Left] := Sampler.BilinearAxis(U, Width);
+    end;
+  end;
+  for Y := Top to Bottom - 1 do
+  begin
+    if AxisAligned then
+    begin
+      Sampler.Locate(0.5, Y + 0.5, U, V);
+      Vertical := Sampler.BilinearAxis(V, Height);
+    end;
+    for X := Left to Right - 1 do
+    begin
+      if AxisAligned then
+        U := Centers[X - Left]
+      else
+        Sampler.Locate(X + 0.5, Y + 0.5, U, V);
       if (U + MaxU < 0) or (U + MinU >= Width) or (V + MaxV < 0) or (V + MinV >= Height) then
         Continue;
       Coverage := FRender.FullCoverage;
@@ -7685,13 +8819,59 @@ begin
       end;
       if FRender.MaskOutput <> nil then
         PlotPixel(Y * FRender.Width + X, 0, Opacity, Pixels, Coverage)
+      else if AxisAligned then
+        PaintPixel(Y * FRender.Width + X, Sampler.BilinearColor(Horizontal[X - Left], Vertical), Coverage)
       else
-      begin
-        Color := Sampler.ColorAt(U, V);
-        if Color shr 24 <> 0 then
-          PlotPixel(Y * FRender.Width + X, FRender.Color.Apply(Color), Opacity, Pixels, Coverage);
-      end;
+        PaintPixel(Y * FRender.Width + X, Sampler.ColorAt(U, V), Coverage);
     end;
+  end;
+end;
+
+function TFlashPlayer.FindShapeRaster(Shape: TSWFCharacter; const Matrix: TSWFMatrix; Glyph: Boolean): PFlashShapeRaster;
+var
+  Raster, Replacement: PFlashShapeRaster;
+  TX, TY: UInt64;
+  Hash: NativeUInt;
+  Bucket: Integer;
+begin
+  Result := nil;
+  // Keep authored geometry alive while its address is used as a key.
+  if (FRender.MaskOutput <> nil) or (not Glyph and not (Shape.Kind in [2, 22, 32, 83])) or
+    (Length(Shape.Edges) < FlashCachedShapeMinEdges) or (Length(Shape.Fills) = 0) or
+    (Length(Shape.Fills) > FlashCachedShapeStyleLimit) then
+    Exit;
+  Hash := NativeUInt(@Shape.Fills[0]) shr 4;
+  Move(Matrix.TX, TX, SizeOf(TX));
+  Move(Matrix.TY, TY, SizeOf(TY));
+  Hash := Hash xor (Hash shr 7) xor NativeUInt(TX shr 36) xor NativeUInt(TY shr 39);
+  Bucket := Integer(Hash and (Length(FShapeRasters) div FlashCachedShapeWays - 1)) * FlashCachedShapeWays;
+  Replacement := @FShapeRasters[Bucket];
+  for var I := Bucket to Bucket + FlashCachedShapeWays - 1 do
+  begin
+    Raster := @FShapeRasters[I];
+    if (Raster.Fills <> nil) and (@Raster.Fills[0] = @Shape.Fills[0]) and
+      (Raster.Quality = FRender.Quality) and (Raster.Width = FRender.Width) and
+      (Raster.Height = FRender.Height) and CompareMem(@Raster.Stage, @FRender.Stage, SizeOf(FRender.Stage)) and
+      CompareMem(@Raster.Matrix, @Matrix, SizeOf(Matrix)) then
+    begin
+      Raster.LastUsed := FFrameNumber;
+      if not Raster.TooManySpans then
+        Result := Raster;
+      Exit;
+    end;
+    if (Replacement.Fills <> nil) and ((Raster.Fills = nil) or (Raster.LastUsed < Replacement.LastUsed)) then
+      Replacement := Raster;
+  end;
+  // Wait for a repeated placement before collecting spans.
+  Dec(FShapeRasterSpanCount, Length(Replacement.Spans));
+  Replacement^ := Default(TFlashShapeRaster);
+  Replacement.Fills := Shape.Fills;
+  Replacement.Matrix := Matrix;
+  Replacement.Stage := FRender.Stage;
+  Replacement.Width := FRender.Width;
+  Replacement.Height := FRender.Height;
+  Replacement.Quality := FRender.Quality;
+  Replacement.LastUsed := FFrameNumber;
 end;
 
 procedure TFlashPlayer.RenderShape(Shape: TSWFCharacter; const M: TSWFMatrix; Opacity: Double; var Pixels: TArray<Cardinal>; ColorOverride: Int64; LibraryMovie: TSWFMovie; DrawingClip: TFlashClip);
@@ -7706,30 +8886,82 @@ type
     FirstRow, EndRow, Winding: Integer;
     MinY, MaxY: Double;
   end;
+
+  TStyleGeometry = record
+    FirstEdge, FirstStroke: Integer;
+  end;
 var
-  ScanEdges, Active: TList<TScanEdge>;
-  Crossings: TList<TCross>;
+  ScanEdges: TList<TScanEdge>;
+  SortedEdges: TArray<TScanEdge>;
+  Active: TArray<Integer>;
+  ActiveCount: Integer;
+  Crossings: TArray<TCross>;
   CrossOrder: IComparer<TCross>;
   EdgeOrder: IComparer<TScanEdge>;
   Transitions: TArray<Word>;
-  FirstX, EndX: Integer;
+  GeometryByStyle: TArray<TStyleGeometry>;
+  NextEdge, NextStroke: TArray<Integer>;
+  FirstX, EndX, BoundaryCount: Integer;
+  Boundaries: array[0..15] of Integer;
   StrokeEdges: TList<TSWFEdge>;
   ShapeToFrame, TextureToFrame: TSWFMatrix;
   Sampler: TFlashBitmapSampler;
   GradientSampler: TFlashGradientSampler;
   Bitmap: TSWFCharacter;
   Style: TSWFFill;
-  Fill: Integer;
+  Fill, StrokeIndex: Integer;
   FlatColor: Cardinal;
-  Textured, Graded, HasClosing, HasPending: Boolean;
+  Textured, NearestTexture, Graded, GradientByRow, MonotoneGradient, TransformPaint: Boolean;
+  TextureColumns: TArray<Integer>;
+  SmoothColumns: TArray<TFlashBilinearAxis>;
+  SmoothRow: TFlashBilinearAxis;
+  AxisTexture: Boolean;
+  TextureSamples: PFlashTextureSamples;
+  TextureLeft, TextureRight, TextureY, TextureRow: Integer;
+  HasClosing, HasPending: Boolean;
   Closing: TSWFEdge;
-  Path, Pending: TSWFStrokePath;
+  Pending: TSWFStrokePath;
+  Raster: PFlashShapeRaster;
+  ReplayRaster: Boolean;
+  CapturedSpans: TList<TFlashRasterSpan>;
+  StyleOffsets: TArray<Integer>;
 
   procedure Charge(Work: Int64);
   begin
     Inc(FRender.Work, Work);
     if FRender.Work > FlashRenderWorkLimit then
       raise ESWFError.Create('Flash frame rendering work limit');
+  end;
+
+  procedure IndexGeometry;
+  var
+    I, StyleIndex: Integer;
+  begin
+    // Charge for building and traversing the index before allocating it.
+    Charge(Length(Shape.Fills) + 2 * (Int64(Length(Shape.Edges)) + Length(Shape.StrokePaths)));
+    SetLength(GeometryByStyle, Length(Shape.Fills));
+    SetLength(NextEdge, Length(Shape.Edges));
+    SetLength(NextStroke, Length(Shape.StrokePaths));
+    // Use one-based links with zero as the terminator. Prepending in reverse
+    // keeps the original edge and stroke order within each style.
+    for I := High(Shape.Edges) downto 0 do
+    begin
+      StyleIndex := Shape.Edges[I].Fill;
+      if (StyleIndex < 1) or (StyleIndex > Length(GeometryByStyle)) then
+        Continue;
+      Dec(StyleIndex);
+      NextEdge[I] := GeometryByStyle[StyleIndex].FirstEdge;
+      GeometryByStyle[StyleIndex].FirstEdge := I + 1;
+    end;
+    for I := High(Shape.StrokePaths) downto 0 do
+    begin
+      StyleIndex := Shape.StrokePaths[I].Fill;
+      if (StyleIndex < 1) or (StyleIndex > Length(GeometryByStyle)) then
+        Continue;
+      Dec(StyleIndex);
+      NextStroke[I] := GeometryByStyle[StyleIndex].FirstStroke;
+      GeometryByStyle[StyleIndex].FirstStroke := I + 1;
+    end;
   end;
 
   procedure AddEdge(const E: TSWFEdge);
@@ -7755,6 +8987,265 @@ var
     ScanEdges.Add(Entry);
   end;
 
+  procedure PaintSolidSpan(First, Stop: Integer; Color: Cardinal; Coverage: Word);
+  var
+    Index: Integer;
+  begin
+    if (Coverage = FRender.FullCoverage) and (FRender.Coverage = nil) and (FRender.MaskOutput = nil) then
+    begin
+      if (Color shr 24 = 255) and (Opacity = 1) then
+      begin
+        if (FRender.DetailPixels = nil) or (FRender.DetailPixels.Count = 0) then
+          for Index := First to Stop - 1 do
+            Pixels[Index] := Color
+        else
+          for Index := First to Stop - 1 do
+            if FRender.DetailIndex[Index] = 0 then
+              Pixels[Index] := Color
+            else
+              PlotPixel(Index, Color, Opacity, Pixels, Coverage);
+        Exit;
+      end;
+      if FRender.SampleCount = 1 then
+      begin
+        for Index := First to Stop - 1 do
+          Blend(Pixels[Index], Color, Opacity, FRender.WithAlpha);
+        Exit;
+      end;
+    end;
+    for Index := First to Stop - 1 do
+      PlotPixel(Index, Color, Opacity, Pixels, Coverage);
+  end;
+
+  procedure CaptureSpan(Y, X0, XEnd: Integer; Coverage: Word);
+  var
+    Span: TFlashRasterSpan;
+  begin
+    if (CapturedSpans.Count >= FlashCachedShapeSpanLimit) or
+      (CapturedSpans.Count >= FlashCachedShapeTotalSpans - FShapeRasterSpanCount) then
+    begin
+      Raster.TooManySpans := True;
+      FreeAndNil(CapturedSpans);
+      Exit;
+    end;
+    Span.Y := Y;
+    Span.Left := X0;
+    Span.Right := XEnd;
+    Span.Coverage := Coverage;
+    CapturedSpans.Add(Span);
+  end;
+
+  function FindTextureSamples: PFlashTextureSamples;
+  var
+    Cache, Replacement: PFlashTextureSamples;
+    ScreenPixels: Int64;
+    Version: UInt64;
+  begin
+    Result := nil;
+    ScreenPixels := Int64(FRender.Width) * FRender.Height;
+    if FRender.WithAlpha or not Sampler.Smooth or
+      (Length(Sampler.Pixels) < FlashTextureCacheMinSourcePixels) or
+      (Length(Sampler.Pixels) > FlashTextureCacheMaxSourcePixels) or
+      (ScreenPixels > FlashTextureCacheMaxTargetPixels) then
+      Exit;
+    Version := 0;
+    if Style.BitmapData <> nil then
+      Version := Style.BitmapData.ContentVersion;
+    Inc(FTextureSampleUse);
+    Replacement := @FTextureSamples[0];
+    for var I := Low(FTextureSamples) to High(FTextureSamples) do
+    begin
+      Cache := @FTextureSamples[I];
+      if Cache.LastUsed < Replacement.LastUsed then
+        Replacement := Cache;
+      if (Cache.Source = nil) or (@Cache.Source[0] <> @Sampler.Pixels[0]) or
+        (Cache.ContentVersion <> Version) or (Cache.Premultiplied <> Sampler.Premultiplied) or
+        (Cache.SourceWidth <> Sampler.Width) or (Cache.TargetWidth <> FRender.Width) or
+        (Cache.TargetHeight <> FRender.Height) or (Cache.RepeatPixels <> Sampler.RepeatPixels) or
+        not CompareMem(@Cache.Inverse, @Sampler.Inverse, SizeOf(Cache.Inverse)) then
+        Continue;
+      Cache.LastUsed := FTextureSampleUse;
+      if Cache.Valid = nil then
+      begin
+        SetLength(Cache.Colors, ScreenPixels);
+        SetLength(Cache.Valid, ScreenPixels);
+        SetLength(Cache.Rows, FRender.Height);
+      end;
+      Exit(Cache);
+    end;
+    // Allocate sampled pixels only when the same source and transform recur.
+    Replacement^ := Default(TFlashTextureSamples);
+    Replacement.Source := Sampler.Pixels;
+    Replacement.ContentVersion := Version;
+    Replacement.Premultiplied := Sampler.Premultiplied;
+    Replacement.SourceWidth := Sampler.Width;
+    Replacement.TargetWidth := FRender.Width;
+    Replacement.TargetHeight := FRender.Height;
+    Replacement.RepeatPixels := Sampler.RepeatPixels;
+    Replacement.Inverse := Sampler.Inverse;
+    Replacement.LastUsed := FTextureSampleUse;
+  end;
+
+  procedure PaintNearestSpan(Y, X0, XEnd: Integer; Coverage: Word);
+  var
+    X, Column, RowOffset: Integer;
+    U, V: Double;
+    Color: Cardinal;
+
+    procedure MapColumns(First, Stop: Integer);
+    begin
+      for var ColumnX := First to Stop - 1 do
+      begin
+        Sampler.Locate(ColumnX + 0.5, 0.5, U, V);
+        TextureColumns[ColumnX] := Sampler.NearestIndex(U, Sampler.Width);
+      end;
+    end;
+
+  begin
+    // Axis-aligned nearest-neighbor fills can reuse the source coordinates
+    // independently across all columns and scanlines of the style.
+    if Y <> TextureY then
+    begin
+      Sampler.Locate(0.5, Y + 0.5, U, V);
+      TextureY := Y;
+      TextureRow := Sampler.NearestIndex(V, Sampler.Height);
+      if TextureRow >= 0 then
+        TextureRow := TextureRow * Sampler.Width;
+    end;
+    if TextureRow < 0 then
+      Exit;
+    if TextureColumns = nil then
+      SetLength(TextureColumns, FRender.Width);
+    if TextureLeft = TextureRight then
+    begin
+      TextureLeft := X0;
+      TextureRight := X0;
+    end;
+    if X0 < TextureLeft then
+    begin
+      MapColumns(X0, TextureLeft);
+      TextureLeft := X0;
+    end;
+    if XEnd > TextureRight then
+    begin
+      MapColumns(TextureRight, XEnd);
+      TextureRight := XEnd;
+    end;
+    RowOffset := Y * FRender.Width;
+    for X := X0 to XEnd - 1 do
+    begin
+      Column := TextureColumns[X];
+      if Column < 0 then
+        Continue;
+      Color := Sampler.Pixels[TextureRow + Column];
+      if Color shr 24 = 0 then
+        Continue;
+      if Sampler.Premultiplied then
+        Color := StraightBitmapSample(Color);
+      if TransformPaint then
+        Color := FRender.Color.Apply(Color);
+      PlotPixel(RowOffset + X, Color, Opacity, Pixels, Coverage);
+    end;
+  end;
+
+  procedure PaintBilinearSpan(Y, X0, XEnd: Integer; Coverage: Word);
+  var
+    X, Index, RowStart: Integer;
+    U, V: Double;
+    Color: Cardinal;
+    CacheWholeRow: Boolean;
+
+    procedure MapColumns(First, Stop: Integer);
+    begin
+      for var Column := First to Stop - 1 do
+      begin
+        Sampler.Locate(Column + 0.5, 0.5, U, V);
+        SmoothColumns[Column] := Sampler.BilinearAxis(U, Sampler.Width);
+      end;
+    end;
+
+  begin
+    RowStart := Y * FRender.Width;
+    CacheWholeRow := (TextureSamples <> nil) and (X0 = 0) and (XEnd = FRender.Width);
+    if (TextureSamples <> nil) and (TextureSamples.Rows[Y] <> trUnfilled) and not TransformPaint and
+      (Opacity = 1) and (Coverage = FRender.FullCoverage) and (FRender.Coverage = nil) and
+      ((FRender.DetailPixels = nil) or (FRender.DetailPixels.Count = 0)) then
+    begin
+      if TextureSamples.Rows[Y] = trOpaque then
+        Move(TextureSamples.Colors[RowStart + X0], Pixels[RowStart + X0], (XEnd - X0) * SizeOf(Cardinal))
+      else
+        for Index := RowStart + X0 to RowStart + XEnd - 1 do
+        begin
+          Color := TextureSamples.Colors[Index];
+          case Color shr 24 of
+            0:
+              ;
+            255:
+              Pixels[Index] := Color;
+          else
+            Blend(Pixels[Index], Color, 1, FRender.WithAlpha);
+          end;
+        end;
+      Exit;
+    end;
+    if Y <> TextureY then
+    begin
+      Sampler.Locate(0.5, Y + 0.5, U, V);
+      TextureY := Y;
+      SmoothRow := Sampler.BilinearAxis(V, Sampler.Height);
+    end;
+    if SmoothRow.First < 0 then
+      Exit;
+    // Keep the mapped column interval for the remaining spans of this fill.
+    if SmoothColumns = nil then
+      SetLength(SmoothColumns, FRender.Width);
+    if TextureLeft = TextureRight then
+    begin
+      TextureLeft := X0;
+      TextureRight := X0;
+    end;
+    if X0 < TextureLeft then
+    begin
+      MapColumns(X0, TextureLeft);
+      TextureLeft := X0;
+    end;
+    if XEnd > TextureRight then
+    begin
+      MapColumns(TextureRight, XEnd);
+      TextureRight := XEnd;
+    end;
+    Index := RowStart + X0;
+    for X := X0 to XEnd - 1 do
+    begin
+      if (TextureSamples <> nil) and (TextureSamples.Valid[Index] <> 0) then
+        Color := TextureSamples.Colors[Index]
+      else
+      begin
+        Color := Sampler.BilinearColor(SmoothColumns[X], SmoothRow);
+        if TextureSamples <> nil then
+        begin
+          TextureSamples.Colors[Index] := Color;
+          TextureSamples.Valid[Index] := 1;
+        end;
+      end;
+      if Color shr 24 <> 0 then
+      begin
+        if TransformPaint then
+          Color := FRender.Color.Apply(Color);
+        PlotPixel(Index, Color, Opacity, Pixels, Coverage);
+      end;
+      Inc(Index);
+    end;
+    if CacheWholeRow and (TextureSamples.Rows[Y] = trUnfilled) then
+    begin
+      TextureSamples.Rows[Y] := trMixed;
+      for Index := RowStart to RowStart + FRender.Width - 1 do
+        if TextureSamples.Colors[Index] shr 24 <> 255 then
+          Exit;
+      TextureSamples.Rows[Y] := trOpaque;
+    end;
+  end;
+
   procedure PaintSpan(Y, X0, XEnd: Integer; Coverage: Word);
   var
     X, RowOffset: Integer;
@@ -7764,37 +9255,75 @@ var
     if (XEnd <= X0) or (Coverage = 0) then
       Exit;
     Charge(XEnd - X0);
+    if CapturedSpans <> nil then
+      CaptureSpan(Y, X0, XEnd, Coverage);
     RowOffset := Y * FRender.Width;
     Scan := Y + 0.5;
     if Graded then
     begin
       if Length(Style.Gradient.Stops) > 16 then
         Charge(Int64(XEnd - X0) * (Length(Style.Gradient.Stops) div 16));
+      if GradientByRow or (MonotoneGradient and (XEnd - X0 >= 16)) then
+      begin
+        Color := GradientSampler.ColorAt(X0 + 0.5, Scan);
+        // Every channel of a monotone gradient stays between the endpoint
+        // values, so matching rounded endpoint colors cover the whole span.
+        if GradientByRow or (Color = GradientSampler.ColorAt(XEnd - 0.5, Scan)) then
+        begin
+          if TransformPaint then
+            Color := FRender.Color.Apply(Color);
+          if Color shr 24 <> 0 then
+            PaintSolidSpan(RowOffset + X0, RowOffset + XEnd, Color, Coverage);
+          Exit;
+        end;
+      end;
       for X := X0 to XEnd - 1 do
       begin
-        Color := FRender.Color.Apply(GradientSampler.ColorAt(X + 0.5, Scan));
+        Color := GradientSampler.ColorAt(X + 0.5, Scan);
+        if TransformPaint then
+          Color := FRender.Color.Apply(Color);
         if Color shr 24 <> 0 then
           PlotPixel(RowOffset + X, Color, Opacity, Pixels, Coverage);
       end;
     end
     else if Textured then
     begin
+      if NearestTexture then
+      begin
+        PaintNearestSpan(Y, X0, XEnd, Coverage);
+        Exit;
+      end;
+      if AxisTexture then
+      begin
+        PaintBilinearSpan(Y, X0, XEnd, Coverage);
+        Exit;
+      end;
       for X := X0 to XEnd - 1 do
       begin
-        Sampler.Locate(X + 0.5, Scan, U, V);
-        Color := Sampler.ColorAt(U, V);
+        var Index := RowOffset + X;
+        if (TextureSamples <> nil) and (TextureSamples.Valid[Index] <> 0) then
+          Color := TextureSamples.Colors[Index]
+        else
+        begin
+          Sampler.Locate(X + 0.5, Scan, U, V);
+          Color := Sampler.ColorAt(U, V);
+          // The texture sample is independent of the current stencil and color transform.
+          if TextureSamples <> nil then
+          begin
+            TextureSamples.Colors[Index] := Color;
+            TextureSamples.Valid[Index] := 1;
+          end;
+        end;
         if Color shr 24 <> 0 then
-          PlotPixel(RowOffset + X, FRender.Color.Apply(Color), Opacity, Pixels, Coverage);
+        begin
+          if TransformPaint then
+            Color := FRender.Color.Apply(Color);
+          PlotPixel(Index, Color, Opacity, Pixels, Coverage);
+        end;
       end;
     end
-    else if (FRender.SampleCount = 1) and (FRender.Coverage = nil) and (FRender.MaskOutput = nil) then
-    begin
-      for X := X0 to XEnd - 1 do
-        Blend(Pixels[RowOffset + X], FlatColor, Opacity, FRender.WithAlpha);
-    end
     else
-      for X := X0 to XEnd - 1 do
-        PlotPixel(RowOffset + X, FlatColor, Opacity, Pixels, Coverage);
+      PaintSolidSpan(RowOffset + X0, RowOffset + XEnd, FlatColor, Coverage);
   end;
 
   procedure MarkSpan(Y, Sample: Integer; Left, Right: Double);
@@ -7815,18 +9344,50 @@ var
     Bit := Word(1) shl Sample;
     Transitions[X0] := Transitions[X0] xor Bit;
     Transitions[XEnd] := Transitions[XEnd] xor Bit;
+    if BoundaryCount < Length(Boundaries) then
+    begin
+      Boundaries[BoundaryCount] := X0;
+      Boundaries[BoundaryCount + 1] := XEnd;
+    end;
+    Inc(BoundaryCount, 2);
     FirstX := Min(FirstX, X0);
     EndX := Max(EndX, XEnd);
   end;
 
   procedure PaintRow(Y: Integer);
   var
-    X, Start: Integer;
+    X, I, J, Start: Integer;
     Coverage: Word;
   begin
     Charge(EndX - FirstX);
     Coverage := 0;
     Start := FirstX;
+    if (BoundaryCount <= Length(Boundaries)) and (EndX - FirstX > 24) then
+    begin
+      // Wide, simple fills usually change coverage at only a few columns.
+      for I := 1 to BoundaryCount - 1 do
+      begin
+        X := Boundaries[I];
+        J := I;
+        while (J > 0) and (Boundaries[J - 1] > X) do
+        begin
+          Boundaries[J] := Boundaries[J - 1];
+          Dec(J);
+        end;
+        Boundaries[J] := X;
+      end;
+      for I := 0 to BoundaryCount - 1 do
+      begin
+        X := Boundaries[I];
+        if Transitions[X] = 0 then
+          Continue;
+        PaintSpan(Y, Start, X, Coverage);
+        Coverage := Coverage xor Transitions[X];
+        Transitions[X] := 0;
+        Start := X;
+      end;
+      Exit;
+    end;
     for X := FirstX to EndX do
       if Transitions[X] <> 0 then
       begin
@@ -7839,64 +9400,88 @@ var
 
   procedure CrossRow(Y, Sample: Integer; EvenOdd: Boolean);
   var
-    Entry: TScanEdge;
-    Cross: TCross;
+    Entry: ^TScanEdge;
     Scan, Start: Double;
-    Winding: Integer;
+    Count, Winding: Integer;
   begin
-    Charge(Active.Count);
+    Charge(ActiveCount);
+    if ActiveCount < 2 then
+      Exit;
     Scan := Y + FRender.SampleY[Sample];
-    Crossings.Clear;
-    for Entry in Active do
+    Count := 0;
+    for var I := 0 to ActiveCount - 1 do
+    begin
+      Entry := @SortedEdges[Active[I]];
       if (Scan >= Entry.MinY) and (Scan < Entry.MaxY) then
       begin
-        Cross.X := Entry.Edge.X1 + (Scan - Entry.Edge.Y1) *
+        Crossings[Count].X := Entry.Edge.X1 + (Scan - Entry.Edge.Y1) *
           (Entry.Edge.X2 - Entry.Edge.X1) / (Entry.Edge.Y2 - Entry.Edge.Y1);
-        Cross.Winding := Entry.Winding;
-        Crossings.Add(Cross);
+        Crossings[Count].Winding := Entry.Winding;
+        Inc(Count);
       end;
-    Crossings.Sort(CrossOrder);
+    end;
+    if Count < 2 then
+      Exit;
+    if Count = 2 then
+    begin
+      if EvenOdd or (Crossings[0].Winding <> Crossings[1].Winding) then
+        if CompareValue(Crossings[0].X, Crossings[1].X) > 0 then
+          MarkSpan(Y, Sample, Crossings[1].X, Crossings[0].X)
+        else
+          MarkSpan(Y, Sample, Crossings[0].X, Crossings[1].X);
+      Exit;
+    end;
+    TArray.Sort<TCross>(Crossings, CrossOrder, 0, Count);
     Winding := 0;
     Start := 0;
-    for Cross in Crossings do
+    for var I := 0 to Count - 1 do
     begin
       if Winding = 0 then
-        Start := Cross.X;
-      Inc(Winding, Cross.Winding);
+        Start := Crossings[I].X;
+      Inc(Winding, Crossings[I].Winding);
       if EvenOdd then
         Winding := Winding and 1;
       if Winding = 0 then
-        MarkSpan(Y, Sample, Start, Cross.X);
+        MarkSpan(Y, Sample, Start, Crossings[I].X);
     end;
   end;
 
   procedure DrawEdges(EvenOdd: Boolean);
   var
-    Y, Next, Index, Sample: Integer;
+    Y, Next, Index, Sample, Count: Integer;
   begin
-    if ScanEdges.Count = 0 then
+    Count := ScanEdges.Count;
+    if Count = 0 then
       Exit;
     ScanEdges.Sort(EdgeOrder);
-    Active.Clear;
-    Next := 0;
-    Y := ScanEdges[0].FirstRow;
-    while (Next < ScanEdges.Count) or (Active.Count <> 0) do
+    SortedEdges := ScanEdges.List;
+    if Count > Length(Active) then
     begin
-      for Index := Active.Count - 1 downto 0 do
-        if Active[Index].EndRow <= Y then
+      SetLength(Active, Count);
+      SetLength(Crossings, Count);
+    end;
+    ActiveCount := 0;
+    Next := 0;
+    Y := SortedEdges[0].FirstRow;
+    while (Next < Count) or (ActiveCount <> 0) do
+    begin
+      for Index := ActiveCount - 1 downto 0 do
+        if SortedEdges[Active[Index]].EndRow <= Y then
         begin
-          Active[Index] := Active[Active.Count - 1];
-          Active.Delete(Active.Count - 1);
+          Dec(ActiveCount);
+          Active[Index] := Active[ActiveCount];
         end;
-      if (Active.Count = 0) and (Next < ScanEdges.Count) then
-        Y := Max(Y, ScanEdges[Next].FirstRow);
-      while (Next < ScanEdges.Count) and (ScanEdges[Next].FirstRow = Y) do
+      if (ActiveCount = 0) and (Next < Count) then
+        Y := Max(Y, SortedEdges[Next].FirstRow);
+      while (Next < Count) and (SortedEdges[Next].FirstRow = Y) do
       begin
-        Active.Add(ScanEdges[Next]);
+        Active[ActiveCount] := Next;
+        Inc(ActiveCount);
         Inc(Next);
       end;
       FirstX := FRender.Width;
       EndX := -1;
+      BoundaryCount := 0;
       for Sample := 0 to FRender.SampleCount - 1 do
         CrossRow(Y, Sample, EvenOdd);
       if EndX >= 0 then
@@ -7907,7 +9492,7 @@ var
 
   procedure DrawFill;
   var
-    E: TSWFEdge;
+    EdgeIndex: Integer;
 
     procedure AddLocalEdge(const Edge: TSWFEdge);
     var
@@ -7922,11 +9507,13 @@ var
     end;
 
   begin
-    Charge(Length(Shape.Edges));
     ScanEdges.Clear;
-    for E in Shape.Edges do
-      if E.Fill = Fill then
-        AddLocalEdge(E);
+    EdgeIndex := GeometryByStyle[Fill - 1].FirstEdge;
+    while EdgeIndex <> 0 do
+    begin
+      AddLocalEdge(Shape.Edges[EdgeIndex - 1]);
+      EdgeIndex := NextEdge[EdgeIndex - 1];
+    end;
     if HasClosing and (Closing.Fill = Fill) then
       AddLocalEdge(Closing);
     DrawEdges(Shape.EvenOddFills);
@@ -7958,26 +9545,45 @@ begin
   HasPending := (DrawingClip <> nil) and (FRender.MaskOutput = nil) and DrawingClip.PendingStroke(Pending);
   if (Length(Shape.Edges) = 0) and (Length(Shape.StrokePaths) = 0) and not HasPending and not HasClosing then
     Exit;
-  ShapeToFrame := BitmapToFrame(M, FRender.Stage);
-  if FRender.SampleCount > 1 then
-    SetLength(Transitions, FRender.Width + 1);
-  EdgeOrder := TComparer<TScanEdge>.Construct(
-    function(const A, B: TScanEdge): Integer
-    begin
-      Result := A.FirstRow - B.FirstRow;
-    end);
-  CrossOrder := TComparer<TCross>.Construct(
-    function(const A, B: TCross): Integer
-    begin
-      Result := CompareValue(A.X, B.X);
-    end);
-  ScanEdges := TList<TScanEdge>.Create;
-  Active := TList<TScanEdge>.Create;
-  Crossings := TList<TCross>.Create;
-  StrokeEdges := TList<TSWFEdge>.Create;
+  Raster := nil;
+  if DrawingClip = nil then
+    Raster := FindShapeRaster(Shape, M, ColorOverride >= 0);
+  ReplayRaster := (Raster <> nil) and (Raster.StyleOffsets <> nil);
+  TransformPaint := HasPaintColorTransform(FRender.Color);
+  CapturedSpans := nil;
+  ScanEdges := nil;
+  StrokeEdges := nil;
   try
+    if ReplayRaster then
+      Charge(Length(Shape.Fills))
+    else
+    begin
+      IndexGeometry;
+      ShapeToFrame := BitmapToFrame(M, FRender.Stage);
+      if FRender.SampleCount > 1 then
+        SetLength(Transitions, FRender.Width + 1);
+      EdgeOrder := TComparer<TScanEdge>.Construct(
+        function(const A, B: TScanEdge): Integer
+        begin
+          Result := A.FirstRow - B.FirstRow;
+        end);
+      CrossOrder := TComparer<TCross>.Construct(
+        function(const A, B: TCross): Integer
+        begin
+          Result := CompareValue(A.X, B.X);
+        end);
+      ScanEdges := TList<TScanEdge>.Create;
+      StrokeEdges := TList<TSWFEdge>.Create;
+      if Raster <> nil then
+      begin
+        SetLength(StyleOffsets, Length(Shape.Fills) + 1);
+        CapturedSpans := TList<TFlashRasterSpan>.Create;
+      end;
+    end;
     for Fill := 1 to Length(Shape.Fills) do
     begin
+      if CapturedSpans <> nil then
+        StyleOffsets[Fill - 1] := CapturedSpans.Count;
       Style := Shape.Fills[Fill - 1];
       if (FRender.MaskOutput <> nil) and Style.Stroke then
         Continue;
@@ -7985,7 +9591,14 @@ begin
         ((Style.BitmapId <> 0) or (Style.BitmapData <> nil));
       Graded := (FRender.MaskOutput = nil) and (ColorOverride < 0) and (Style.Gradient.Kind <> sgNone);
       if Graded then
-        GradientSampler.Initialize(Style.Gradient, M, FRender.Stage)
+      begin
+        GradientSampler.Initialize(Style.Gradient, M, FRender.Stage);
+        GradientByRow := (Style.Gradient.Kind = sgLinear) and GradientSampler.Mapped and
+          (GradientSampler.Inverse.A = 0);
+        MonotoneGradient := (Style.Gradient.Kind = sgLinear) and GradientSampler.Mapped and
+          (Style.Gradient.Spread = gsPad) and not Style.Gradient.LinearRGB and
+          (Length(Style.Gradient.Stops) = 2) and (Style.Gradient.Stops[0].Ratio < Style.Gradient.Stops[1].Ratio);
+      end
       else if Textured then
       begin
         TextureToFrame := ShapePaintToFrame(Style.BitmapMatrix, M, FRender.Stage);
@@ -8005,6 +9618,12 @@ begin
             TextureToFrame, Style.BitmapRepeat, Style.BitmapSmooth and (FRender.Quality <> fqLow), False) then
             Continue;
         end;
+        TextureSamples := FindTextureSamples;
+        AxisTexture := (Sampler.Inverse.B = 0) and (Sampler.Inverse.C = 0) and (FRender.Width <= 4096);
+        NearestTexture := not Sampler.Smooth and AxisTexture;
+        TextureLeft := 0;
+        TextureRight := 0;
+        TextureY := -1;
       end
       else
       begin
@@ -8012,24 +9631,41 @@ begin
           FlatColor := Cardinal(ColorOverride)
         else
           FlatColor := Style.Color;
-        FlatColor := FRender.Color.Apply(FlatColor);
+        if TransformPaint then
+          FlatColor := FRender.Color.Apply(FlatColor);
       end;
-      if Style.Stroke then
+      if ReplayRaster then
       begin
-        Charge(Length(Shape.StrokePaths));
-        for Path in Shape.StrokePaths do
-          if Path.Fill = Fill then
-            DrawStroke(Path);
+        for var I := Raster.StyleOffsets[Fill - 1] to Raster.StyleOffsets[Fill] - 1 do
+        begin
+          var Span := Raster.Spans[I];
+          PaintSpan(Span.Y, Span.Left, Span.Right, Span.Coverage);
+        end;
+      end
+      else if Style.Stroke then
+      begin
+        StrokeIndex := GeometryByStyle[Fill - 1].FirstStroke;
+        while StrokeIndex <> 0 do
+        begin
+          DrawStroke(Shape.StrokePaths[StrokeIndex - 1]);
+          StrokeIndex := NextStroke[StrokeIndex - 1];
+        end;
         if HasPending and (Pending.Fill = Fill) then
           DrawStroke(Pending);
       end
       else
         DrawFill;
     end;
+    if CapturedSpans <> nil then
+    begin
+      StyleOffsets[High(StyleOffsets)] := CapturedSpans.Count;
+      Raster.Spans := CapturedSpans.ToArray;
+      Inc(FShapeRasterSpanCount, Length(Raster.Spans));
+      Raster.StyleOffsets := StyleOffsets;
+    end;
   finally
+    CapturedSpans.Free;
     StrokeEdges.Free;
-    Crossings.Free;
-    Active.Free;
     ScanEdges.Free;
   end;
 end;
@@ -8101,7 +9737,7 @@ var
   Value: TAVMValue;
   Format: TAVMTextFormatData;
   Font: TSWFCharacter;
-  Size, Scale, TX, TY, Top, BaseX, TotalWidth, LineAscent, LineHeight, Advance, Ascent: Double;
+  Size, Scale, TX, TY, Top, LeftInset, FreeWidth, TotalWidth, LineAscent, LineHeight, Advance, Ascent: Double;
   Leading: Double;
   Color: Cardinal;
   I, Index, LineStart, LineEnd: Integer;
@@ -8188,9 +9824,9 @@ var
 
 begin
   Text := C.Text;
-  if C.VariableName <> '' then
+  if (C.VariableName <> '') and not C.MovieLibrary.Movie.UsesAVM2 then
   begin
-    Value := VM.Get(ClipRoot(C).Script, C.VariableName);
+    Value := ReadBoundTextVariable(C);
     if Value.Kind <> avUndefined then
     begin
       C.Text := VM.CoerceString(Value);
@@ -8215,12 +9851,13 @@ begin
     end;
     Format := C.TextDocument.FormatAt(LineStart - 1);
     Leading := Number(Format, 12);
-    BaseX := (C.TextLeft - C.TextLeftMargin + Number(Format, 9)) * 20 + 40;
-    TX := BaseX + Number(Format, 11) * 20;
+    LeftInset := (Number(Format, 9) + Number(Format, 11)) * 20;
+    FreeWidth := (C.TextWidth - Number(Format, 10)) * 20 - 80 - LeftInset - TotalWidth;
+    TX := C.TextLeft * 20 + 40 + LeftInset;
     if Format.Values[8].Text = 'right' then
-      TX := Max(TX, (C.TextWidth - Number(Format, 10)) * 20 - TotalWidth - 40)
+      TX := TX + Max(0.0, FreeWidth)
     else if Format.Values[8].Text = 'center' then
-      TX := TX + Max(0.0, ((C.TextWidth - Number(Format, 10)) * 20 - BaseX - 40 - TotalWidth) / 2);
+      TX := TX + Max(0.0, FreeWidth / 2);
     TY := Top + LineAscent;
     for I := LineStart to LineEnd - 1 do
     begin
@@ -8495,7 +10132,7 @@ begin
       Smooth := (FRender.Quality <> fqHigh) or (Video.PacketCount = 1);
   end;
   RenderBitmap(Bitmap.Width, Bitmap.Height, Bitmap.SnapshotPremultiplied, VideoMatrix,
-    Smooth, True, Opacity, Pixels, False);
+    Smooth, True, Opacity, Pixels, False, not Bitmap.Transparent);
 end;
 
 procedure TFlashPlayer.RenderClipBody(C: TFlashClip; const Matrix: TSWFMatrix; Opacity: Double; var Pixels: TArray<Cardinal>);
@@ -8528,7 +10165,7 @@ begin
     end;
     if C.AttachedBitmap <> nil then
       RenderBitmap(C.AttachedBitmap.Width, C.AttachedBitmap.Height, C.AttachedBitmap.SnapshotPremultiplied,
-        Matrix, C.AttachedBitmapSmooth, True, Opacity, Pixels);
+        Matrix, C.AttachedBitmapSmooth, True, Opacity, Pixels, True, not C.AttachedBitmap.Transparent);
     RenderShape(C.Drawing, Matrix, Opacity, Pixels, -1, C.MovieLibrary.Movie, C);
     if C.IsText then
       RenderText(C, Matrix, Opacity, Pixels);
@@ -8536,12 +10173,7 @@ begin
       RenderStaticText(C, Matrix, Opacity, Pixels);
     if C.Children.Count = 0 then
       Exit;
-    Items := C.Children.ToArray;
-    TArray.Sort<TFlashClip>(Items, TComparer<TFlashClip>.Construct(
-      function(const A, B: TFlashClip): Integer
-      begin
-        Result := CompareValue(A.Depth, B.Depth);
-      end));
+    Items := ChildrenInDepthOrder(C);
     PreviousCoverage := FRender.Coverage;
     Masks := nil;
     ClipEnd := 0;
@@ -8590,72 +10222,82 @@ begin
 end;
 
 procedure TFlashPlayer.ResolveSamples(var Pixels: TArray<Cardinal>);
+const
+  SampleShifts: array[TFlashQuality] of Integer = (0, 1, 2, 2, 3, 3, 4, 4);
+  ChannelMask = $00FF00FF;
 var
   Linear: array[0..255] of Word;
-  UseLinear: Boolean;
-  Index, Offset, I, SA, SR, SG, SB, Alpha, Weight: Integer;
-  Color: Cardinal;
+  Index, Offset, I, SA, SR, SG, SB, Alpha, Weight, Shift: Integer;
+  Color, RedBlue, AlphaGreen, Rounding: Cardinal;
 begin
   if (FRender.DetailPixels = nil) or (FRender.DetailPixels.Count = 0) then
     Exit;
-  UseLinear := FRender.Quality in [fq8x8Linear, fq16x16Linear];
-  if UseLinear then
-    for I := 0 to 255 do
-      Linear[I] := Round(GradientLinearComponent(I) * 4095);
   Offset := 0;
+  if not (FRender.Quality in [fq8x8Linear, fq16x16Linear]) then
+  begin
+    Shift := SampleShifts[FRender.Quality];
+    Rounding := Cardinal(FRender.SampleCount div 2) * $00010001;
+    for Index in FRender.DetailPixels do
+    begin
+      // Sum two channels per word pair. At most 16 samples fit independently in each half.
+      RedBlue := Rounding;
+      AlphaGreen := Rounding;
+      for I := 0 to FRender.SampleCount - 1 do
+      begin
+        Color := FRender.DetailColors[Offset + I];
+        Inc(RedBlue, Color and ChannelMask);
+        Inc(AlphaGreen, (Color shr 8) and ChannelMask);
+      end;
+      Color := ((RedBlue shr Shift) and ChannelMask) or
+        (((AlphaGreen shr Shift) and ChannelMask) shl 8);
+      if not FRender.WithAlpha then
+        Color := Color or $FF000000;
+      Pixels[Index] := Color;
+      Inc(Offset, FRender.SampleCount);
+    end;
+    Exit;
+  end;
+
+  for I := 0 to 255 do
+    Linear[I] := Round(GradientLinearComponent(I) * 4095);
   for Index in FRender.DetailPixels do
   begin
     SR := 0;
     SG := 0;
     SB := 0;
     SA := 0;
-    if UseLinear then
+    for I := 0 to FRender.SampleCount - 1 do
     begin
-      for I := 0 to FRender.SampleCount - 1 do
-      begin
-        Color := FRender.DetailColors[Offset + I];
-        Weight := 1;
-        if FRender.WithAlpha then
-        begin
-          Weight := Color shr 24;
-          Inc(SA, Weight);
-          Color := UnpremultiplyBitmapColor(Color);
-        end;
-        Inc(SR, Linear[(Color shr 16) and 255] * Weight);
-        Inc(SG, Linear[(Color shr 8) and 255] * Weight);
-        Inc(SB, Linear[Color and 255] * Weight);
-      end;
+      Color := FRender.DetailColors[Offset + I];
+      Weight := 1;
       if FRender.WithAlpha then
-        Weight := SA
-      else
-        Weight := FRender.SampleCount;
-      if Weight > 0 then
       begin
-        SR := Round(GradientSRGBComponent(SR / (4095 * Weight)));
-        SG := Round(GradientSRGBComponent(SG / (4095 * Weight)));
-        SB := Round(GradientSRGBComponent(SB / (4095 * Weight)));
+        Weight := Color shr 24;
+        Inc(SA, Weight);
+        Color := UnpremultiplyBitmapColor(Color);
       end;
+      Inc(SR, Linear[(Color shr 16) and 255] * Weight);
+      Inc(SG, Linear[(Color shr 8) and 255] * Weight);
+      Inc(SB, Linear[Color and 255] * Weight);
+    end;
+    if FRender.WithAlpha then
+    begin
+      Weight := SA;
+      Alpha := (SA + FRender.SampleCount div 2) div FRender.SampleCount;
     end
     else
     begin
-      for I := 0 to FRender.SampleCount - 1 do
-      begin
-        Color := FRender.DetailColors[Offset + I];
-        Inc(SA, Color shr 24);
-        Inc(SR, (Color shr 16) and 255);
-        Inc(SG, (Color shr 8) and 255);
-        Inc(SB, Color and 255);
-      end;
-      SR := (SR + FRender.SampleCount div 2) div FRender.SampleCount;
-      SG := (SG + FRender.SampleCount div 2) div FRender.SampleCount;
-      SB := (SB + FRender.SampleCount div 2) div FRender.SampleCount;
-    end;
-    if FRender.WithAlpha then
-      Alpha := (SA + FRender.SampleCount div 2) div FRender.SampleCount
-    else
+      Weight := FRender.SampleCount;
       Alpha := 255;
+    end;
+    if Weight > 0 then
+    begin
+      SR := Round(GradientSRGBComponent(SR / (4095 * Weight)));
+      SG := Round(GradientSRGBComponent(SG / (4095 * Weight)));
+      SB := Round(GradientSRGBComponent(SB / (4095 * Weight)));
+    end;
     Color := (Cardinal(Alpha) shl 24) or (Cardinal(SR) shl 16) or (Cardinal(SG) shl 8) or Cardinal(SB);
-    if UseLinear and FRender.WithAlpha then
+    if FRender.WithAlpha then
       Color := PremultiplyBitmapColor(Color, True);
     Pixels[Index] := Color;
     Inc(Offset, FRender.SampleCount);
@@ -8713,10 +10355,26 @@ function BlendBitmapLayer(Dest, Source: Cardinal; Mode: TAVMBitmapBlend): Cardin
 var
   SourceAlpha, DestAlpha, Alpha, Shift, S, D, Channel: Integer;
   CS, CD, Mixed: Double;
+  InverseAlpha, RedBlue, AlphaGreen, Overflow: Cardinal;
 begin
   SourceAlpha := Source shr 24;
   if SourceAlpha = 0 then
     Exit(Dest);
+  if Mode in [bbNormal, bbLayer] then
+  begin
+    if SourceAlpha = 255 then
+      Exit(Source);
+    InverseAlpha := 255 - Cardinal(SourceAlpha);
+    RedBlue := (Source and $00FF00FF) + DivideColorLanesBy255((Dest and $00FF00FF) * InverseAlpha);
+    AlphaGreen := ((Source shr 8) and $00FF00FF) +
+      DivideColorLanesBy255(((Dest shr 8) and $00FF00FF) * InverseAlpha);
+    // Saturate each RGB channel even for input outside the premultiplied range.
+    Overflow := RedBlue and $01000100;
+    RedBlue := RedBlue or (Overflow - (Overflow shr 8));
+    Overflow := AlphaGreen and $01000100;
+    AlphaGreen := AlphaGreen or (Overflow - (Overflow shr 8));
+    Exit((RedBlue and $00FF00FF) or ((AlphaGreen and $00FF00FF) shl 8));
+  end;
   DestAlpha := Dest shr 24;
   if Mode in [bbAlpha, bbErase] then
   begin
@@ -8734,8 +10392,6 @@ begin
     S := (Source shr Shift) and 255;
     D := (Dest shr Shift) and 255;
     case Mode of
-      bbNormal, bbLayer:
-        Channel := S + (D * (255 - SourceAlpha) + 127) div 255;
       bbAdd:
         Channel := Min(255, S + D);
       bbSubtract:
@@ -8780,6 +10436,210 @@ begin
   end;
 end;
 
+const
+  FlashFilteredRasterEntryPixels = 128 * 1024;
+
+function CanCacheFilters(const Filters: TSWFFilters): Boolean;
+const
+  SnapshotFilters =[ sfBlur,  sfGlow,  sfDropShadow,  sfBevel,  sfColorMatrix];
+begin
+  if Length(Filters) > 32 then
+    Exit(False);
+  for var I := 0 to High(Filters) do
+    if not (Filters[I].Kind in SnapshotFilters) or (Filters[I].Kernel <> nil) or
+      (Filters[I].GradientStops <> nil) or (Filters[I].MapBitmap <> nil) then
+      Exit(False);
+  Result := True;
+end;
+
+function TFlashPlayer.FindFilteredRaster(C: TFlashClip): PFlashFilteredRaster;
+begin
+  for var I := Low(FFilteredRasters) to High(FFilteredRasters) do
+    if FFilteredRasters[I].Owner = C then
+      Exit(@FFilteredRasters[I]);
+  Result := nil;
+end;
+
+function TFlashPlayer.FilteredLayerState(C: TFlashClip; const Matrix: TSWFMatrix; const Stage: TSWFRect; Opacity: Double): TBytes;
+type
+  TNodeState = packed record
+    Serial, TextRevision: UInt64;
+    ContentGeneration: Cardinal;
+    LibraryRef, CharacterRef, TextRef: System.Pointer;
+    Transform: TSWFMatrix;
+    Color: TSWFColorTransform;
+    Depth, MorphRatio, ButtonState, ButtonStates, FontId, ChildCount, FilterCount: Integer;
+    TextWidth, TextLeft, TextTop: Double;
+    Visible, IsText: Boolean;
+  end;
+const
+  NodeLimit = 64;
+  StateLimit = 16 * 1024;
+var
+  State: TMemoryStream;
+  NodeCount: Integer;
+
+  function Visit(Node: TFlashClip; IsRoot: Boolean): Boolean;
+  var
+    Key: TNodeState;
+    Child: TFlashClip;
+  begin
+    Inc(NodeCount);
+    // Mutable raster sources and AVM1 text bindings need the normal render path.
+    if (NodeCount > NodeLimit) or (Node.FSerial = 0) or Node.Dead or Node.Removing or
+      Node.HasScrollRect or Node.HasAppliedScrollRect or Node.RenderingMask or Node.TestingMask or
+      (Node.AttachedBitmap <> nil) or Node.DrawingTouched or (Node.Fill <> 0) or (Node.FStrokePoints <> nil) or
+      (Node.Drawing.Fills <> nil) or
+      (Node.Drawing.Edges <> nil) or (Node.Drawing.StrokePaths <> nil) or
+      ((Node.Character <> nil) and (Node.Character.Video <> nil)) or
+      (Node.IsText and (Node.VariableName <> '') and not Node.MovieLibrary.Movie.UsesAVM2) then
+      Exit(False);
+    if (not IsRoot) and ((Node.Masker <> nil) or (Node.Maskee <> nil) or (Node.ClipDepth <> 0) or
+      (Node.BlendMode <> bbNormal) or not CanCacheFilters(Node.Filters)) then
+      Exit(False);
+    if Node.Character <> nil then
+      for var Style in Node.Character.Fills do
+        if Style.BitmapData <> nil then
+          Exit(False);
+    Key := Default(TNodeState);
+    Key.Serial := Node.FSerial;
+    Key.ContentGeneration := Node.ContentGeneration;
+    Key.LibraryRef := System.Pointer(Node.MovieLibrary);
+    Key.CharacterRef := System.Pointer(Node.Character);
+    if not IsRoot then
+    begin
+      Key.Transform := Node.Matrix;
+      Key.Color := Node.ColorTransform;
+      Key.FilterCount := Length(Node.Filters);
+    end;
+    Key.Depth := Node.Depth;
+    Key.MorphRatio := Node.MorphRatio;
+    Key.ButtonStates := Node.ButtonStates;
+    Key.ButtonState := Node.ButtonState;
+    Key.ChildCount := Node.Children.Count;
+    Key.Visible := Node.Visible;
+    Key.IsText := Node.IsText;
+    if Node.IsText then
+    begin
+      if Node.FTextDocument = nil then
+        Exit(False);
+      Key.TextRef := System.Pointer(Node.FTextDocument);
+      Key.TextRevision := Node.FTextDocument.Revision;
+      Key.FontId := Node.FontId;
+      Key.TextWidth := Node.TextWidth;
+      Key.TextLeft := Node.TextLeft;
+      Key.TextTop := Node.TextTop;
+    end;
+    if State.Size + SizeOf(Key) + Key.FilterCount * SizeOf(TSWFFilter) > StateLimit then
+      Exit(False);
+    State.WriteBuffer(Key, SizeOf(Key));
+    if Key.FilterCount <> 0 then
+      State.WriteBuffer(Node.Filters[0], Key.FilterCount * SizeOf(TSWFFilter));
+    for Child in Node.Children do
+      if not Visit(Child, False) then
+        Exit(False);
+    Result := True;
+  end;
+
+begin
+  Result := nil;
+  State := TMemoryStream.Create;
+  try
+    State.WriteBuffer(Matrix, SizeOf(Matrix));
+    State.WriteBuffer(Stage, SizeOf(Stage));
+    State.WriteBuffer(Opacity, SizeOf(Opacity));
+    State.WriteBuffer(FRender.Quality, SizeOf(FRender.Quality));
+    State.WriteBuffer(FClipRenderDepth, SizeOf(FClipRenderDepth));
+    NodeCount := 0;
+    if Visit(C, True) then
+    begin
+      SetLength(Result, State.Size);
+      Move(State.Memory^, Result[0], State.Size);
+    end;
+  finally
+    State.Free;
+  end;
+end;
+
+procedure TFlashPlayer.FilterLayer(C: TFlashClip; var Layer: TArray<Cardinal>; Width, Height: Integer; const Content: TSWFRect; const Filters: TSWFFilters; const State: TBytes; RasterWork: Int64);
+const
+  // Bound both input snapshots and premultiplied output to 8 MiB in total.
+  CachePixels = 1024 * 1024;
+var
+  Raster, Oldest, Empty: PFlashFilteredRaster;
+  Input: TArray<Cardinal>;
+  PreviousWork: Int64;
+  PixelCount: Integer;
+begin
+  PixelCount := Length(Layer);
+  if (PixelCount <= 0) or (PixelCount > FlashFilteredRasterEntryPixels) or
+    (Filters = nil) or not CanCacheFilters(Filters) then
+  begin
+    ApplyFlashFilters(Layer, Width, Height, Content, Filters, FRender.Work);
+    Exit;
+  end;
+
+  Inc(FFilterSequence);
+  Raster := FindFilteredRaster(C);
+  // The input is the resolved layer before the instance's output color and
+  // masks. The filter kinds above depend only on these pixels and scalar data.
+  if (Raster <> nil) and (Raster.Width = Width) and (Raster.Height = Height) and
+    CompareMem(@Raster.Content, @Content, SizeOf(Content)) and
+    (Length(Raster.Filters) = Length(Filters)) and
+    CompareMem(@Raster.Filters[0], @Filters[0], Length(Filters) * SizeOf(TSWFFilter)) and
+    CompareMem(@Raster.Input[0], @Layer[0], PixelCount * SizeOf(Cardinal)) then
+  begin
+    Inc(FRender.Work, Raster.Work);
+    if FRender.Work > FlashRenderWorkLimit then
+      raise ESWFError.Create('Flash frame rendering work limit');
+    Raster.LastUsed := FFilterSequence;
+    Raster.State := State;
+    Raster.RasterWork := RasterWork;
+    Layer := Raster.Output;
+    Exit;
+  end;
+
+  Input := Copy(Layer);
+  PreviousWork := FRender.Work;
+  ApplyFlashFilters(Layer, Width, Height, Content, Filters, FRender.Work);
+  if Raster <> nil then
+  begin
+    Dec(FFilteredPixels, Length(Raster.Input));
+    Raster^ := Default(TFlashFilteredRaster);
+  end;
+  while (Raster = nil) or (PixelCount + FFilteredPixels > CachePixels) do
+  begin
+    Oldest := nil;
+    Empty := nil;
+    for var I := Low(FFilteredRasters) to High(FFilteredRasters) do
+      if FFilteredRasters[I].Owner = nil then
+        Empty := @FFilteredRasters[I]
+      else if (Oldest = nil) or (FFilteredRasters[I].LastUsed < Oldest.LastUsed) then
+        Oldest := @FFilteredRasters[I];
+    if (Empty <> nil) and (PixelCount + FFilteredPixels <= CachePixels) then
+      Raster := Empty
+    else
+    begin
+      Dec(FFilteredPixels, Length(Oldest.Input));
+      Oldest^ := Default(TFlashFilteredRaster);
+      Raster := Oldest;
+    end;
+  end;
+  // Keep a snapshot of the filter values even if the caller reuses its array.
+  Raster.Filters := Copy(Filters);
+  Raster.Owner := C;
+  Raster.Content := Content;
+  Raster.Width := Width;
+  Raster.Height := Height;
+  Raster.Input := Input;
+  Raster.Output := Layer;
+  Raster.Work := FRender.Work - PreviousWork;
+  Raster.State := State;
+  Raster.RasterWork := RasterWork;
+  Raster.LastUsed := FFilterSequence;
+  Inc(FFilteredPixels, PixelCount);
+end;
+
 procedure TFlashPlayer.RenderClipGroup(C: TFlashClip; const Matrix: TSWFMatrix; Opacity: Double; var Pixels: TArray<Cardinal>);
 var
   Mode: TAVMBitmapBlend;
@@ -8798,6 +10658,8 @@ var
   Coverage: Word;
   PreviousCoverage: TBytes;
   Source, Back, LayerBack: Cardinal;
+  State: TBytes;
+  Raster: PFlashFilteredRaster;
 
   function CacheSnap(Value, Origin: Integer): Integer;
   var
@@ -8854,9 +10716,7 @@ begin
     SnapY := CacheSnap(Bounds.Rect.Top, FRender.Stage.Top);
     InputMatrix.TX := Matrix.TX + SnapX;
     InputMatrix.TY := Matrix.TY + SnapY;
-    for X := 0 to 3 do
-      if (OutputColor.Mult[X] <> 1) or (OutputColor.Add[X] <> 0) then
-        TransformOutput := True;
+    TransformOutput := HasPaintColorTransform(OutputColor);
   end;
   // Retain a margin for snapped bitmaps and one-pixel strokes.
   Region.Left := Floor((Int64(Bounds.Rect.Left) - FRender.Stage.Left) / 20) - 1 - PadX;
@@ -8888,47 +10748,76 @@ begin
   Stage.Top := FRender.Stage.Top + Region.Top * 20;
   Stage.Right := FRender.Stage.Left + Region.Right * 20;
   Stage.Bottom := FRender.Stage.Top + Region.Bottom * 20;
-  SetLength(Layer, Width * Height);
-  try
-    BeginRender(Width, Height, Stage, InputColor, True, FRender.Quality, Previous);
-    FRender.Work := Previous.Work;
-    FRender.DrawableRoot := Previous.DrawableRoot;
-    FRender.DrawableMatrix := Previous.DrawableMatrix;
-    FRender.IsLayer := (Mode = bbLayer) and not Filtered;
-    if not (FRender.IsLayer or Filtered) then
+  if Filtered then
+  begin
+    FilterContent.Left := Floor((Int64(Bounds.Rect.Left) - Stage.Left + SnapX) / 20);
+    FilterContent.Top := Floor((Int64(Bounds.Rect.Top) - Stage.Top + SnapY) / 20);
+    FilterContent.Right := Ceil((Int64(Bounds.Rect.Right) - Stage.Left + SnapX) / 20);
+    FilterContent.Bottom := Ceil((Int64(Bounds.Rect.Bottom) - Stage.Top + SnapY) / 20);
+    if (Int64(Width) * Height <= FlashFilteredRasterEntryPixels) and CanCacheFilters(Filters) then
     begin
-      if Previous.IsLayer then
+      State := FilteredLayerState(C, InputMatrix, Stage, Opacity);
+      if State <> nil then
       begin
-        FRender.ParentLayer := @Previous;
-        FRender.ParentLayerPixels := @Pixels;
+        Raster := FindFilteredRaster(C);
+        if (Raster <> nil) and (Raster.Width = Width) and (Raster.Height = Height) and
+          CompareMem(@Raster.Content, @FilterContent, SizeOf(FilterContent)) and
+          (Length(Raster.Filters) = Length(Filters)) and
+          CompareMem(@Raster.Filters[0], @Filters[0], Length(Filters) * SizeOf(TSWFFilter)) and
+          (Length(Raster.State) = Length(State)) and
+          CompareMem(@Raster.State[0], @State[0], Length(State)) then
+        begin
+          // Keep charging the work for rasterization and filtering on cache hits.
+          Inc(FRender.Work, Raster.RasterWork + Raster.Work);
+          if FRender.Work > FlashRenderWorkLimit then
+            raise ESWFError.Create('Flash frame rendering work limit');
+          Inc(FFilterSequence);
+          Raster.LastUsed := FFilterSequence;
+          Layer := Raster.Output;
+        end;
+      end;
+    end;
+  end;
+  if Layer = nil then
+  begin
+    SetLength(Layer, Width * Height);
+    try
+      BeginRender(Width, Height, Stage, InputColor, True, FRender.Quality, Previous);
+      FRender.Work := Previous.Work;
+      FRender.DrawableRoot := Previous.DrawableRoot;
+      FRender.DrawableMatrix := Previous.DrawableMatrix;
+      FRender.IsLayer := (Mode = bbLayer) and not Filtered;
+      if not (FRender.IsLayer or Filtered) then
+      begin
+        if Previous.IsLayer then
+        begin
+          FRender.ParentLayer := @Previous;
+          FRender.ParentLayerPixels := @Pixels;
+        end
+        else
+        begin
+          FRender.ParentLayer := Previous.ParentLayer;
+          FRender.ParentLayerPixels := Previous.ParentLayerPixels;
+        end;
+      end;
+      if Filtered then
+      begin
+        // Filter the resolved cache in stage pixels before applying the
+        // instance color transform and its masks at composition time.
+        RenderClipBody(C, C.WithScrollOffset(InputMatrix), Opacity, Layer);
+        ResolveSamples(Layer);
+        FilterLayer(C, Layer, Width, Height, FilterContent, Filters, State, FRender.Work - Previous.Work);
       end
       else
       begin
-        FRender.ParentLayer := Previous.ParentLayer;
-        FRender.ParentLayerPixels := Previous.ParentLayerPixels;
+        RenderClipWithMask(C, Matrix, Opacity, Layer);
+        LayerDetailIndex := FRender.DetailIndex;
+        LayerDetailColors := FRender.DetailColors;
       end;
+      Previous.Work := FRender.Work;
+    finally
+      EndRender(Previous);
     end;
-    if Filtered then
-    begin
-      // Filter the resolved cache in stage pixels before applying the
-      // instance color transform and its masks at composition time.
-      RenderClipBody(C, C.WithScrollOffset(InputMatrix), Opacity, Layer);
-      ResolveSamples(Layer);
-      FilterContent.Left := Floor((Int64(Bounds.Rect.Left) - Stage.Left + SnapX) / 20);
-      FilterContent.Top := Floor((Int64(Bounds.Rect.Top) - Stage.Top + SnapY) / 20);
-      FilterContent.Right := Ceil((Int64(Bounds.Rect.Right) - Stage.Left + SnapX) / 20);
-      FilterContent.Bottom := Ceil((Int64(Bounds.Rect.Bottom) - Stage.Top + SnapY) / 20);
-      ApplyFlashFilters(Layer, Width, Height, FilterContent, Filters, FRender.Work);
-    end
-    else
-    begin
-      RenderClipWithMask(C, Matrix, Opacity, Layer);
-      LayerDetailIndex := FRender.DetailIndex;
-      LayerDetailColors := FRender.DetailColors;
-    end;
-    Previous.Work := FRender.Work;
-  finally
-    EndRender(Previous);
   end;
 
   ParentXOffset := 0;
@@ -9125,9 +11014,9 @@ var
   Matrix: TSWFMatrix;
   Stage: TSWFRect;
   Bounds: TSWFBounds;
-  Pixels: TArray<Cardinal>;
+  Pixels, TargetPixels: TArray<Cardinal>;
   Previous: TFlashRenderState;
-  Left, Top, Right, Bottom, Width, Height, X, Y, I, TX, TY: Integer;
+  Left, Top, Right, Bottom, Width, Height, X, Y, I, TX, TY, TargetWidth: Integer;
   Color, Original: Cardinal;
   Blit, IdentityColor: Boolean;
 begin
@@ -9246,13 +11135,29 @@ begin
     Stage.Bottom := Bottom * 20;
     if Options.Blend = bbNormal then
     begin
-      I := 0;
-      for Y := Top to Bottom - 1 do
-        for X := Left to Right - 1 do
-        begin
-          Pixels[I] := Target.PixelPremultiplied(X, Y);
-          Inc(I);
-        end;
+      TargetWidth := Target.Width;
+      TargetPixels := Target.SnapshotPremultiplied;
+      if (TargetPixels <> nil) and (TargetWidth >= Right) and (Target.Height >= Bottom) and
+        (Length(TargetPixels) = Int64(TargetWidth) * Target.Height) then
+      begin
+        if Width = TargetWidth then
+          Move(TargetPixels[Top * TargetWidth], Pixels[0], NativeInt(Width) * Height * SizeOf(Cardinal))
+        else
+          for Y := Top to Bottom - 1 do
+            Move(TargetPixels[Y * TargetWidth + Left], Pixels[(Y - Top) * Width],
+              NativeInt(Width) * SizeOf(Cardinal));
+      end
+      else
+      begin
+        I := 0;
+        for Y := Top to Bottom - 1 do
+          for X := Left to Right - 1 do
+          begin
+            Pixels[I] := Target.PixelPremultiplied(X, Y);
+            Inc(I);
+          end;
+      end;
+      TargetPixels := nil;
     end;
     try
       BeginRender(Width, Height, Stage, Options.ColorTransform, True, FQuality, Previous);
@@ -9281,6 +11186,9 @@ begin
 
   if Target.Disposed then
     Exit(-1);
+  if (Blit or (Options.Blend = bbNormal)) and
+    Target.TryWritePremultiplied(Pixels, Left, Top, Width, Height) then
+    Exit(0);
   I := 0;
   for Y := Top to Bottom - 1 do
     for X := Left to Right - 1 do

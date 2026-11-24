@@ -217,6 +217,8 @@ type
     SymbolNames: TDictionary<Integer, string>;
     AVM2SymbolNames: TDictionary<Integer, string>;
     AVM2ExportNames: TDictionary<string, Integer>;
+    BinaryAssets: TDictionary<Integer, TBytes>;
+    AVM2MovieBytes: TBytes;
     SceneLabels: TArray<TSWFScene>;
     SceneFrameLabels: TDictionary<string, Integer>;
     Warnings: TStringList;
@@ -400,8 +402,8 @@ begin
           C.FontCodes[I] := CR.U8;
       if (Flags and $80) <> 0 then
       begin
-        C.FontAscent := CR.S16;
-        C.FontDescent := CR.S16;
+        C.FontAscent := CR.U16;
+        C.FontDescent := CR.U16;
         C.FontLeading := CR.S16;
         for var I := 0 to Count - 1 do
           C.FontAdvances[I] := CR.S16;
@@ -507,6 +509,7 @@ begin
   SymbolNames := TDictionary<Integer, string>.Create;
   AVM2SymbolNames := TDictionary<Integer, string>.Create;
   AVM2ExportNames := TDictionary<string, Integer>.Create;
+  BinaryAssets := TDictionary<Integer, TBytes>.Create;
   Warnings := TStringList.Create;
   Warnings.Sorted := True;
   Warnings.Duplicates := dupIgnore;
@@ -527,6 +530,11 @@ begin
     if (FPS <= 0) or (FPS > 240) then
       raise ESWFError.Create('Invalid SWF frame rate');
     ParseTimeline(R, Count, 0, Frames);
+    if UsesAVM2 then
+    begin
+      Raw[0] := Ord('F');
+      AVM2MovieBytes := Raw;
+    end;
   finally
     FJPEGTables := nil;
     R.Free;
@@ -537,6 +545,7 @@ destructor TSWFMovie.Destroy;
 begin
   Warnings.Free;
   SceneFrameLabels.Free;
+  BinaryAssets.Free;
   AVM2ExportNames.Free;
   AVM2SymbolNames.Free;
   SymbolNames.Free;
@@ -567,11 +576,15 @@ end;
 procedure TSWFMovie.ParseSound(Id: Word; R: TSWFReader);
 var
   Sound: TSWFSound;
+  SampleLimit: Integer;
 begin
   if Characters.ContainsKey(Id) or Sounds.ContainsKey(Id) then
     raise ESWFError.Create('Duplicate SWF sound character');
+  SampleLimit := SWFMovieSoundSampleLimit;
+  if UsesAVM2 then
+    SampleLimit := SampleLimit * 2;
   try
-    Sound := ReadSWFSound(R, SWFMovieSoundSampleLimit - FSoundSamples);
+    Sound := ReadSWFSound(R, SampleLimit - FSoundSamples);
   except
     on E: ESWFError do
     begin
@@ -992,6 +1005,12 @@ begin
             end;
           12, 15, 18, 19, 26, 28, 4, 5, 43, 45, 70:
             Tags.Add(Tag);
+          87:
+            begin
+              Id := Body.U16;
+              Body.U32;
+              BinaryAssets.AddOrSetValue(Id, Body.Bytes(Body.Remaining));
+            end;
           86:
             if Nesting = 0 then
               ParseSceneData(Body, Max(1, Count));

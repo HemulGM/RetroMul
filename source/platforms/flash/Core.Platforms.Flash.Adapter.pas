@@ -12,9 +12,25 @@ type
     Kind, Code, X, Y: Integer;
     Pressed, Valid: Boolean;
     Buttons: Byte;
+    QueuedAt: Int64;
   end;
 
   TFlashAudioFactory = reference to function(const Format: TPCMAudioFormat): IPCMAudioBackend;
+
+  TFlashFrameMetrics = record
+    FrameNumber: UInt64;
+    ClockFrequency, WorkTicks, TickTicks, RenderTicks, AudioTicks, InputTicks: Int64;
+    // Time from the oldest dispatched input to frame publication.
+    InputLatencyTicks: Int64;
+    GCRootTicks, GCMarkTicks, GCSweepTicks: Int64;
+    GCPendingObjects: Integer;
+    // Live tracked object bodies and ByteArray capacity at the last collection in this frame.
+    GCLiveObjectBytes: Int64;
+    GCLiveObjects, GCByteArrayCapacity: Integer;
+    InputEvents, AudioUnderruns, AudioDroppedBlocks, Collections: Integer;
+  end;
+
+  TFlashFrameObserver = reference to procedure(const Metrics: TFlashFrameMetrics);
 
   TFlashCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationMouseInput, IEmulationPointerInput, IEmulationTouchInput, IEmulationAudioDiagnostics)
   private
@@ -31,7 +47,13 @@ type
     FError: string;
     FAudioError: string;
     FAudioFactory: TFlashAudioFactory;
-    FAudioReset: Boolean;
+    FFrameObserver: TFlashFrameObserver;
+    FAudioReset, FAudioBroken: Boolean;
+    FAudioGeneration: Cardinal;
+    FAudioThread: TThread;
+    FAudioWake: TEvent;
+    FAudioReady: TQueue<TArray<SmallInt>>;
+    FAudioUnderruns, FAudioDroppedBlocks: Integer;
     FInput: TEmulatorInput;
     FPointerX, FPointerY: Integer;
     FPointerValid: Boolean;
@@ -40,11 +62,18 @@ type
     FTouchTracker: TEmulationTouchTracker;
     FTouchOverflow, FSuppressMouse: Boolean;
     function ReadResource(const BaseURI, URL: string; out Data: TBytes; out ResolvedURI: string): Boolean;
+    function SharedSavePath(const Origin, Key: string): string;
+    function ReadSharedObject(const Origin, Key: string; out Data: TBytes): Boolean;
+    function WriteSharedObject(const Origin, Key: string; const Data: TBytes): Boolean;
     procedure Execute;
+    procedure ExecuteAudio;
+    procedure InvalidateAudioLocked;
+    procedure QueuePCM(const Samples: TArray<SmallInt>; Generation: Cardinal);
     procedure QueueLocked(const Event: TFlashInputEvent);
     procedure Queue(const Event: TFlashInputEvent);
   public
-    constructor Create(Input: TStream; const Storage: IStorage; const RomName: string; const AudioFactory: TFlashAudioFactory = nil);
+    // Called on the worker after the frame is available to consumers.
+    constructor Create(Input: TStream; const Storage: IStorage; const RomName: string; const AudioFactory: TFlashAudioFactory = nil; const FrameObserver: TFlashFrameObserver = nil);
     destructor Destroy; override;
     function GetName: string;
     function GetSystemId: string;
@@ -78,16 +107,20 @@ type
 implementation
 
 uses
-  System.Diagnostics, System.IOUtils, System.NetEncoding, System.Math,
-  Core.Emulation.Config, SWF.Reader, SWF.Sound, PCM.Audio;
+  System.Hash, System.Diagnostics, System.IOUtils, System.NetEncoding,
+  System.Math, System.UITypes, Core.Emulation.Config, SWF.Reader, SWF.Sound,
+  PCM.Audio, AVM2.Runtime;
 
-constructor TFlashCoreAdapter.Create(Input: TStream; const Storage: IStorage; const RomName: string; const AudioFactory: TFlashAudioFactory);
+constructor TFlashCoreAdapter.Create(Input: TStream; const Storage: IStorage; const RomName: string; const AudioFactory: TFlashAudioFactory; const FrameObserver: TFlashFrameObserver);
 var
   S: IStorage;
 begin
   inherited Create;
   FAudioFactory := AudioFactory;
+  FFrameObserver := FrameObserver;
   FLock := TCriticalSection.Create;
+  FAudioWake := TEvent.Create(nil, False, False, '');
+  FAudioReady := TQueue<TArray<SmallInt>>.Create;
   FEvents := TQueue<TFlashInputEvent>.Create;
   if (Input.Size - Input.Position < 8) or (Input.Size - Input.Position > 64 * 1024 * 1024) then
     raise ESWFError.Create('Invalid SWF size');
@@ -111,6 +144,75 @@ begin
   FConfig := TEmulatorConfigBase.Create(S.ConfigFile('flash'), S);
   FConfig.Load;
   FPlayer := TFlashPlayer.Create(FData, FOrigin, ReadResource);
+  FPlayer.ReadSharedObject := ReadSharedObject;
+  FPlayer.WriteSharedObject := WriteSharedObject;
+end;
+
+function TFlashCoreAdapter.SharedSavePath(const Origin, Key: string): string;
+begin
+  Result := FStorage.GameSave('flash', FOrigin, THashSHA2.GetHashString(Origin + #0 + Key));
+end;
+
+function TFlashCoreAdapter.ReadSharedObject(const Origin, Key: string; out Data: TBytes): Boolean;
+var
+  Stream: TStream;
+  Location: string;
+begin
+  Result := False;
+  Data := nil;
+  Location := SharedSavePath(Origin, Key);
+  try
+    if not FStorage.Exists(Location) then
+      Exit;
+    Stream := FStorage.OpenRead(Location);
+    try
+      if (Stream.Size <= 0) or (Stream.Size > 1024 * 1024) then
+        Exit;
+      SetLength(Data, Stream.Size);
+      Stream.ReadBuffer(Data[0], Length(Data));
+      Result := True;
+    finally
+      Stream.Free;
+    end;
+  except
+    on E: EInOutError do
+      Data := nil;
+    on E: EStreamError do
+      Data := nil;
+  end;
+end;
+
+function TFlashCoreAdapter.WriteSharedObject(const Origin, Key: string; const Data: TBytes): Boolean;
+var
+  Stream: TBytesStream;
+  Location: string;
+begin
+  Result := False;
+  Location := SharedSavePath(Origin, Key);
+  try
+    if Length(Data) = 0 then
+    begin
+      if FStorage.Exists(Location) then
+        FStorage.Delete(Location);
+    end
+    else
+    begin
+      Stream := TBytesStream.Create(Data);
+      try
+        FStorage.WriteAtomic(Location, Stream);
+      finally
+        Stream.Free;
+      end;
+    end;
+    Result := True;
+  except
+    on E: EInOutError do
+      Exit;
+    on E: EStreamError do
+      Exit;
+    on E: EOSError do
+      Exit;
+  end;
 end;
 
 function TFlashCoreAdapter.ReadResource(const BaseURI, URL: string; out Data: TBytes; out ResolvedURI: string): Boolean;
@@ -141,7 +243,13 @@ begin
   if SourceURI = '' then
     SourceURI := FOrigin;
   ResolvedURI := TPath.GetFullPath(TPath.Combine(ExtractFilePath(SourceURI), RelativeName));
-  if not ResolvedURI.StartsWith(FResourceRoot,{$IFDEF MSWINDOWS}True{$ELSE}False{$ENDIF}) then Exit;
+  {$IFDEF MSWINDOWS}
+  var IgnoreCase := True;
+  {$ELSE}
+  var IgnoreCase := False;
+  {$ENDIF}
+  if not ResolvedURI.StartsWith(FResourceRoot, IgnoreCase) then
+    Exit;
   if not FStorage.Exists(ResolvedURI) then
     Exit;
   Stream := FStorage.OpenRead(ResolvedURI);
@@ -160,6 +268,8 @@ destructor TFlashCoreAdapter.Destroy;
 begin
   Stop;
   FPlayer.Free;
+  FAudioReady.Free;
+  FAudioWake.Free;
   FEvents.Free;
   FLock.Free;
   inherited;
@@ -202,23 +312,43 @@ begin
     FStopping := False;
     FError := '';
     FAudioError := '';
+    FAudioUnderruns := 0;
+    FAudioDroppedBlocks := 0;
+    FAudioReset := True;
+    InvalidateAudioLocked;
   finally
     FLock.Release;
   end;
-  FThread := TThread.CreateAnonymousThread(
+  FAudioThread := TThread.CreateAnonymousThread(
     procedure
     begin
-      Execute;
+      ExecuteAudio;
     end);
-  FThread.FreeOnTerminate := False;
-  FThread.Start;
+  FAudioThread.FreeOnTerminate := False;
+  FAudioThread.Start;
+  try
+    FThread := TThread.CreateAnonymousThread(
+      procedure
+      begin
+        Execute;
+      end);
+    FThread.FreeOnTerminate := False;
+    FThread.Start;
+  except
+    Stop;
+    raise;
+  end;
 end;
 
 procedure TFlashCoreAdapter.Stop;
 begin
+  if FLock = nil then
+    Exit;
   FLock.Acquire;
   try
     FStopping := True;
+    if FAudioWake <> nil then
+      FAudioWake.SetEvent;
   finally
     FLock.Release;
   end;
@@ -226,6 +356,11 @@ begin
   begin
     FThread.WaitFor;
     FreeAndNil(FThread);
+  end;
+  if FAudioThread <> nil then
+  begin
+    FAudioThread.WaitFor;
+    FreeAndNil(FAudioThread);
   end;
 end;
 
@@ -238,6 +373,7 @@ begin
   try
     FPaused := True;
     FAudioReset := True;
+    InvalidateAudioLocked;
     // Resume may happen before the worker observes the pause. Discard old pointer
     // events now, preserving the keyboard/gamepad state carried by the queue.
     for I := 1 to FEvents.Count do
@@ -274,6 +410,8 @@ begin
   Stop;
   FreeAndNil(FPlayer);
   FPlayer := TFlashPlayer.Create(FData, FOrigin, ReadResource);
+  FPlayer.ReadSharedObject := ReadSharedObject;
+  FPlayer.WriteSharedObject := WriteSharedObject;
   FLock.Acquire;
   try
     FEvents.Clear;
@@ -310,7 +448,14 @@ begin
   end;
   if (Event.Kind = 4) and FTouchOverflow then
     Exit;
-  FEvents.Enqueue(Event);
+  if Assigned(FFrameObserver) then
+  begin
+    E := Event;
+    E.QueuedAt := TStopwatch.GetTimeStamp;
+    FEvents.Enqueue(E);
+  end
+  else
+    FEvents.Enqueue(Event);
 end;
 
 procedure TFlashCoreAdapter.Queue(const Event: TFlashInputEvent);
@@ -540,84 +685,261 @@ begin
   end;
 end;
 
-procedure TFlashCoreAdapter.Execute;
 const
-  AudioFrames = 512;
-var
-  Watch: TStopwatch;
-  Deadline, AudioDeadline: Double;
-  Events: TArray<TFlashInputEvent>;
-  Paused, Stopping, WasPaused, ResetAudio, AudioFailed: Boolean;
-  Audio: TPCMAudio;
-  Keyboard, Pad: array[0..255] of Boolean;
+  FlashAudioFrames = 512;
+  FlashAudioDeviceBlocks = 12;
+  FlashAudioTargetBlocks = 6;
+  FlashAudioPreparedBlocks = FlashAudioDeviceBlocks - FlashAudioTargetBlocks;
 
-  procedure PumpAudio;
-  var
-    Samples: TArray<SmallInt>;
-    Format: TPCMAudioFormat;
-    Now, Volume: Double;
-    I: Integer;
-    Enabled: Boolean;
-    State: TPCMAudioQueueState;
-  begin
-    Enabled := FConfig.AudioEnabled;
-    if not Enabled then
+procedure TFlashCoreAdapter.InvalidateAudioLocked;
+begin
+  // Pausing or disabling the output invalidates both the producer's blocks
+  // and anything the output worker has not yet submitted to its device.
+  Inc(FAudioGeneration);
+  FAudioReady.Clear;
+  FAudioBroken := False;
+  FAudioWake.SetEvent;
+end;
+
+procedure TFlashCoreAdapter.QueuePCM(const Samples: TArray<SmallInt>; Generation: Cardinal);
+begin
+  FLock.Acquire;
+  try
+    if FStopping or FPaused or FAudioBroken or (Generation <> FAudioGeneration) then
+      Exit;
+    if FAudioReady.Count = FlashAudioPreparedBlocks then
     begin
-      FreeAndNil(Audio);
-      AudioFailed := False;
+      FAudioReady.Dequeue;
+      Inc(FAudioDroppedBlocks);
     end;
-    Now := Watch.Elapsed.TotalMilliseconds;
-    if AudioDeadline < Now - 250 then
-      AudioDeadline := Now;
-    while AudioDeadline <= Now do
-    begin
-      Samples := FPlayer.MixAudio(AudioFrames);
-      AudioDeadline := AudioDeadline + AudioFrames * 1000 / SWFSoundRate;
-      if not Enabled or AudioFailed or (Length(Samples) = 0) then
-        Continue;
-      try
-        Format.SampleRate := SWFSoundRate;
-        Format.Channels := 2;
-        Format.BlockFrames := AudioFrames;
-        Format.BlockCount := 8;
-        if Audio = nil then
-        begin
-          if Assigned(FAudioFactory) then
-            Audio := TPCMAudio.Create(Format, FAudioFactory(Format))
-          else
-            Audio := TPCMAudio.Create(Format);
-        end;
-        State := Audio.QueueState;
-        if Audio.Error <> '' then
-          raise EInOutError.Create(Audio.Error);
-        if not State.DeviceOpen then
-          raise EInOutError.Create('Flash audio output is unavailable');
-        if State.QueuedBlocks >= Format.BlockCount then
-          Continue;
-        Volume := FConfig.AudioVolume;
-        if Volume <> 1 then
-          for I := 0 to High(Samples) do
-            Samples[I] := SmallInt(EnsureRange(Round(Samples[I] * Volume), Int64(-32768), Int64(32767)));
-        Audio.Submit(Samples, AudioFrames);
-      except
-        on E: Exception do
-        begin
-          FreeAndNil(Audio);
-          AudioFailed := True;
-          FLock.Acquire;
-          try
-            FAudioError := E.Message;
-          finally
-            FLock.Release;
-          end;
-        end;
-      end;
+    FAudioReady.Enqueue(Samples);
+    FAudioWake.SetEvent;
+  finally
+    FLock.Release;
+  end;
+end;
+
+procedure TFlashCoreAdapter.ExecuteAudio;
+var
+  Audio: TPCMAudio;
+  Silence, Samples: TArray<SmallInt>;
+  Format: TPCMAudioFormat;
+  State: TPCMAudioQueueState;
+  Generation, RequestedGeneration: Cardinal;
+  Pending, Primed, Empty, Taken: Boolean;
+  WaitMS: Cardinal;
+  PendingBlocks, InitialSilence: Integer;
+
+  function OpenDevice: TPCMAudio;
+  var
+    Backend: IPCMAudioBackend;
+  begin
+    // Release the factory's interface reference before entering the worker loop.
+    if not Assigned(FAudioFactory) then
+      Exit(TPCMAudio.Create(Format));
+    Backend := FAudioFactory(Format);
+    Result := TPCMAudio.Create(Format, Backend);
+  end;
+
+  function CanSubmit: Boolean;
+  begin
+    FLock.Acquire;
+    try
+      Result := not FStopping and not FPaused and (Generation = FAudioGeneration);
+    finally
+      FLock.Release;
     end;
   end;
 
 begin
   Audio := nil;
-  AudioFailed := False;
+  Generation := 0;
+  Primed := False;
+  Empty := True;
+  Format.SampleRate := SWFSoundRate;
+  Format.Channels := 2;
+  Format.BlockFrames := FlashAudioFrames;
+  Format.BlockCount := FlashAudioDeviceBlocks;
+  SetLength(Silence, FlashAudioFrames * Format.Channels);
+  try
+    while True do
+    begin
+      FLock.Acquire;
+      try
+        if FStopping then
+          Exit;
+        RequestedGeneration := FAudioGeneration;
+        Pending := not FPaused and (FAudioReady.Count <> 0);
+      finally
+        FLock.Release;
+      end;
+      if Generation <> RequestedGeneration then
+      begin
+        FreeAndNil(Audio);
+        Generation := RequestedGeneration;
+        Primed := False;
+        Empty := True;
+      end;
+      WaitMS := UInt32($FFFFFFFF);
+      try
+        if (Audio = nil) and Pending then
+          Audio := OpenDevice;
+        if Audio <> nil then
+        begin
+          WaitMS := 4;
+          State := Audio.QueueState;
+          if Audio.Error <> '' then
+            raise EInOutError.Create(Audio.Error);
+          if not State.DeviceOpen then
+            raise EInOutError.Create('Flash audio output is unavailable');
+          FLock.Acquire;
+          try
+            if FStopping then
+              Exit;
+            if Generation <> FAudioGeneration then
+              Continue;
+            if Primed and not Empty and (State.QueuedBlocks = 0) then
+              Inc(FAudioUnderruns);
+            Empty := State.QueuedBlocks = 0;
+            PendingBlocks := FAudioReady.Count;
+            Taken := not FPaused and (PendingBlocks > 0) and (State.QueuedBlocks < FlashAudioTargetBlocks);
+            if Taken then
+              Samples := FAudioReady.Dequeue;
+          finally
+            FLock.Release;
+          end;
+          if Taken then
+          begin
+            if not Primed then
+            begin
+              // Prefer queued sound to startup silence. The combined ready
+              // and device queues have the same cap as the previous device.
+              InitialSilence := Max(0, FlashAudioTargetBlocks - PendingBlocks);
+              for var I := 1 to InitialSilence do
+              begin
+                if not CanSubmit then
+                  Break;
+                Audio.Submit(Silence, FlashAudioFrames);
+              end;
+            end;
+            if not CanSubmit then
+            begin
+              Samples := nil;
+              Continue;
+            end;
+            if Samples = nil then
+              Audio.Submit(Silence, FlashAudioFrames)
+            else
+              Audio.Submit(Samples, FlashAudioFrames);
+            Samples := nil;
+            Primed := True;
+            Empty := False;
+            Continue;
+          end;
+        end;
+      except
+        on E: Exception do
+        begin
+          FreeAndNil(Audio);
+          Samples := nil;
+          FLock.Acquire;
+          try
+            if Generation = FAudioGeneration then
+            begin
+              FAudioError := E.Message;
+              FAudioBroken := True;
+              FAudioReady.Clear;
+            end;
+          finally
+            FLock.Release;
+          end;
+        end;
+      end;
+      FAudioWake.WaitFor(WaitMS);
+    end;
+  finally
+    Audio.Free;
+  end;
+end;
+
+procedure TFlashCoreAdapter.Execute;
+var
+  Watch: TStopwatch;
+  Deadline, AudioDeadline: Double;
+  Events: TArray<TFlashInputEvent>;
+  Paused, Stopping, WasPaused, ResetAudio, AudioStarted, AudioEnabled: Boolean;
+  AudioGeneration: Cardinal;
+  Keyboard, Pad: array[0..255] of Boolean;
+  Observe: Boolean;
+  Metrics: TFlashFrameMetrics;
+  OldestInput, InputStarted, FrameStarted, PhaseStarted, PhaseEnded: Int64;
+
+  procedure PumpAudio;
+  var
+    Samples: TArray<SmallInt>;
+    Now, Volume: Double;
+    Enabled: Boolean;
+  begin
+    Enabled := FConfig.AudioEnabled;
+    if AudioEnabled and not Enabled then
+    begin
+      FLock.Acquire;
+      try
+        InvalidateAudioLocked;
+      finally
+        FLock.Release;
+      end;
+      AudioStarted := False;
+    end;
+    AudioEnabled := Enabled;
+    Now := Watch.Elapsed.TotalMilliseconds;
+    if AudioDeadline < Now - 250 then
+      AudioDeadline := Now;
+    Volume := FConfig.AudioVolume;
+    while AudioDeadline <= Now do
+    begin
+      Samples := FPlayer.MixAudio(FlashAudioFrames);
+      AudioDeadline := AudioDeadline + FlashAudioFrames * 1000 / SWFSoundRate;
+      if not Enabled or (not AudioStarted and (Samples = nil)) then
+        Continue;
+      AudioStarted := True;
+      if Volume <> 1 then
+        for var I := 0 to High(Samples) do
+          Samples[I] := SmallInt(EnsureRange(Round(Samples[I] * Volume), Int64(-32768), Int64(32767)));
+      QueuePCM(Samples, AudioGeneration);
+    end;
+  end;
+
+begin
+  AudioStarted := False;
+  AudioEnabled := FConfig.AudioEnabled;
+  Observe := Assigned(FFrameObserver);
+  Metrics := Default(TFlashFrameMetrics);
+  OldestInput := 0;
+  InputStarted := 0;
+  PhaseStarted := 0;
+  FrameStarted := 0;
+  if Observe then
+  begin
+    FPlayer.OnAVM2Collection :=
+      procedure(const Stats: TAVM2CollectionStats)
+      begin
+        Inc(Metrics.Collections);
+        Inc(Metrics.GCRootTicks, Stats.RootTicks);
+        Inc(Metrics.GCMarkTicks, Stats.MarkTicks);
+        Inc(Metrics.GCSweepTicks, Stats.SweepTicks);
+        Metrics.GCLiveObjectBytes := Stats.ObjectBytesAfter;
+        Metrics.GCLiveObjects := Stats.LiveObjects;
+        Metrics.GCByteArrayCapacity := Stats.ByteArrayCapacityAfter;
+        Metrics.GCPendingObjects := Stats.PendingObjects;
+      end;
+    FPlayer.OnAVM2Reclaim :=
+      procedure(SweepTicks: Int64; PendingObjects: Integer)
+      begin
+        Inc(Metrics.GCSweepTicks, SweepTicks);
+        Metrics.GCPendingObjects := PendingObjects;
+      end;
+  end;
   try
     try
       FillChar(Keyboard, SizeOf(Keyboard), 0);
@@ -635,6 +957,7 @@ begin
           Events := FEvents.ToArray;
           FEvents.Clear;
           ResetAudio := FAudioReset;
+          AudioGeneration := FAudioGeneration;
           FAudioReset := False;
         finally
           FLock.Release;
@@ -643,16 +966,27 @@ begin
           Exit;
         if ResetAudio then
         begin
-          FreeAndNil(Audio);
-          AudioFailed := False;
+          AudioStarted := False;
           AudioDeadline := Watch.Elapsed.TotalMilliseconds;
         end;
         if Paused and not WasPaused then
+        begin
           FPlayer.ClearInput;
+          Metrics := Default(TFlashFrameMetrics);
+          OldestInput := 0;
+        end;
         if WasPaused and not Paused then
           for var K := 0 to 255 do
             FPlayer.Key(K, Keyboard[K] or Pad[K]);
         WasPaused := Paused;
+        if Observe and (Length(Events) <> 0) and not Paused then
+        begin
+          InputStarted := TStopwatch.GetTimeStamp;
+          Inc(Metrics.InputEvents, Length(Events));
+          for var E in Events do
+            if (E.QueuedAt <> 0) and ((OldestInput = 0) or (E.QueuedAt < OldestInput)) then
+              OldestInput := E.QueuedAt;
+        end;
         for var E in Events do
           case E.Kind of
             0, 2:
@@ -674,6 +1008,8 @@ begin
                 FillChar(Pad, SizeOf(Pad), 0);
               end;
           end;
+        if Observe and (Length(Events) <> 0) and not Paused then
+          Inc(Metrics.InputTicks, TStopwatch.GetTimeStamp - InputStarted);
         if Paused then
         begin
           Deadline := Watch.Elapsed.TotalMilliseconds;
@@ -687,23 +1023,63 @@ begin
           TThread.Sleep(1);
           Continue;
         end;
+        if Observe then
+          FrameStarted := TStopwatch.GetTimeStamp;
         FPlayer.Tick;
+        if Observe then
+        begin
+          PhaseStarted := TStopwatch.GetTimeStamp;
+          Metrics.TickTicks := PhaseStarted - FrameStarted;
+        end;
         PumpAudio;
+        if Observe then
+        begin
+          PhaseEnded := TStopwatch.GetTimeStamp;
+          Metrics.AudioTicks := PhaseEnded - PhaseStarted;
+          PhaseStarted := PhaseEnded;
+        end;
         var Frame := Default(TEmulatorFrame);
         Frame.Width := FPlayer.Movie.Width;
         Frame.Height := FPlayer.Movie.Height;
-        var Pixels := FPlayer.Render;
-        SetLength(Frame.Pixels, Length(Pixels));
-        if Length(Pixels) > 0 then
-          Move(Pixels[0], Frame.Pixels[0], Length(Pixels) * SizeOf(Cardinal));
+        // Render returns a new ARGB buffer. Publish that buffer directly.
+        Frame.Pixels := TArray<TAlphaColor>(FPlayer.Render);
+        if Observe then
+        begin
+          PhaseEnded := TStopwatch.GetTimeStamp;
+          Metrics.RenderTicks := PhaseEnded - PhaseStarted;
+          PhaseStarted := PhaseEnded;
+        end;
+        // Prepare blocks that became due during rendering before the next Tick.
+        PumpAudio;
+        if Observe then
+          Inc(Metrics.AudioTicks, TStopwatch.GetTimeStamp - PhaseStarted);
         Frame.FrameNumber := FPlayer.FrameNumber;
         Frame.FramesPerSecond := FPlayer.Movie.FPS;
         FLock.Acquire;
         try
           FFrame := Frame;
           FReady := True;
+          if Observe then
+          begin
+            Metrics.AudioUnderruns := FAudioUnderruns;
+            Metrics.AudioDroppedBlocks := FAudioDroppedBlocks;
+          end;
+          FAudioUnderruns := 0;
+          FAudioDroppedBlocks := 0;
         finally
           FLock.Release;
+        end;
+        if Observe then
+        begin
+          PhaseEnded := TStopwatch.GetTimeStamp;
+          Metrics.FrameNumber := Frame.FrameNumber;
+          Metrics.ClockFrequency := TStopwatch.Frequency;
+          Metrics.WorkTicks := Metrics.InputTicks + PhaseEnded - FrameStarted;
+          if OldestInput <> 0 then
+            Metrics.InputLatencyTicks := PhaseEnded - OldestInput;
+          FFrameObserver(Metrics);
+          Metrics := Default(TFlashFrameMetrics);
+          OldestInput := 0;
         end;
         Deadline := Deadline + 1000 / FPlayer.Movie.FPS;
         if Deadline < Watch.Elapsed.TotalMilliseconds - 250 then
@@ -721,7 +1097,11 @@ begin
       end;
     end;
   finally
-    Audio.Free;
+    if Observe then
+    begin
+      FPlayer.OnAVM2Reclaim := nil;
+      FPlayer.OnAVM2Collection := nil;
+    end;
   end;
 end;
 

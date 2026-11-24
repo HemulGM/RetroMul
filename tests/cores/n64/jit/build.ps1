@@ -15,7 +15,7 @@ New-Item -ItemType Directory -Force -Path $out, "$out\dcu" | Out-Null
 # The engine's sources (not the user interface's).
 $sources = Get-ChildItem "$root\source" -Recurse -Directory | Where-Object { $_.FullName -notmatch '\\ui(\\|$)' } |
   ForEach-Object FullName
-$paths = @($PSScriptRoot) + $sources + @("$root\source", "$studio\lib\$lib\release")
+$paths = @($PSScriptRoot) + $sources + @("$root\source", "$root\dependencies\Delphi7z", "$studio\lib\$lib\release")
 $flags = @('-B', '-Q', '-$O+', "-NS$ns", "-E$out", "-NU$out\dcu", "-NO$out\dcu")
 if ($Platform -eq 'Linux64') {
   $gcc = Get-ChildItem "$Sdk\usr\lib\gcc\x86_64-linux-gnu" -Directory | Sort-Object { [int]($_.Name -replace '\D.*', '') } |

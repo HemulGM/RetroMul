@@ -6,8 +6,23 @@ interface
 {$BOOLEVAL OFF}
 
 type
-  TPS2GSKernel = (HLEVertex, HLEUpload, HLEFragment, HLEBlendFragment, LLESprite,
-    LLETriangleShade, LLETriangleResolve);
+  TPS2GSKernel = (
+    HLEVertex,
+    HLEUpload,
+    HLEFragment,
+    HLEBlendFragment,
+    LLESprite,
+    LLETriangleShade,
+    LLETriangleResolve,
+    PackedPage,
+    MirrorDecode,
+    ColorLoad2,
+    DirectColor,
+    DirectBlend,
+    DepthPack,
+    DecodeImage,
+    PaletteHybrid
+  );
 
 const
   PS2GSEntryPoint: AnsiString = 'main';
@@ -17,19 +32,53 @@ function PS2GSKernelCode(Kernel: TPS2GSKernel; Scale: Integer = 1): TArray<Cardi
 implementation
 
 uses
-  System.SysUtils, System.Classes, System.SyncObjs, PTS.Component,
-  PTS.Compiler, PTS.Source, PTS.Diagnostics, RM.Vulkan.Loader;
+  System.SysUtils,
+  System.Classes,
+  System.SyncObjs,
+  PTS.Component,
+  PTS.Compiler,
+  PTS.Source,
+  PTS.Diagnostics,
+  RM.Vulkan.Loader;
 
 {$R 'PS2GS.Pascal.res' 'PS2GS.Pascal.rc'}
 
 const
   ResourceType = PChar(10);
-  ResourceNames: array[TPS2GSKernel] of string = ('PS2_GS_HLE_VERTEX', 'PS2_GS_HLE_UPLOAD',
-    'PS2_GS_HLE_FRAGMENT', 'PS2_GS_HLE_BLEND_FRAGMENT', 'PS2_GS_LLE_SPRITE',
-    'PS2_GS_LLE_TRIANGLE_SHADE', 'PS2_GS_LLE_TRIANGLE_RESOLVE');
-  SourceNames: array[TPS2GSKernel] of string = ('PS2GSHLEVert.pasm', 'PS2GSHLEUpload.pasm',
-    'PS2GSHLEFrag.pasm', 'PS2GSHLEBlendFrag.pasm', 'PS2GSLLESprite.pasm',
-    'PS2GSLLETriangleShade.pasm', 'PS2GSLLETriangleResolve.pasm');
+  ResourceNames: array[TPS2GSKernel] of string = (
+    'PS2_GS_HLE_VERTEX',
+    'PS2_GS_HLE_UPLOAD',
+    'PS2_GS_HLE_FRAGMENT',
+    'PS2_GS_HLE_BLEND_FRAGMENT',
+    'PS2_GS_LLE_SPRITE',
+    'PS2_GS_LLE_TRIANGLE_SHADE',
+    'PS2_GS_LLE_TRIANGLE_RESOLVE',
+    'PS2_GS_PACKED_PAGE',
+    'PS2_GS_MIRROR_DECODE',
+    'PS2_GS_COLOR_LOAD2',
+    'PS2_GS_DIRECT_COLOR',
+    'PS2_GS_DIRECT_BLEND',
+    'PS2_GS_DEPTH_PACK',
+    'PS2_GS_DECODE_IMAGE',
+    'PS2_GS_PALETTE_HYBRID'
+  );
+  SourceNames: array[TPS2GSKernel] of string = (
+    'PS2GSHLEVert.pasm',
+    'PS2GSHLEUpload.pasm',
+    'PS2GSHLEFrag.pasm',
+    'PS2GSHLEBlendFrag.pasm',
+    'PS2GSLLESprite.pasm',
+    'PS2GSLLETriangleShade.pasm',
+    'PS2GSLLETriangleResolve.pasm',
+    'PS2GSPackedPage.pasm',
+    'PS2GSMirrorDecode.pasm',
+    'PS2GSColorLoad2.pasm',
+    'PS2GSDirectColor.pasm',
+    'PS2GSDirectBlend.pasm',
+    'PS2GSDepthPack.pasm',
+    'PS2GSDecodeImage.pasm',
+    'PS2GSPaletteHybrid.pasm'
+  );
 
 var
   CacheLock: TCriticalSection;

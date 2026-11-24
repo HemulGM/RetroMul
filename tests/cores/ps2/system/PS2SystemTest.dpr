@@ -675,18 +675,19 @@ begin
     Packet[0] := $14000000; // MSCAL 0
     Packet[1] := $14000000; // MSCAL 0 again: waits for the first program
     C.Scheduler.Now := 1000;
-    C.DMAC.Write($1000E000, 1);
-    C.DMAC.Write($10009010, Base);
-    C.DMAC.Write($10009020, 1);
-    C.DMAC.Write($10009000, $101);
+    C.Bus.Write($1000E000, 1, 4);
+    C.Bus.Write($10009010, Base, 4);
+    C.Bus.Write($10009020, 1, 4);
+    C.Bus.Write($10009000, $101, 4);
     var Window := C.VU1.Core.S.BusyUntil;
     Check(C.VIF1.Starts = 1, Format('%d programs started, expected 1', [C.VIF1.Starts]));
     Check(Window >= 1010, Format('VU1 busy until %d', [Window]));
-    Check((Cardinal(C.VIF1.Read($10003C00, 4)) and 4) <> 0, 'VIF1 STAT.VEW clear while VU1 is busy');
+    Check((Cardinal(C.Bus.Read($10003C00, 4)) and 4) <> 0, 'VIF1 STAT.VEW clear while VU1 is busy');
     Check((C.VU0.ReadControl(29) and $100) <> 0, 'VPU-STAT.VBS1 clear while VU1 is busy');
-    Check(C.Scheduler.Due(TPS2Event.VIF1) = Window, 'No wake event at the end of the busy window');
+    Check(C.DomainScheduler.Due(TPS2Event.VIF1) = Window, 'No wake event at the end of the busy window');
     C.Scheduler.Now := Window;
-    C.VIF1.Wake;
+    // A bus read synchronizes the VU1 domain to the EE time.
+    C.Bus.Read($10003C00, 4);
     Check(C.VIF1.Starts = 2, 'Waiting MSCAL did not run after the busy window');
     Check((C.VU0.ReadControl(29) and $100) <> 0, 'Second program not busy');
     C.Scheduler.Now := C.VU1.Core.S.BusyUntil;

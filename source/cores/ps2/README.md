@@ -647,6 +647,17 @@ reinterpreted display surfaces fall back to native detail. Both display
 circuits, their offsets and PMODE blending are composed at the chosen scale.
 Field line doubling is based on native height, not the enlarged image height.
 
+On Win64, VIF1/GIF DMA and VU1 can run ahead on a separate thread. The EE
+consumes outputs in guest cycle order. Reads of shared memory are validated
+before acceptance; a conflict restores the domain checkpoint and replays the
+affected work. `PS2_VU1_THREAD=0` selects the same-thread path. Save states
+still contain the accepted guest state, not host thread or Vulkan state.
+
+An attached screen consumes scaled fields in order. When the display queue
+fills, the emulation worker waits before running the next field; a detached
+screen does not throttle a headless core. Audio pacing and refill operate on
+host PCM after SPU2. These paths do not change the guest clock or skip fields.
+
 Texture scaling uses the shared `RM.Vulkan.TexScale` implementation. Frequently
 changing textures become unscaled, small ramps/tables and incompatible mip
 extents stay native, and scaled textures are limited to 1024 texels per side.
@@ -678,7 +689,7 @@ Its executable also accepts `-bench` for alternating scalar/paired timings.
 
 Target loads skip the work GS memory does not ask for, with unchanged results:
 - Large targets (and all at a raised resolution) load on the GPU: the raw GS
-  bytes are staged and `PS2.GS.HLEUpload.comp` unswizzles them in integer
+  bytes are staged and `PS2GSHLEUpload.pasm` unswizzles them in integer
   arithmetic. 24/16-bit depth values have at most 24 significant bits, so their
   normalized single is built exactly from integer bits; D32 inputs and D24
   depth images keep the CPU conversion.
@@ -698,7 +709,10 @@ Target loads skip the work GS memory does not ask for, with unchanged results:
   single-pass batch continues across draws differing only in vertex-only or
   already-resolved fields (context, IIP, FST, ZTE, frame-format flags).
 
-Textures are decoded on the CPU (CLUT, TEXA, mipmap levels) and compared with
+Eligible textures decode on the GPU from versioned GS pages. The 2× Hybrid
+palette path reuses per-palette colour distances; the native samples remain
+available for render-to-texture reads. Other textures use the CPU decoder
+(CLUT, TEXA, mipmap levels) and are compared with
 the GS blocks they came from (a large one that primitives read little of in
 parts of whole GS pages); a drawn target read in its own format and width
 is sampled from its image (a draw reading the target it draws reads a copy,

@@ -17,14 +17,20 @@
 
 interface
 
-{$Q-}{$R-}
+{$Q-}
+{$R-}
 
 uses
   System.SysUtils;
 
 const
-  JitSupported = {$IF (DEFINED(CPUX64) AND (DEFINED(MSWINDOWS) OR DEFINED(LINUX))) OR
-    (DEFINED(CPUARM64) AND DEFINED(ANDROID))}True{$ELSE}False{$ENDIF};
+  JitSupported =
+    {$IF (DEFINED(CPUX64) AND (DEFINED(MSWINDOWS) OR DEFINED(LINUX))) OR
+    (DEFINED(CPUARM64) AND DEFINED(ANDROID))}
+    True
+    {$ELSE}
+    False
+    {$ENDIF};
 
 type
   // Registers by role. The fixed ones keep their values across calls: Self
@@ -74,6 +80,8 @@ type
   private
     FBase: PByte;
     FSize, FUsed, FCodeStart, FFlushed: NativeInt;
+    FAuxStart, FAuxUsed, FPrimaryUsed: NativeInt;
+    FInAux: Boolean;
     // Labels: where each is (-1: not yet), and the jumps to ones not yet
     // bound (their fields). Kept from function to function, so that writing
     // code calls no memory manager once they are long enough.
@@ -118,6 +126,9 @@ type
     function Room(Bytes: NativeInt): Boolean; inline;
     function Here: PByte; inline;
     function Offset: NativeInt; inline;
+    procedure ReserveAuxiliary(PrimaryBytes: NativeInt);
+    function BeginAuxiliary(Estimate: NativeInt): Boolean;
+    procedure EndAuxiliary;
     procedure Align(N: Integer);
 
     // Dst := Src.
@@ -291,6 +302,8 @@ procedure TJitAsm.Reset;
 begin
   FUsed := FCodeStart;
   FFlushed := FCodeStart;
+  FInAux := False;
+  FAuxUsed := FAuxStart;
   FLabelCount := 0;
   FFixCount := 0;
 end;
@@ -392,12 +405,65 @@ end;
 
 function TJitAsm.Room(Bytes: NativeInt): Boolean;
 begin
-  Result := (FBase <> nil) and (FUsed + Bytes * FRoomScale <= FSize);
+  var Limit := FSize;
+  if (FAuxStart <> 0) and not FInAux then
+    Limit := FAuxStart;
+  Result := (FBase <> nil) and (Bytes >= 0) and (Bytes <= (Limit - FUsed) div FRoomScale);
+end;
+
+// An optional second part of the same executable mapping. Compilation in
+// it never consumes the ordinary code budget; branches use the same base.
+procedure TJitAsm.ReserveAuxiliary(PrimaryBytes: NativeInt);
+begin
+  if (FUsed <> FCodeStart)
+    or (FAuxStart <> 0)
+    or (PrimaryBytes <= FCodeStart)
+    or (PrimaryBytes >= FSize)
+    or ((PrimaryBytes and 15) <> 0) then
+    raise EInvalidOpException.Create('JIT: invalid auxiliary reservation');
+  FAuxStart := PrimaryBytes;
+  FAuxUsed := PrimaryBytes;
+end;
+
+function TJitAsm.BeginAuxiliary(Estimate: NativeInt): Boolean;
+begin
+  Result := False;
+  if FInAux
+    or (FAuxStart = 0)
+    or (Estimate <= 0)
+    or (FFixCount <> 0)
+    or (Estimate > (FSize - FAuxUsed) div FRoomScale) then
+    Exit;
+  Flush;
+  FPrimaryUsed := FUsed;
+  FUsed := FAuxUsed;
+  FFlushed := FAuxUsed;
+  FInAux := True;
+  Result := True;
+end;
+
+procedure TJitAsm.EndAuxiliary;
+begin
+  if not FInAux then
+    raise EInvalidOpException.Create('JIT: no active auxiliary section');
+  try
+    if FFixCount <> 0 then
+      raise EInvalidOpException.Create('JIT: unbound auxiliary target');
+    Flush;
+    FAuxUsed := FUsed;
+  finally
+    FUsed := FPrimaryUsed;
+    FFlushed := FPrimaryUsed;
+    FInAux := False;
+  end;
 end;
 
 procedure TJitAsm.Need(Bytes: NativeInt);
 begin
-  if FUsed + Bytes > FSize then
+  var Limit := FSize;
+  if (FAuxStart <> 0) and not FInAux then
+    Limit := FAuxStart;
+  if (Bytes < 0) or (Bytes > Limit - FUsed) then
     raise EInvalidOpException.Create('JIT buffer overflow');
 end;
 
@@ -2588,7 +2654,8 @@ var
   function ToOffset(A: UInt64): NativeInt;
   begin
     Result := NativeInt(A) - NativeInt(Base);
-    if (Result < FCodeStart) or (Result >= FUsed) then
+    if (Result < FCodeStart)
+      or ((Result >= FUsed) and ((FAuxStart = 0) or (Result < FAuxStart) or (Result >= FAuxUsed))) then
       raise EInvalidOpException.Create('JIT model: a jump out of the code');
   end;
 
@@ -2632,202 +2699,205 @@ begin
         else
           Store(Address(P.A), W, Value(P.B, W));
       mcAlu:
-        begin
-          var Dst := Value(P.A, W) and Masks[W];
-          var Src := Value(P.B, W) and Masks[W];
-          case TJitAlu(P.Sub) of
-            jaAdd: Dst := Dst + Src;
-            jaSub: Dst := Dst - Src;
-            jaAnd: Dst := Dst and Src;
-            jaOr: Dst := Dst or Src;
-          else
-            Dst := Dst xor Src;
-          end;
-          Dst := Dst and Masks[W];
-          if TJitOpKind(P.A.Kind) = okReg then
-            R[TJitReg(P.A.Reg)] := Dst
-          else
-            Store(Address(P.A), W, Dst);
-          FlagKind := 0;
+      begin
+        var Dst := Value(P.A, W) and Masks[W];
+        var Src := Value(P.B, W) and Masks[W];
+        case TJitAlu(P.Sub) of
+          jaAdd: Dst := Dst + Src;
+          jaSub: Dst := Dst - Src;
+          jaAnd: Dst := Dst and Src;
+          jaOr: Dst := Dst or Src;
+        else
+          Dst := Dst xor Src;
         end;
+        Dst := Dst and Masks[W];
+        if TJitOpKind(P.A.Kind) = okReg then
+          R[TJitReg(P.A.Reg)] := Dst
+        else
+          Store(Address(P.A), W, Dst);
+        FlagKind := 0;
+      end;
       mcShift:
-        begin
-          var X := TJitReg(P.A.Reg);
-          var C := P.Count;
-          if W = jw64 then
-            case TJitShift(P.Sub) of
-              jsShl: R[X] := R[X] shl C;
-              jsShr: R[X] := R[X] shr C;
-            else
-              if Int64(R[X]) < 0 then
-                R[X] := not ((not R[X]) shr C)
-              else
-                R[X] := R[X] shr C;
-            end
+      begin
+        var X := TJitReg(P.A.Reg);
+        var C := P.Count;
+        if W = jw64 then
+          case TJitShift(P.Sub) of
+            jsShl: R[X] := R[X] shl C;
+            jsShr: R[X] := R[X] shr C;
           else
-          begin
-            var V := Cardinal(R[X]);
-            case TJitShift(P.Sub) of
-              jsShl: V := V shl C;
-              jsShr: V := V shr C;
+            if Int64(R[X]) < 0 then
+              R[X] := not ((not R[X]) shr C)
             else
-              if Integer(V) < 0 then
-                V := not ((not V) shr C)
-              else
-                V := V shr C;
-            end;
-            R[X] := V;
+              R[X] := R[X] shr C;
+          end
+        else
+        begin
+          var V := Cardinal(R[X]);
+          case TJitShift(P.Sub) of
+            jsShl: V := V shl C;
+            jsShr: V := V shr C;
+          else
+            if Integer(V) < 0 then
+              V := not ((not V) shr C)
+            else
+              V := V shr C;
           end;
-          FlagKind := 0;
+          R[X] := V;
         end;
+        FlagKind := 0;
+      end;
       mcSignExtend:
-        begin
-          var X := TJitReg(P.A.Reg);
-          R[X] := UInt64(Signed(R[X], W));
-        end;
+      begin
+        var X := TJitReg(P.A.Reg);
+        R[X] := UInt64(Signed(R[X], W));
+      end;
       mcCompare:
-        begin
-          FlagA := Value(P.A, W) and Masks[W];
-          FlagB := Value(P.B, W) and Masks[W];
-          FlagW := W;
-          FlagKind := 1;
-        end;
+      begin
+        FlagA := Value(P.A, W) and Masks[W];
+        FlagB := Value(P.B, W) and Masks[W];
+        FlagW := W;
+        FlagKind := 1;
+      end;
       mcTest:
-        begin
-          FlagA := Value(P.A, W) and Value(P.B, W) and Masks[W];
-          FlagKind := 2;
-        end;
+      begin
+        FlagA := Value(P.A, W) and Value(P.B, W) and Masks[W];
+        FlagKind := 2;
+      end;
       mcJumpIf:
+      begin
+        if FlagKind = 0 then
+          raise EInvalidOpException.Create('JIT model: a jump on flags an operation or a call changed');
+        var Taken: Boolean;
+        if FlagKind = 2 then
+          Taken := (FlagA = 0) = (TJitCond(P.Sub) = jcEq)
+        else
         begin
-          if FlagKind = 0 then
-            raise EInvalidOpException.Create('JIT model: a jump on flags an operation or a call changed');
-          var Taken: Boolean;
-          if FlagKind = 2 then
-            Taken := (FlagA = 0) = (TJitCond(P.Sub) = jcEq)
+          var SA := Signed(FlagA, FlagW);
+          var SB := Signed(FlagB, FlagW);
+          case TJitCond(P.Sub) of
+            jcEq: Taken := FlagA = FlagB;
+            jcNe: Taken := FlagA <> FlagB;
+            jcLt: Taken := SA < SB;
+            jcLe: Taken := SA <= SB;
+            jcGt: Taken := SA > SB;
+            jcGe: Taken := SA >= SB;
+            jcBelow: Taken := FlagA < FlagB;
+            jcBelowEq: Taken := FlagA <= FlagB;
+            jcAbove: Taken := FlagA > FlagB;
           else
-          begin
-            var SA := Signed(FlagA, FlagW);
-            var SB := Signed(FlagB, FlagW);
-            case TJitCond(P.Sub) of
-              jcEq: Taken := FlagA = FlagB;
-              jcNe: Taken := FlagA <> FlagB;
-              jcLt: Taken := SA < SB;
-              jcLe: Taken := SA <= SB;
-              jcGt: Taken := SA > SB;
-              jcGe: Taken := SA >= SB;
-              jcBelow: Taken := FlagA < FlagB;
-              jcBelowEq: Taken := FlagA <= FlagB;
-              jcAbove: Taken := FlagA > FlagB;
-            else
-              Taken := FlagA >= FlagB;
-            end;
+            Taken := FlagA >= FlagB;
           end;
-          if Taken then
-            Next := P.Target;
         end;
-      mcJump:
-        Next := P.Target;
+        if Taken then
+          Next := P.Target;
+      end;
+      mcJump: Next := P.Target;
       mcCall, mcCallAt:
-        begin
-          var Routine: Pointer;
-          if TModelCode(P.Code) = mcCall then
-            Routine := P.Routine
-          else
-            Routine := Pointer(NativeUInt(Value(P.A, jw64)));
-          var Args: array[0..3] of NativeUInt;
-          for var K := 0 to P.Count - 1 do
-            Args[K] := NativeUInt(Value(P.Args[K], jw64));
-          var Res: NativeUInt;
-          case P.Count of
-            0: Res := TFn0(Routine)();
-            1: Res := TFn1(Routine)(Args[0]);
-            2: Res := TFn2(Routine)(Args[0], Args[1]);
-            3: Res := TFn3(Routine)(Args[0], Args[1], Args[2]);
-          else
-            Res := TFn4(Routine)(Args[0], Args[1], Args[2], Args[3]);
-          end;
-          for var X := jrT1 to jrT6 do
-            R[X] := ModelPoison;
-          R[jrT0] := Res;
-          FillChar(Vectors, SizeOf(Vectors), $BD);
-          FlagKind := 0;
+      begin
+        var Routine: Pointer;
+        if TModelCode(P.Code) = mcCall then
+          Routine := P.Routine
+        else
+          Routine := Pointer(NativeUInt(Value(P.A, jw64)));
+        var Args: array[0..3] of NativeUInt;
+        for var K := 0 to P.Count - 1 do
+          Args[K] := NativeUInt(Value(P.Args[K], jw64));
+        var Res: NativeUInt;
+        case P.Count of
+          0: Res := TFn0(Routine)();
+          1: Res := TFn1(Routine)(Args[0]);
+          2: Res := TFn2(Routine)(Args[0], Args[1]);
+          3: Res := TFn3(Routine)(Args[0], Args[1], Args[2]);
+        else
+          Res := TFn4(Routine)(Args[0], Args[1], Args[2], Args[3]);
         end;
+        for var X := jrT1 to jrT6 do
+          R[X] := ModelPoison;
+        R[jrT0] := Res;
+        FillChar(Vectors, SizeOf(Vectors), $BD);
+        FlagKind := 0;
+      end;
       mcVectorLoad:
-        begin
-          System.Move(Pointer(Address(P.A))^, Vectors[TJitVector(P.Sub)], SizeOf(TJitVectorValue));
-          FlagKind := 0;
-        end;
+      begin
+        System.Move(Pointer(Address(P.A))^, Vectors[TJitVector(P.Sub)], SizeOf(TJitVectorValue));
+        FlagKind := 0;
+      end;
       mcVectorStore:
-        begin
-          for var K := 0 to 3 do
-            if P.Count and (1 shl K) <> 0 then
-              PCardinal(Address(P.A) + NativeUInt(K * 4))^ := Vectors[TJitVector(P.Sub)].Lane[K];
-          FlagKind := 0;
-        end;
+      begin
+        for var K := 0 to 3 do
+          if P.Count and (1 shl K) <> 0 then
+            PCardinal(Address(P.A) + NativeUInt(K * 4))^ := Vectors[TJitVector(P.Sub)].Lane[K];
+        FlagKind := 0;
+      end;
       mcVectorBroadcast:
-        begin
-          var Scalar := Cardinal(Value(P.A, jw32));
-          for var K := 0 to 3 do Vectors[TJitVector(P.Sub)].Lane[K] := Scalar;
-          FlagKind := 0;
-        end;
+      begin
+        var Scalar := Cardinal(Value(P.A, jw32));
+        for var K := 0 to 3 do
+          Vectors[TJitVector(P.Sub)].Lane[K] := Scalar;
+        FlagKind := 0;
+      end;
       mcVectorShuffle:
-        begin
-          var Old := Vectors[TJitVector(P.A.Imm)];
-          for var K := 0 to 3 do Vectors[TJitVector(P.Sub)].Lane[K] := Old.Lane[(P.Count shr (K * 2)) and 3];
-          FlagKind := 0;
-        end;
+      begin
+        var Old := Vectors[TJitVector(P.A.Imm)];
+        for var K := 0 to 3 do
+          Vectors[TJitVector(P.Sub)].Lane[K] := Old.Lane[(P.Count shr (K * 2)) and 3];
+        FlagKind := 0;
+      end;
       mcVectorAlu:
+      begin
+        for var K := 0 to 3 do
         begin
-          for var K := 0 to 3 do
-          begin
-            var Other := Vectors[TJitVector(P.A.Imm)].Lane[K];
-            case TJitVectorAlu(P.Sub) of
-              jvaAnd: Vectors[TJitVector(P.Count)].Lane[K] := Vectors[TJitVector(P.Count)].Lane[K] and Other;
-              jvaOr: Vectors[TJitVector(P.Count)].Lane[K] := Vectors[TJitVector(P.Count)].Lane[K] or Other;
-              jvaXor: Vectors[TJitVector(P.Count)].Lane[K] := Vectors[TJitVector(P.Count)].Lane[K] xor Other;
-            end;
+          var Other := Vectors[TJitVector(P.A.Imm)].Lane[K];
+          case TJitVectorAlu(P.Sub) of
+            jvaAnd: Vectors[TJitVector(P.Count)].Lane[K] := Vectors[TJitVector(P.Count)].Lane[K] and Other;
+            jvaOr: Vectors[TJitVector(P.Count)].Lane[K] := Vectors[TJitVector(P.Count)].Lane[K] or Other;
+            jvaXor: Vectors[TJitVector(P.Count)].Lane[K] := Vectors[TJitVector(P.Count)].Lane[K] xor Other;
           end;
-          FlagKind := 0;
         end;
+        FlagKind := 0;
+      end;
       mcVectorMask:
+      begin
+        var Mask: Cardinal := 0;
+        for var K := 0 to 3 do
         begin
-          var Mask: Cardinal := 0;
-          for var K := 0 to 3 do
-          begin
-            var Lane := Vectors[TJitVector(P.Count)].Lane[K];
-            if ((TJitVectorMask(P.Sub) = jvmSign) and (Lane shr 31 <> 0)) or
-              ((TJitVectorMask(P.Sub) = jvmZero) and (Lane and $7FFFFFFF = 0)) then
-              Mask := Mask or (Cardinal(1) shl K);
-          end;
-          R[TJitReg(P.A.Reg)] := Mask;
-          FlagKind := 0;
+          var Lane := Vectors[TJitVector(P.Count)].Lane[K];
+          if ((TJitVectorMask(P.Sub) = jvmSign) and (Lane shr 31 <> 0))
+            or ((TJitVectorMask(P.Sub) = jvmZero) and (Lane and $7FFFFFFF = 0)) then
+            Mask := Mask or (Cardinal(1) shl K);
         end;
+        R[TJitReg(P.A.Reg)] := Mask;
+        FlagKind := 0;
+      end;
       mcVectorCall:
-        begin
-          var ResultVector: TJitVectorValue;
-          FillChar(ResultVector, SizeOf(ResultVector), $BD);
-          var Res := TFn4(P.Routine)(NativeUInt(@Vectors[jv0]), NativeUInt(@Vectors[jv1]),
-            NativeUInt(Value(P.A, jw64)), NativeUInt(@ResultVector));
-          FillChar(Vectors, SizeOf(Vectors), $BD);
-          Vectors[jv0] := ResultVector;
-          for var X := jrT1 to jrT6 do R[X] := ModelPoison;
-          R[jrT0] := Res;
-          FlagKind := 0;
-        end;
+      begin
+        var ResultVector: TJitVectorValue;
+        FillChar(ResultVector, SizeOf(ResultVector), $BD);
+        var Res :=
+          TFn4(P.Routine)(NativeUInt(@Vectors[jv0]),
+          NativeUInt(@Vectors[jv1]),
+          NativeUInt(Value(P.A, jw64)),
+          NativeUInt(@ResultVector));
+        FillChar(Vectors, SizeOf(Vectors), $BD);
+        Vectors[jv0] := ResultVector;
+        for var X := jrT1 to jrT6 do
+          R[X] := ModelPoison;
+        R[jrT0] := Res;
+        FlagKind := 0;
+      end;
       mcEnter, mcEnterJump:
+      begin
+        R[jrSelf] := A0;
+        R[jrCtx] := A1;
+        if TModelCode(P.Code) = mcEnterJump then
         begin
-          R[jrSelf] := A0;
-          R[jrCtx] := A1;
-          if TModelCode(P.Code) = mcEnterJump then
-          begin
-            R[jrT1] := A3;
-            Next := ToOffset(A2);
-          end;
+          R[jrT1] := A3;
+          Next := ToOffset(A2);
         end;
-      mcLeave:
-        Exit(NativeInt(Value(P.A, jw64)));
-      mcJumpIndirect:
-        Next := ToOffset(Value(P.A, jw64));
+      end;
+      mcLeave: Exit(NativeInt(Value(P.A, jw64)));
+      mcJumpIndirect: Next := ToOffset(Value(P.A, jw64));
     else
       raise EInvalidOpException.Create('JIT model: no operation here');
     end;

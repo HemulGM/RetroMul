@@ -12,14 +12,27 @@
 // their code pages.
 // References: EE Core User's Manual, EE Core Instruction Set Manual (PS2
 // Linux Kit), ps2tek. Define PS2_CHECKED for range/overflow checks.
-{$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
+{$IFDEF PS2_CHECKED}
+  {$Q+}
+  {$R+}
+{$ELSE}
+  {$O+}
+  {$Q-}
+  {$R-}
+{$ENDIF}
 {$EXCESSPRECISION OFF}
 {$POINTERMATH ON}
 
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Math, System.Generics.Collections, Core.Snapshots, HW.JIT, PS2.Types;
+  System.SysUtils,
+  System.Classes,
+  System.Math,
+  System.Generics.Collections,
+  Core.Snapshots,
+  HW.JIT,
+  PS2.Types;
 
 const
   EEExcInterrupt = 0;
@@ -144,6 +157,9 @@ type
   // the HLE trap instruction (opcode $3B, Index in the low 26 bits).
   TEESyscallHook = procedure(CPU: TEECPU) of object;
   TEETrapHook = procedure(CPU: TEECPU; Index: Cardinal) of object;
+  // The run reached its deadline at a block boundary: True when it goes on
+  // (the deadline was moved past Now) instead of returning.
+  TEEDeadlineHook = function: Boolean of object;
 
   TEETLBEntry = record
     PageMask, EntryHi, EntryLo0, EntryLo1: Cardinal;
@@ -239,13 +255,13 @@ type
       BlockChunkSize = 1024;
       InstChunkSize = 16384;
       MaxBlockInsts = 256;
-      {$IFDEF CPU64BITS}
+{$IFDEF CPU64BITS}
       MaxBlocks = 131072;
       MaxInstChunks = 128;
-      {$ELSE}
+{$ELSE}
       MaxBlocks = 32768;
       MaxInstChunks = 32;
-      {$ENDIF}
+{$ENDIF}
       // FPhys entries: physical page shl 12 or these flags.
       PhysPresent = 1;
       PhysValid = 2;
@@ -294,6 +310,7 @@ type
     FSingle: array[0..1] of TEEInst;
     FOnSyscall: TEESyscallHook;
     FOnTrap: TEETrapHook;
+    FOnDeadline: TEEDeadlineHook;
     // Blocks as generated code (HW.JIT, UseJit): the writer, whether code is
     // running (a reset of the code waits for it to return), no writer to be
     // had; whether the code made since the last reset leaves to RunBlocks
@@ -308,8 +325,12 @@ type
     function JitCompile(B: PEEBlock): Pointer;
     procedure JitEmitChain(B: PEEBlock; K: Integer);
     function JitLink(B: PEEBlock; K: Integer): Pointer;
-    function PollCode(const Blocks: array of PEEBlock; LoopPC: Cardinal; var Loads: array of TEEPollLoad;
-      out LoadCount: Integer): Boolean;
+    function PollCode(
+      const Blocks: array of PEEBlock;
+      LoopPC: Cardinal;
+      var Loads: array of TEEPollLoad;
+      out LoadCount: Integer
+    ): Boolean;
     procedure FindPoll(B: PEEBlock);
     procedure FindCountdown(B: PEEBlock);
     procedure SkipCountdown(B: PEEBlock);
@@ -480,6 +501,9 @@ type
     S: TEEState;
     // Advanced by executed instructions; the run loop stops at Deadline^.
     Now, Deadline: PInt64;
+    // The last Run returned for an exit request (RequestExit), not at its
+    // deadline.
+    ExitTaken: Boolean;
     InstructionsExecuted: Int64;
     // Let blocks that only spin (see TEEBlock.Spin) jump to the deadline
     // (BIOS boot: the kernel's idle thread), and the cycles that saved.
@@ -547,6 +571,7 @@ type
     procedure SerializeState(State: TStateArchive);
     property OnSyscall: TEESyscallHook read FOnSyscall write FOnSyscall;
     property OnTrap: TEETrapHook read FOnTrap write FOnTrap;
+    property OnDeadline: TEEDeadlineHook read FOnDeadline write FOnDeadline;
     property Cop2: TEECop2 read FCop2;
     property Scratchpad: PByte read FScratch;
     property BlocksBuilt: Int64 read FBlocksBuilt;
@@ -5626,9 +5651,10 @@ begin
   FExitRequest := False;
   UpdateInterrupts;
   FExitRequest := False;
+  ExitTaken := False;
   Prev := nil;
   Gen := FBlockGen;
-  while Now^ < Deadline^ do
+  while (Now^ < Deadline^) or Assigned(FOnDeadline) and FOnDeadline() do
   begin
     if FIntPending then
       if FIntDelay then
@@ -5730,10 +5756,16 @@ begin
     // are until the next event (devices change them only then), so its turns
     // up to the deadline change nothing but time; they pass at once, as many
     // whole turns as would run.
-    if B.Poll and (Next = B.PC) and not FIntPending and not FExitRequest and (Now^ < Deadline^) and
-      (WatchPtr = nil) and (BlockProfile = nil) and PollQuiet(B) then
+    if B.Poll
+      and (Next = B.PC)
+      and not FIntPending
+      and not FExitRequest
+      and (Now^ < Deadline^)
+      and (WatchPtr = nil)
+      and (BlockProfile = nil)
+      and PollQuiet(B) then
     begin
-      var Turns := (Deadline^ - Now^ + B.Count - 1) div B.Count;
+      var Turns := (Deadline^-Now^+B.Count - 1) div B.Count;
       Inc(Now^, Turns * B.Count);
       Inc(InstructionsExecuted, Turns * B.Count);
       Inc(PollCycles, Turns * B.Count);
@@ -5745,11 +5777,17 @@ begin
     end
     // The same for a turn of two blocks (the one before, then B): whole turns
     // that end before the deadline (the last, partial one runs as usual).
-    else if (Prev <> nil) and (Next = Prev.PC) and not FIntPending and not FExitRequest and
-      (WatchPtr = nil) and (BlockProfile = nil) and PollsWith(Prev, B) and PollQuiet(B) then
+    else if (Prev <> nil)
+      and (Next = Prev.PC)
+      and not FIntPending
+      and not FExitRequest
+      and (WatchPtr = nil)
+      and (BlockProfile = nil)
+      and PollsWith(Prev, B)
+      and PollQuiet(B) then
     begin
       var Turn := Prev.Count + B.Count;
-      var Turns := (Deadline^ - Now^ - 1) div Turn;
+      var Turns := (Deadline^-Now^-1) div Turn;
       if Turns > 0 then
       begin
         Inc(Now^, Turns * Turn);
@@ -5765,15 +5803,24 @@ begin
     end;
     // A loop that only counts down: its turns before the deadline (or before
     // its last one) pass at once, the counter as they would leave it.
-    if (B.CountKind <> 0) and SkipCountdowns and (Next = B.PC) and not FIntPending and not FExitRequest and
-      (Now^ < Deadline^) and (WatchPtr = nil) and (BlockProfile = nil) then
+    if (B.CountKind <> 0)
+      and SkipCountdowns
+      and (Next = B.PC)
+      and not FIntPending
+      and not FExitRequest
+      and (Now^ < Deadline^)
+      and (WatchPtr = nil)
+      and (BlockProfile = nil) then
       SkipCountdown(B);
     // A spin that only waits: nothing changes until the next event, so the
     // time up to the deadline passes at once.
     if B.Spin and SkipSpins and (Next = B.PC) and not FIntPending and not FExitRequest and (Now^ < Deadline^) then
     begin
-      Inc(SpinCycles, Deadline^ - Now^);
-      Now^ := Deadline^;
+      // (Whole turns, as many as would start before the deadline: where the
+      // time ends up does not depend on deadlines met on the way.)
+      var Turns := (Deadline^-Now^+B.Count - 1) div B.Count;
+      Inc(SpinCycles, Turns * B.Count);
+      Inc(Now^, Turns * B.Count);
     end;
     Prev := B;
     if FJitFull then
@@ -5788,7 +5835,10 @@ begin
     begin
       FExitRequest := False;
       if not FIntPending then
+      begin
+        ExitTaken := True;
         Break;
+      end;
     end;
   end;
 end;
@@ -6055,7 +6105,7 @@ procedure TEECPU.SkipCountdown(B: PEEBlock);
 const
   Never = High(Int64);
 begin
-  var Allowed := (Deadline^ - Now^ + B.Count - 1) div B.Count;
+  var Allowed := 1 + (Deadline^-Now^-1) div B.Count;
   var C0: Int64;
   var P: PByte := nil;
   var A: Cardinal := 0;
@@ -6064,8 +6114,7 @@ begin
     A := Add32(Cardinal(S.GPR[B.CountBase].Lo), B.CountOffset);
     P := FReadMap[A shr 12];
     // (Not a word of the loop itself: its stores would change its code.)
-    if (P = nil) or (FWriteMap[A shr 12] <> P) or ((A and 3) <> 0) or
-      ((A - B.PC) < Cardinal(B.Count) * 4) then
+    if (P = nil) or (FWriteMap[A shr 12] <> P) or ((A and 3) <> 0) or (Sub32(A, B.PC) < Cardinal(B.Count) * 4) then
       Exit;
     C0 := Integer(PCardinal(P + (A and $FFF))^);
   end
@@ -6083,7 +6132,7 @@ begin
   begin
     if B.CountAfter then
     begin
-      if C0 < 0 then
+      if (C0 < 0) or (C0 = Never) then
         Exit;
       Turns := C0 + 1;
     end
@@ -6103,9 +6152,9 @@ begin
     begin
       var D: UInt64;
       if B.CountWide then
-        D := UInt64(C0) - UInt64(X)
+        D := Sub64(UInt64(C0), UInt64(X))
       else
-        D := Cardinal(Cardinal(C0) - Cardinal(X));
+        D := Sub32(Cardinal(C0), Cardinal(X));
       if B.CountAfter then
         Turns := Int64(Min(D, UInt64(Never - 1))) + 1
       else if D = 0 then
@@ -6124,16 +6173,16 @@ begin
     Exit;
   if B.CountKind = 2 then
   begin
-    var C := Cardinal(C0) - Cardinal(K);
+    var C := Sub32(Cardinal(C0), Cardinal(K));
     PCardinal(P + (A and $FFF))^ := C;
-    Inc(FGenMap[A shr 12]^, Cardinal(K));
+    FGenMap[A shr 12]^ := Add32(FGenMap[A shr 12]^, Cardinal(K));
     S.GPR[B.CountReg].Lo := SX32(C);
     S.GPR[B.CountReg2].Lo := SX32(C);
   end
   else if B.CountWide then
-    S.GPR[B.CountReg].Lo := UInt64(C0 - K)
+    S.GPR[B.CountReg].Lo := Sub64(UInt64(C0), UInt64(K))
   else
-    S.GPR[B.CountReg].Lo := SX32(Cardinal(C0) - Cardinal(K));
+    S.GPR[B.CountReg].Lo := SX32(Sub32(Cardinal(C0), Cardinal(K)));
   Inc(Now^, K * B.Count);
   Inc(InstructionsExecuted, K * B.Count);
   Inc(CountdownCycles, K * B.Count);

@@ -9,14 +9,33 @@
 // a packet and only goes on after that packet's transfer time, so a mask set
 // again right away (VIF1 MSKPATH3 1 after MSKPATH3 0) lets exactly one packet
 // through, as programs that interleave texture uploads with drawing expect.
+// The VU1 domain side (FrontTake) follows PATH3's tags only to decide how
+// much PATH3 takes; the GS side (TransferHere, the kick thread) parses
+// every path and writes the GS. What the domain gives the GS side is work
+// with its time (Post), done in that order (CommitWork) at that time
+// (CommitNow, the GS side's clock).
 // References: EE User's Manual (GIF chapter), GS User's Manual, ps2tek.
-{$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
+{$IFDEF PS2_CHECKED}
+  {$Q+}
+  {$R+}
+{$ELSE}
+  {$O+}
+  {$Q-}
+  {$R-}
+{$ENDIF}
 {$POINTERMATH ON}
 
 interface
 
 uses
-  System.SysUtils, System.Classes, Core.Snapshots, PS2.Types, PS2.EE.Bus, PS2.DMAC, PS2.GS;
+  System.SysUtils,
+  System.Classes,
+  Core.Snapshots,
+  PS2.Types,
+  PS2.EE.Bus,
+  PS2.DMAC,
+  PS2.GS,
+  PS2.VU1Domain;
 
 const
   // GS drawing speed for DMA timing: about four pixels per EE cycle (the GS
@@ -34,6 +53,33 @@ type
     EOP: Boolean;
   end;
   PPS2GIFPathState = ^TPS2GIFPathState;
+
+  // Work the VU1 domain gives the GS side: a PATH1 packet, PATH2 quadwords
+  // (one or a run), a path's quadwords, DMA channel 2's.
+  TPS2GIFWorkKind = (gwKick, gwDirect, gwDirectRun, gwPath, gwPort, gwPortEnd);
+  TPS2GIFWork = record
+    Time, Start: Int64;
+    Count, Path: Integer;
+    // gwPortEnd: the channel's quadwords moved.
+    Value: Integer;
+    // The host control word the domain had (the GS rounds with it).
+    Control: Cardinal;
+    Kind: TPS2GIFWorkKind;
+    FromDMA: Boolean;
+    // Running ahead: where the quadwords are when not in the ring (a copy
+    // kept while the domain runs ahead; nil: in the ring).
+    External: PByte;
+  end;
+
+  // The GIF's part of the VU1 domain (PATH3 as the domain follows it), kept
+  // to go back to.
+  TPS2GIFSaved = record
+    Front3: TPS2GIFPathState;
+    MaskedPath3, Path3Burst, Path3Held: Boolean;
+    Path3BurstQuads, PostValue: Integer;
+    KickLeft: Integer;
+    KickEOP: Boolean;
+  end;
 
   TPS2GIF = class(TPS2Device)
   private
@@ -54,15 +100,57 @@ type
     // given to the kick thread (as the paths are while it is idle).
     FDirectPath: TPS2GIFPathState;
     FKickActive: Boolean;
+    // PATH3's tag state as the domain side follows it (the GS side's is
+    // Path[3]; both see the same quadwords).
+    FFront3: TPS2GIFPathState;
+    // PATH1 as the domain side follows it: the quadwords to come of the tag
+    // a packet left open (VU1 hands over at most 1024 a packet) and that
+    // tag's EOP.
+    FKickLeft: Integer;
+    FKickEOP: Boolean;
+    // Pixels the GS drew from data DMA channel 2 moved (not yet taken).
+    FPortPixels: Int64;
+    // The domain's clock (work posted takes its time) and the GS side's
+    // (the work being done).
+    FPostClock: PInt64;
+    FCommitNow: Int64;
+    // Work posted and done; with DeferWork its quadwords wait in FWorkData
+    // (FWorkWrite: where the next go), else it is done at once from the
+    // caller's data.
+    FWork: array of TPS2GIFWork;
+    FWorkData: TArray<TPS2Reg128>;
+    FWorkPosted, FWorkDone, FWorkWrite, FWorkDataDone: Int64;
+    FCommitting, FDeferWork: Boolean;
+    FWorkWaiting: Integer;
+    FPostValue: Integer;
+    // Work the domain posts from now on is dropped (taken back past the EE's
+    // time).
+    FDiscarding: Integer;
+  public
+  private
+    function WorkRoom(Count: Integer; out Start: Int64): Boolean;
+    function NewWork(Kind: TPS2GIFWorkKind; Path: Integer; FromDMA: Boolean; Count: Integer): TPS2GIFWork;
+    function WorkPlace(Count: Integer): Int64;
+    procedure PublishWork(const W: TPS2GIFWork);
+    function TransferPortAhead(Data: PByte; Count: Integer): Integer;
+    function FrontTake(Data: PByte; Count: Integer; FromDMA: Boolean): Integer;
+    function PostNow: Int64; inline;
+    procedure Post(Kind: TPS2GIFWorkKind; Path: Integer; FromDMA: Boolean; Data: PByte; Count: Integer);
+    procedure DoWork(const W: TPS2GIFWork; Data: PByte);
+    procedure DoWorkHere(const W: TPS2GIFWork; Data: PByte);
+    procedure KickPacketHere(Data: PByte; Count: Integer);
+    procedure TransferDirectHere(const Data: TPS2Reg128);
+    function TransferDirectRunHere(Data: PCardinal; Count: Integer): Integer;
+    procedure SetDeferWork(Value: Boolean);
     procedure UpdateBusy;
     procedure PackedWrite(var P: TPS2GIFPathState; Reg: Integer; const D: TPS2Reg128);
     procedure ReglistWrite(var P: TPS2GIFPathState; Value: UInt64);
     procedure StartPath3Burst;
     function TransferHere(PathIndex: Integer; Data: PByte; Count: Integer; FromDMA: Boolean): Integer;
     function TransferImageRun(Data: PByte; Count: Integer): Integer;
-    procedure KickHere(Memory: PByte; Address, Mask: Cardinal);
+    procedure KickHere(Memory: PByte; Address, Mask: Cardinal; Count: Integer);
     procedure DrawAt(Data: PByte; Count: Integer; Direct: Boolean; Now: Int64);
-    function Detachable(Data: PByte; out Count: Integer): Boolean;
+    function Detachable(Data: PByte; Limit: Integer; out Count: Integer): Boolean;
     function Kicker: TObject;
     procedure SetClock(Value: PInt64);
     procedure SetThreaded(Value: Boolean);
@@ -81,6 +169,23 @@ type
     OnPath3Held: TProc<Int64>;
     // Diagnostics: tags started when assigned.
     TagLog: TStrings;
+    // Experimental: the domain posts from a thread of its own, the EE side
+    // commits (CommitTo) and answers what the domain asks of the GS side
+    // (OnRequest: 1 channel 2's GS time, 2 the GS busy time).
+    Ahead: Boolean;
+    OnRequest: TFunc<Integer, Int64, Int64>;
+    // Running ahead, channel 2's quadwords come from a copy (as the DMAC's
+    // channels read memory); replaying, the work was handed over already.
+    OnAheadRead: TPS2DMAAheadRead;
+    OnAheadReadUsed: TPS2DMAAheadReadUsed;
+    Replaying: Boolean;
+    // Channel 1 or 2 ended its data at the work's time (channel, its
+    // quadwords moved): the GS side has its device's time.
+    OnPortEnd: TProc<Integer, Integer, Int64>;
+    // The EE side's time (Join commits up to it; nil: everything).
+    CommitClock: PInt64;
+    // The VU1 domain the GIF belongs to (its Now is the clock).
+    Domain: TPS2VU1Domain;
     constructor Create(GS: TPS2GS);
     destructor Destroy; override;
     property GS: TPS2GS read FGS;
@@ -120,31 +225,63 @@ type
     // Accept only a safe asynchronous prefix. The caller retains barriers
     // and command completion on its original per-quadword path.
     function TransferDirectRun(Data: PCardinal; Count: Integer): Integer;
-    // Waits until the kick thread drew what it was given.
+    // Does the work posted, then waits until the kick thread drew what it
+    // was given.
     procedure Join;
+    // The work posted, done in order (on the GS side).
+    procedure CommitWork;
+    // The GS side's time: that of the work being done.
+    property CommitNow: Int64 read FCommitNow;
+    // Diagnostics: posted work waits as a copy until CommitWork (a later GS
+    // side does it), instead of being done at once.
+    property DeferWork: Boolean read FDeferWork write SetDeferWork;
+    procedure CommitTo(UpTo: Int64);
+    // The oldest work not done (High(Int64): none).
+    function WorkHead: Int64;
+    // EE side: what the domain posts from now on is dropped, or no longer;
+    // going back, the work not done yet is dropped (the domain makes it
+    // again).
+    procedure Discard(Value: Boolean);
+    procedure DropWork;
+    procedure SaveDomain(out C: TPS2GIFSaved);
+    procedure RestoreDomain(const C: TPS2GIFSaved);
+    // The domain waits for room to post (EE side: the ring is full).
+    function WorkWaiting: Boolean;
+    function TakePortCyclesHere: Int64;
+    procedure PostPortEnd(Channel, Moved: Integer);
+    function GSBusyCyclesAt(Now: Int64): Int64;
     property Threaded: Boolean read FThreaded write SetThreaded;
     function Read(Address: Cardinal; Size: Integer): UInt64; override;
+    // The register at Address with PATH3 masked or not as given (running
+    // ahead: as the domain had it at the EE time; the rest is the GS
+    // side's).
+    function ReadRegister(Address: Cardinal; Masked3: Boolean): Cardinal;
     procedure Write(Address: Cardinal; Value: UInt64; Size: Integer); override;
     procedure WriteFIFO(Address: Cardinal; const Value: TPS2Reg128); override;
     procedure SerializeState(State: TStateArchive);
+    // DMA channel 2: Transfer on PATH3 from DMA, the pixels drawn counted for
+    // TakePortCycles (the channel's GS time).
+    function TransferPort(Data: PByte; Count: Integer): Integer;
+    function TakePortCycles: Int64;
   end;
 
   // DMA channel 2 into PATH3.
   TPS2GIFPort = class(TPS2DMAPort)
   private
     FGIF: TPS2GIF;
-    // Pixels the GS drew from data this channel moved (not yet taken).
-    FBusyPixels: Int64;
   public
     constructor Create(GIF: TPS2GIF);
     function Push(Channel: Integer; Data: PByte; Count: Integer): Integer; override;
     function TakeBusyCycles: Int64; override;
+    function BusyFromGS: Boolean; override;
+    function ChecksAhead: Boolean; override;
   end;
 
 implementation
 
 uses
-  System.SyncObjs;
+  System.SyncObjs,
+  System.Diagnostics;
 
 {$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
 const
@@ -272,7 +409,9 @@ begin
   while not Terminated do
   begin
     var Spins := 0;
-    while (TInterlocked.Read(FPublished) = Done) and not Terminated do
+    // (Spinning on a plain read, an aligned 64-bit one: a locked one would
+    // take the line from the emulation thread each round.)
+    while (FPublished = Done) and not Terminated do
     begin
       if Spins < SpinRounds then
       begin
@@ -471,7 +610,8 @@ begin
   begin
     Close;
     var Spins := 0;
-    while TInterlocked.Read(FDone) <> FPosted do
+    // (A plain read, as above.)
+    while FDone <> FPosted do
       Wait(Spins);
   end;
   if FFailed = 1 then
@@ -538,6 +678,9 @@ begin
   FGS := GS;
   FLocalMemory := FGS.Raster.Memory.Data;
   FGS.BeforeAccess := Join;
+  FClock := @FCommitNow;
+  FSchedulerClock := @FCommitNow;
+  SetLength(FWork, 1 shl 16);
   Reset;
 end;
 
@@ -550,8 +693,234 @@ end;
 procedure TPS2GIF.SetClock(Value: PInt64);
 begin
   Join;
-  FClock := Value;
-  FSchedulerClock := Value;
+  FPostClock := Value;
+end;
+
+procedure TPS2GIF.SetDeferWork(Value: Boolean);
+begin
+  Join;
+  FDeferWork := Value;
+  if Value and (FWorkData = nil) then
+    SetLength(FWorkData, 1 shl 20);
+end;
+
+function TPS2GIF.PostNow: Int64;
+begin
+  if FPostClock <> nil then
+    Result := FPostClock^
+  else
+    Result := 0;
+end;
+
+// Work from the domain at its time: done now (from Data), or with DeferWork
+// copied for CommitWork.
+procedure TPS2GIF.Post(Kind: TPS2GIFWorkKind; Path: Integer; FromDMA: Boolean; Data: PByte; Count: Integer);
+begin
+  var W := NewWork(Kind, Path, FromDMA, Count);
+  if not FDeferWork then
+  begin
+    CommitWork;
+    DoWork(W, Data);
+    Exit;
+  end;
+  if Replaying or (LoadShared(FDiscarding) <> 0) then
+    Exit;
+  W.Start := WorkPlace(Count);
+  if W.Start < 0 then
+    Exit;
+  if Count > 0 then
+    Move(Data^, FWorkData[W.Start and (Length(FWorkData) - 1)], Count * SizeOf(TPS2Reg128));
+  PublishWork(W);
+end;
+
+function TPS2GIF.NewWork(Kind: TPS2GIFWorkKind; Path: Integer; FromDMA: Boolean; Count: Integer): TPS2GIFWork;
+begin
+  Result.Time := PostNow;
+  Result.Count := Count;
+  Result.Path := Path;
+  Result.Kind := Kind;
+  Result.FromDMA := FromDMA;
+  Result.Start := 0;
+  Result.Value := FPostValue;
+  Result.Control := ControlWord;
+  Result.External := nil;
+end;
+
+// Room for the entry and Count contiguous quadwords (a run that would wrap
+// starts the ring over), where they go; ahead, the EE side makes it (-1:
+// the work is dropped meanwhile).
+function TPS2GIF.WorkPlace(Count: Integer): Int64;
+begin
+  if WorkRoom(Count, Result) then
+    Exit;
+  var Rounds := 0;
+  while not WorkRoom(Count, Result) do
+    if Ahead then
+    begin
+      if LoadShared(FDiscarding) <> 0 then
+      begin
+        Result := -1;
+        Break;
+      end;
+      TInterlocked.Exchange(FWorkWaiting, 1);
+      WaitRound(Rounds);
+    end
+    else
+      CommitWork;
+  TInterlocked.Exchange(FWorkWaiting, 0);
+end;
+
+// W with its quadwords at W.Start in the ring (or External).
+procedure TPS2GIF.PublishWork(const W: TPS2GIFWork);
+begin
+  if W.External = nil then
+    FWorkWrite := W.Start + W.Count;
+  FWork[FWorkPosted and (Length(FWork) - 1)] := W;
+  StoreShared(FWorkPosted, FWorkPosted + 1);
+  if not Ahead then
+    CommitWork;
+end;
+
+function TPS2GIF.WorkRoom(Count: Integer; out Start: Int64): Boolean;
+begin
+  var Size := Length(FWorkData);
+  Start := FWorkWrite;
+  if (Start and (Size - 1)) + Count > Size then
+    Start := (Start or (Size - 1)) + 1;
+  Result :=
+    (FWorkPosted - LoadShared(FWorkDone) < Length(FWork)) and (Start + Count - LoadShared(FWorkDataDone) <= Size);
+end;
+
+procedure TPS2GIF.Discard(Value: Boolean);
+begin
+  StoreShared(FDiscarding, Ord(Value));
+end;
+
+procedure TPS2GIF.DropWork;
+begin
+  FWorkPosted := FWorkDone;
+  FWorkWrite := FWorkDataDone;
+end;
+
+procedure TPS2GIF.SaveDomain(out C: TPS2GIFSaved);
+begin
+  C.Front3 := FFront3;
+  C.MaskedPath3 := MaskedPath3;
+  C.Path3Burst := Path3Burst;
+  C.Path3Held := Path3Held;
+  C.Path3BurstQuads := Path3BurstQuads;
+  C.PostValue := FPostValue;
+  C.KickLeft := FKickLeft;
+  C.KickEOP := FKickEOP;
+end;
+
+procedure TPS2GIF.RestoreDomain(const C: TPS2GIFSaved);
+begin
+  FFront3 := C.Front3;
+  MaskedPath3 := C.MaskedPath3;
+  Path3Burst := C.Path3Burst;
+  Path3Held := C.Path3Held;
+  Path3BurstQuads := C.Path3BurstQuads;
+  FPostValue := C.PostValue;
+  FKickLeft := C.KickLeft;
+  FKickEOP := C.KickEOP;
+end;
+
+function TPS2GIF.WorkWaiting: Boolean;
+begin
+  Result := TInterlocked.CompareExchange(FWorkWaiting, 0, 0) <> 0;
+end;
+
+function TPS2GIF.WorkHead: Int64;
+begin
+  Result := High(Int64);
+  if FWorkDone < LoadShared(FWorkPosted) then
+    Result := FWork[FWorkDone and (Length(FWork) - 1)].Time;
+end;
+
+procedure TPS2GIF.CommitWork;
+begin
+  CommitTo(High(Int64));
+end;
+
+procedure TPS2GIF.CommitTo(UpTo: Int64);
+begin
+  if FCommitting then
+    Exit;
+  FCommitting := True;
+  try
+    var Posted := LoadShared(FWorkPosted);
+    while FWorkDone < Posted do
+    begin
+      // (Move: see TPS2GSRaster.Draw.)
+      var W: TPS2GIFWork;
+      Move(FWork[FWorkDone and (Length(FWork) - 1)], W, SizeOf(W));
+      if W.Time > UpTo then
+        Break;
+      var Data := W.External;
+      if Data = nil then
+        Data := PByte(@FWorkData[W.Start and (Length(FWorkData) - 1)]);
+      // (Done or failed: not again.)
+      try
+        DoWork(W, Data);
+      finally
+        if W.External = nil then
+          StoreShared(FWorkDataDone, W.Start + W.Count);
+        StoreShared(FWorkDone, FWorkDone + 1);
+      end;
+    end;
+  finally
+    FCommitting := False;
+  end;
+end;
+
+// One piece of work on the GS side, at its time.
+procedure TPS2GIF.DoWork(const W: TPS2GIFWork; Data: PByte);
+begin
+  FCommitNow := W.Time;
+  var Saved := ControlWord;
+  if Saved <> W.Control then
+  begin
+    LoadControlWord(W.Control);
+    try
+      DoWorkHere(W, Data);
+    finally
+      LoadControlWord(Saved);
+    end;
+  end
+  else
+    DoWorkHere(W, Data);
+end;
+
+procedure TPS2GIF.DoWorkHere(const W: TPS2GIFWork; Data: PByte);
+begin
+  case W.Kind of
+    gwKick: KickPacketHere(Data, W.Count);
+    gwDirect: TransferDirectHere(PPS2Reg128(Data)^);
+    gwDirectRun:
+    begin
+      // What the kick thread does not take goes as single quadwords (as
+      // the VIF hands them over then).
+      var Taken := TransferDirectRunHere(PCardinal(Data), W.Count);
+      for var K := Taken to W.Count - 1 do
+        TransferDirectHere(PPS2Reg128(Data)[K]);
+    end;
+    gwPath:
+    begin
+      Join;
+      TransferHere(W.Path, Data, W.Count, W.FromDMA);
+    end;
+    gwPortEnd:
+      if Assigned(OnPortEnd) then
+        OnPortEnd(W.Path, W.Value, W.Time);
+    gwPort:
+    begin
+      Join;
+      var Pixels := FGS.Raster.PixelsDrawn;
+      TransferHere(3, Data, W.Count, True);
+      Inc(FPortPixels, FGS.Raster.PixelsDrawn - Pixels);
+    end;
+  end;
 end;
 
 procedure TPS2GIF.SetThreaded(Value: Boolean);
@@ -568,17 +937,19 @@ end;
 
 procedure TPS2GIF.Join;
 begin
+  if CommitClock <> nil then
+    CommitTo(CommitClock^)
+  else
+    CommitWork;
   if FKicker <> nil then
     TPS2GIFKicker(FKicker).Join;
 end;
 
 // Whether the kick thread may draw the packet VU1 kicked into Data (Count:
-// its quadwords): its tags end with EOP within the buffer (the GIF reads it
-// as VU1 took it) and no A+D write reaches SIGNAL or FINISH (their events
-// reach the EE).
-function TPS2GIF.Detachable(Data: PByte; out Count: Integer): Boolean;
-const
-  Limit = 1024;
+// its quadwords): its tags end with EOP within the Limit quadwords PATH1
+// takes of it and no A+D write reaches SIGNAL or FINISH (their events reach
+// the EE).
+function TPS2GIF.Detachable(Data: PByte; Limit: Integer; out Count: Integer): Boolean;
 begin
   Result := False;
   Count := 0;
@@ -595,23 +966,22 @@ begin
     Inc(K);
     case Flg of
       0:
-        begin
-          // A+D descriptors only.
-          for var R := 0 to NReg - 1 do
-            if ((Tag.Hi shr (R * 4)) and $F) = $E then
-              for var L := 0 to NLoop - 1 do
-              begin
-                var At := K + L * NReg + R;
-                if At >= Limit then
-                  Exit;
-                var Reg := Integer(Q[At].Hi and $7F);
-                if (Reg = $60) or (Reg = $61) then
-                  Exit;
-              end;
-          Inc(K, NLoop * NReg);
-        end;
-      1:
-        Inc(K, (NLoop * NReg + 1) div 2);
+      begin
+        // A+D descriptors only.
+        for var R := 0 to NReg - 1 do
+          if ((Tag.Hi shr (R * 4)) and $F) = $E then
+            for var L := 0 to NLoop - 1 do
+            begin
+              var At := K + L * NReg + R;
+              if At >= Limit then
+                Exit;
+              var Reg := Integer(Q[At].Hi and $7F);
+              if (Reg = $60) or (Reg = $61) then
+                Exit;
+            end;
+        Inc(K, NLoop * NReg);
+      end;
+      1: Inc(K, (NLoop * NReg + 1) div 2);
     else
       Inc(K, NLoop);
     end;
@@ -639,27 +1009,98 @@ begin
   Result := FKicker;
 end;
 
+// The quadwords of P's tag yet to come (0: between tags).
+function PathLeft(const P: TPS2GIFPathState): Integer;
+begin
+  Result := 0;
+  if not P.Active then
+    Exit;
+  case P.Flg of
+    0: Result := (P.NLoop - P.Loop) * P.NReg - P.Reg;
+    1: Result := ((P.NLoop - P.Loop) * P.NReg - P.Reg + 1) div 2;
+  else
+    Result := P.NLoop - P.Loop;
+  end;
+end;
+
+// The quadwords PATH1 takes of the packet VU1 kicked into Data: up to the
+// end of the tag with EOP, at most 1024 (as VU1 took it), going on in the
+// tag an earlier packet left open (Left quadwords of it to come, EOP its
+// bit; both as this packet leaves them).
+function KickSize(Data: PByte; var Left: Integer; var EOP: Boolean): Integer;
+const
+  Limit = 1024;
+begin
+  var Q := PPS2Reg128(Data);
+  var K := 0;
+  while K < Limit do
+  begin
+    if Left = 0 then
+    begin
+      var Lo := Q[K].Lo;
+      var NLoop := Integer(Lo and $7FFF);
+      var NReg := Integer((Lo shr 60) and $F);
+      if NReg = 0 then
+        NReg := 16;
+      case Integer((Lo shr 58) and 3) of
+        0: Left := NLoop * NReg;
+        1: Left := (NLoop * NReg + 1) div 2;
+      else
+        Left := NLoop;
+      end;
+      EOP := (Lo and $8000) <> 0;
+      Inc(K);
+    end;
+    var Run := Left;
+    if Run > Limit - K then
+      Run := Limit - K;
+    Inc(K, Run);
+    Dec(Left, Run);
+    if (Left = 0) and EOP then
+      Break;
+  end;
+  Result := K;
+end;
+
 procedure TPS2GIF.KickPacket(Data: PByte);
 begin
-  var Count: Integer;
-  if FThreaded and (TagLog = nil) and (FSchedulerClock <> nil) and FGS.Raster.Async and
-    not FGS.WriteInterrupts and Detachable(Data, Count) then
+  Domain.Check;
+  Post(gwKick, 1, False, Data, KickSize(Data, FKickLeft, FKickEOP));
+end;
+
+// The GS side: Count quadwords of the packet are PATH1's (KickSize).
+procedure TPS2GIF.KickPacketHere(Data: PByte; Count: Integer);
+begin
+  var Packet: Integer;
+  if FThreaded
+    and (TagLog = nil)
+    and (FSchedulerClock <> nil)
+    and FGS.Raster.Async
+    and not FGS.WriteInterrupts
+    and Detachable(Data, Count, Packet) then
   begin
     var K := TPS2GIFKicker(Kicker);
     // PATH1 between packets (each packet given ends with EOP).
     if not FKickActive then
     begin
-      K.PutPacket(Data, Count, FSchedulerClock^);
+      K.PutPacket(Data, Packet, FSchedulerClock^);
       Exit;
     end;
   end;
-  Kick(Data, 0, $3FFF);
+  Join;
+  KickHere(Data, 0, $3FFF, Count);
 end;
 
 procedure TPS2GIF.TransferDirect(const Data: TPS2Reg128);
 begin
-  if FThreaded and (TagLog = nil) and (FSchedulerClock <> nil) and FGS.Raster.Async and
-    not FGS.WriteInterrupts then
+  Domain.Check;
+  var Q := Data;
+  Post(gwDirect, 2, False, @Q, 1);
+end;
+
+procedure TPS2GIF.TransferDirectHere(const Data: TPS2Reg128);
+begin
+  if FThreaded and (TagLog = nil) and (FSchedulerClock <> nil) and FGS.Raster.Async and not FGS.WriteInterrupts then
   begin
     var K := TPS2GIFKicker(Kicker);
     if NextDirect(FDirectPath, Data) then
@@ -669,7 +1110,8 @@ begin
     end;
   end;
   var Q := Data;
-  Transfer(2, @Q, 1);
+  Join;
+  TransferHere(2, @Q, 1, False);
 end;
 
 function TPS2GIF.TransferDirectRun(Data: PCardinal; Count: Integer): Integer;
@@ -679,14 +1121,46 @@ var
   function ClearOf(Base: Pointer; Size: NativeUInt): Boolean;
   begin
     var At := NativeUInt(Base);
-    Result := (At <= High(NativeUInt) - Size) and
-      ((Source + Bytes <= At) or (Source >= At + Size));
+    Result := (At <= High(NativeUInt) - Size) and ((Source + Bytes <= At) or (Source >= At + Size));
+  end;
+
+begin
+  Domain.Check;
+  // Data the GIF or the GS could change while it goes stays with single
+  // quadwords; otherwise the whole run is taken.
+  Result := 0;
+  if (Count < 2) or (NativeUInt(Count) > High(NativeUInt) div SizeOf(TPS2Reg128)) then
+    Exit;
+  Source := NativeUInt(Data);
+  Bytes := NativeUInt(Count) * SizeOf(TPS2Reg128);
+  if (Source > High(NativeUInt) - Bytes)
+    or not ClearOf(Self, InstanceSize)
+    or not ClearOf(FGS, FGS.InstanceSize)
+    or not ClearOf(FGS.Raster, FGS.Raster.InstanceSize)
+    or not ClearOf(FLocalMemory, PS2GSMemorySize) then
+    Exit;
+  Result := Count;
+  Post(gwDirectRun, 2, False, PByte(Data), Count);
+end;
+
+function TPS2GIF.TransferDirectRunHere(Data: PCardinal; Count: Integer): Integer;
+var
+  Source, Bytes: NativeUInt;
+
+  function ClearOf(Base: Pointer; Size: NativeUInt): Boolean;
+  begin
+    var At := NativeUInt(Base);
+    Result := (At <= High(NativeUInt) - Size) and ((Source + Bytes <= At) or (Source >= At + Size));
   end;
 
 begin
   Result := 0;
-  if (Count < 2) or not FThreaded or (TagLog <> nil) or (FSchedulerClock = nil) or
-    not FGS.Raster.Async or FGS.WriteInterrupts then
+  if (Count < 2)
+    or not FThreaded
+    or (TagLog <> nil)
+    or (FSchedulerClock = nil)
+    or not FGS.Raster.Async
+    or FGS.WriteInterrupts then
     Exit;
   if NativeUInt(Count) > High(NativeUInt) div SizeOf(TPS2Reg128) then
     Exit;
@@ -695,9 +1169,10 @@ begin
   if Source > High(NativeUInt) - Bytes then
     Exit;
   // Synthetic aliased callers retain the per-quad read/commit ordering.
-  if not ClearOf(Self, InstanceSize) or not ClearOf(FGS, FGS.InstanceSize) or
-    not ClearOf(FGS.Raster, FGS.Raster.InstanceSize) or
-    not ClearOf(FLocalMemory, PS2GSMemorySize) then
+  if not ClearOf(Self, InstanceSize)
+    or not ClearOf(FGS, FGS.InstanceSize)
+    or not ClearOf(FGS.Raster, FGS.Raster.InstanceSize)
+    or not ClearOf(FLocalMemory, PS2GSMemorySize) then
     Exit;
   var K := TPS2GIFKicker(Kicker);
   var Q := PPS2Reg128(Data);
@@ -720,8 +1195,12 @@ begin
   // this was given: nothing to do, and not from this thread.)
   FGS.InterruptsQuiet := True;
   try
-    var Groupable := (Count >= 4) and (TagLog = nil) and
-      (FGS.Raster.PrimLog = nil) and (FGS.Raster.TransferLog = nil) and (FGS.Raster.WatchX < 0);
+    var Groupable :=
+      (Count >= 4)
+        and (TagLog = nil)
+        and (FGS.Raster.PrimLog = nil)
+        and (FGS.Raster.TransferLog = nil)
+        and (FGS.Raster.WatchX < 0);
     if Groupable then
     begin
       var Pixels := FGS.Raster.PixelsDrawn;
@@ -746,7 +1225,7 @@ begin
       TransferHere(PathIndex, Data + (Count - 1) * SizeOf(TPS2Reg128), 1, False);
     end
     else if not Direct then
-      KickHere(Data, 0, $3FFF)
+      KickHere(Data, 0, $3FFF, Count)
     else
       for var K := 0 to Count - 1 do
         TransferHere(2, Data + K * SizeOf(TPS2Reg128), 1, False);
@@ -785,11 +1264,21 @@ end;
 
 function TPS2GIF.GSBusyCycles: Int64;
 begin
+  Domain.Check;
+  if Ahead then
+    Result := OnRequest(2, PostNow)
+  else
+    Result := GSBusyCyclesAt(PostNow);
+end;
+
+function TPS2GIF.GSBusyCyclesAt(Now: Int64): Int64;
+begin
+  CommitTo(Now);
   Join;
+  // (The GS side's time comes up to the caller's.)
+  FCommitNow := Now;
   UpdateBusy;
-  Result := 0;
-  if FClock <> nil then
-    Result := FBusyUntil - FClock^;
+  Result := FBusyUntil - FCommitNow;
   if Result < 0 then
     Result := 0;
 end;
@@ -812,6 +1301,11 @@ begin
   FBusyPixels := FGS.Raster.PixelsDrawn;
   for var K := 1 to 3 do
     Path[K] := Default(TPS2GIFPathState);
+  FFront3 := Default(TPS2GIFPathState);
+  FKickLeft := 0;
+  FKickEOP := False;
+  FPortPixels := 0;
+  FCommitNow := PostNow;
   CTRL := 0;
   MODE := 0;
   MaskedPath3 := False;
@@ -831,7 +1325,7 @@ end;
 
 procedure TPS2GIF.SetPath3Mask(Masked: Boolean);
 begin
-  Join;
+  Domain.Check;
   var Was := MaskedPath3;
   MaskedPath3 := Masked;
   if Was and not Masked and ((MODE and 1) = 0) then
@@ -840,7 +1334,7 @@ end;
 
 procedure TPS2GIF.ReleasePath3;
 begin
-  Join;
+  Domain.Check;
   if not Path3Held then
     Exit;
   Path3Held := False;
@@ -850,6 +1344,7 @@ end;
 
 function TPS2GIF.PathIdle(PathIndex: Integer): Boolean;
 begin
+  Domain.Check;
   Join;
   Result := not Path[PathIndex].Active;
 end;
@@ -917,37 +1412,71 @@ end;
 
 function TPS2GIF.Transfer(PathIndex: Integer; Data: PByte; Count: Integer; FromDMA: Boolean): Integer;
 begin
-  Join;
-  Result := TransferHere(PathIndex, Data, Count, FromDMA);
+  Domain.Check;
+  Result := Count;
+  if PathIndex = 3 then
+    Result := FrontTake(Data, Count, FromDMA);
+  // (Also with nothing taken: the GS side brings its timeline up to now.)
+  Post(gwPath, PathIndex, FromDMA, Data, Result);
 end;
 
-function TPS2GIF.TransferImageRun(Data: PByte; Count: Integer): Integer;
-var
-  Source, Bytes: NativeUInt;
-
-  function ClearOf(Base: Pointer; Size: NativeUInt): Boolean;
-  begin
-    var At := NativeUInt(Base);
-    Result := (At <= High(NativeUInt) - Size) and
-      ((Source + Bytes <= At) or (Source >= At + Size));
-  end;
-
+function TPS2GIF.TransferPort(Data: PByte; Count: Integer): Integer;
 begin
-  Result := 0;
-  if (Count < 2) or not FGS.Raster.Async or
-    (NativeUInt(Count) > High(NativeUInt) div SizeOf(TPS2Reg128)) then
-    Exit;
-  Source := NativeUInt(Data);
-  Bytes := NativeUInt(Count) * SizeOf(TPS2Reg128);
-  if Source > High(NativeUInt) - Bytes then
-    Exit;
-  if not ClearOf(Self, InstanceSize) or not ClearOf(FGS, FGS.InstanceSize) or
-    not ClearOf(FGS.Raster, FGS.Raster.InstanceSize) or not ClearOf(FLocalMemory, PS2GSMemorySize) then
-    Exit;
-  Result := FGS.WriteImageRun(Data, Count);
+  Domain.Check;
+  if Ahead and FDeferWork and Assigned(OnAheadRead) then
+    Exit(TransferPortAhead(Data, Count));
+  Result := FrontTake(Data, Count, True);
+  Post(gwPort, 3, True, Data, Result);
 end;
 
-function TPS2GIF.TransferHere(PathIndex: Integer; Data: PByte; Count: Integer; FromDMA: Boolean): Integer;
+// Running ahead: PATH3 takes the quadwords from a copy the EE side checks
+// against memory at their time; the work reads the copy (kept while the
+// domain runs ahead).
+function TPS2GIF.TransferPortAhead(Data: PByte; Count: Integer): Integer;
+begin
+  var Token: Int64;
+  var Copy := OnAheadRead(2, Data, Count * SizeOf(TPS2Reg128), Token);
+  Result := FrontTake(Copy, Count, True);
+  OnAheadReadUsed(Token, Result * SizeOf(TPS2Reg128));
+  if Replaying or (LoadShared(FDiscarding) <> 0) then
+    Exit;
+  var W := NewWork(gwPort, 3, True, Result);
+  W.External := Copy;
+  W.Start := WorkPlace(0);
+  if W.Start >= 0 then
+    PublishWork(W);
+end;
+
+function TPS2GIF.TakePortCycles: Int64;
+begin
+  Domain.Check;
+  if Ahead then
+    Result := OnRequest(1, PostNow)
+  else
+  begin
+    CommitTo(PostNow);
+    Result := TakePortCyclesHere;
+  end;
+end;
+
+procedure TPS2GIF.PostPortEnd(Channel, Moved: Integer);
+begin
+  FPostValue := Moved;
+  Post(gwPortEnd, Channel, False, nil, 0);
+end;
+
+function TPS2GIF.TakePortCyclesHere: Int64;
+begin
+  Result := FPortPixels div GSPixelsPerCycle;
+  FPortPixels := 0;
+end;
+
+// PATH3 as TransferHere goes through it, tags and counts only: how many of
+// Count quadwords it takes now (masked, or held after a burst, it stops
+// between packets), with the burst bookkeeping.
+function TPS2GIF.FrontTake(Data: PByte; Count: Integer; FromDMA: Boolean): Integer;
+var
+  P: PPS2GIFPathState;
 
   procedure PacketEnd(Done: Integer);
   begin
@@ -961,6 +1490,105 @@ function TPS2GIF.TransferHere(PathIndex: Integer; Data: PByte; Count: Integer; F
     end;
   end;
 
+  procedure NextRegister;
+  begin
+    Inc(P.Reg);
+    if P.Reg >= P.NReg then
+    begin
+      P.Reg := 0;
+      Inc(P.Loop);
+    end;
+  end;
+
+begin
+  Result := 0;
+  P := @FFront3;
+  var Q := PPS2Reg128(Data);
+  while Result < Count do
+  begin
+    if not P.Active then
+    begin
+      // Masked or held after a burst: stop between packets.
+      if MaskedPath3 or ((MODE and 1) <> 0) or FromDMA and Path3Held then
+        Break;
+      P.Tag := Q^;
+      P.NLoop := Integer(P.Tag.Lo and $7FFF);
+      P.EOP := (P.Tag.Lo and $8000) <> 0;
+      P.Flg := Integer((P.Tag.Lo shr 58) and 3);
+      P.NReg := Integer((P.Tag.Lo shr 60) and $F);
+      if P.NReg = 0 then
+        P.NReg := 16;
+      P.Regs := P.Tag.Hi;
+      P.Reg := 0;
+      P.Loop := 0;
+      P.Active := P.NLoop > 0;
+      Inc(Result);
+      Inc(Q);
+      if not P.Active and P.EOP then
+        PacketEnd(Result);
+      Continue;
+    end;
+    case P.Flg of
+      0: NextRegister;
+      1:
+      begin
+        NextRegister;
+        if P.Loop < P.NLoop then
+          NextRegister;
+      end;
+    else
+      begin
+        // IMAGE: the quadwords up to the end of the tag at once.
+        var Chunk := Count - Result;
+        if Chunk > P.NLoop - P.Loop then
+          Chunk := P.NLoop - P.Loop;
+        Inc(P.Loop, Chunk);
+        Inc(Result, Chunk - 1);
+        Inc(Q, Chunk - 1);
+      end;
+    end;
+    Inc(Result);
+    Inc(Q);
+    if P.Loop >= P.NLoop then
+    begin
+      P.Active := False;
+      if P.EOP then
+        PacketEnd(Result);
+    end;
+  end;
+  if FromDMA then
+    Inc(Path3BurstQuads, Result);
+end;
+
+function TPS2GIF.TransferImageRun(Data: PByte; Count: Integer): Integer;
+var
+  Source, Bytes: NativeUInt;
+
+  function ClearOf(Base: Pointer; Size: NativeUInt): Boolean;
+  begin
+    var At := NativeUInt(Base);
+    Result := (At <= High(NativeUInt) - Size) and ((Source + Bytes <= At) or (Source >= At + Size));
+  end;
+
+begin
+  Result := 0;
+  if (Count < 2) or not FGS.Raster.Async or (NativeUInt(Count) > High(NativeUInt) div SizeOf(TPS2Reg128)) then
+    Exit;
+  Source := NativeUInt(Data);
+  Bytes := NativeUInt(Count) * SizeOf(TPS2Reg128);
+  if Source > High(NativeUInt) - Bytes then
+    Exit;
+  if not ClearOf(Self, InstanceSize)
+    or not ClearOf(FGS, FGS.InstanceSize)
+    or not ClearOf(FGS.Raster, FGS.Raster.InstanceSize)
+    or not ClearOf(FLocalMemory, PS2GSMemorySize) then
+    Exit;
+  Result := FGS.WriteImageRun(Data, Count);
+end;
+
+// The GS side of Transfer: every one of the Count quadwords (PATH3's were
+// counted by FrontTake already).
+function TPS2GIF.TransferHere(PathIndex: Integer; Data: PByte; Count: Integer; FromDMA: Boolean): Integer;
 begin
   UpdateBusy;
   Result := 0;
@@ -970,13 +1598,6 @@ begin
     var P: PPS2GIFPathState := @Path[PathIndex];
     if not P.Active then
     begin
-      // PATH3 masked or held after a burst: stop between packets.
-      if (PathIndex = 3) and (MaskedPath3 or ((MODE and 1) <> 0) or FromDMA and Path3Held) then
-      begin
-        if FromDMA then
-          Inc(Path3BurstQuads, Result);
-        Exit;
-      end;
       // A new tag.
       P.Tag := Q^;
       P.NLoop := Integer(P.Tag.Lo and $7FFF);
@@ -996,28 +1617,26 @@ begin
         LogTag(PathIndex);
       Inc(Result);
       Inc(Q);
-      if not P.Active and P.EOP and (PathIndex = 3) then
-        PacketEnd(Result);
       Continue;
     end;
     case P.Flg of
       0:
+      begin
+        var Reg := Integer((P.Regs shr (P.Reg * 4)) and $F);
+        PackedWrite(P^, Reg, Q^);
+        Inc(P.Reg);
+        if P.Reg >= P.NReg then
         begin
-          var Reg := Integer((P.Regs shr (P.Reg * 4)) and $F);
-          PackedWrite(P^, Reg, Q^);
-          Inc(P.Reg);
-          if P.Reg >= P.NReg then
-          begin
-            P.Reg := 0;
-            Inc(P.Loop);
-          end;
+          P.Reg := 0;
+          Inc(P.Loop);
         end;
+      end;
       1:
-        begin
-          ReglistWrite(P^, Q.Lo);
-          if P.Loop < P.NLoop then
-            ReglistWrite(P^, Q.Hi);
-        end;
+      begin
+        ReglistWrite(P^, Q.Lo);
+        if P.Loop < P.NLoop then
+          ReglistWrite(P^, Q.Hi);
+      end;
     else
       begin
         var Chunk := Count - Result;
@@ -1037,26 +1656,25 @@ begin
     Inc(Result);
     Inc(Q);
     if P.Loop >= P.NLoop then
-    begin
       P.Active := False;
-      if P.EOP and (PathIndex = 3) then
-        PacketEnd(Result);
-    end;
   end;
-  if FromDMA then
-    Inc(Path3BurstQuads, Result);
 end;
 
 procedure TPS2GIF.Kick(Memory: PByte; Address, Mask: Cardinal);
 begin
+  Domain.Check;
   Join;
-  KickHere(Memory, Address, Mask);
+  FCommitNow := PostNow;
+  // (At most the whole memory.)
+  KickHere(Memory, Address, Mask, Integer((Mask + 1) div 16));
+  FKickLeft := PathLeft(Path[1]);
+  FKickEOP := Path[1].EOP;
 end;
 
-procedure TPS2GIF.KickHere(Memory: PByte; Address, Mask: Cardinal);
+procedure TPS2GIF.KickHere(Memory: PByte; Address, Mask: Cardinal; Count: Integer);
 begin
-  // At most the whole memory; stops after the packet with EOP is done.
-  for var K := 0 to Integer((Mask + 1) div 16) - 1 do
+  // At most Count quadwords; stops after the packet with EOP is done.
+  for var K := 0 to Count - 1 do
   begin
     var Q := PPS2Reg128(Memory + (Address and Mask))^;
     TransferHere(1, @Q, 1, False);
@@ -1068,23 +1686,29 @@ end;
 
 function TPS2GIF.Read(Address: Cardinal; Size: Integer): UInt64;
 begin
+  Domain.Check;
+  Result := ReadRegister(Address, MaskedPath3);
+end;
+
+function TPS2GIF.ReadRegister(Address: Cardinal; Masked3: Boolean): Cardinal;
+begin
   Join;
   case Address and $FF0 of
     $000: Result := CTRL;
     $010: Result := MODE;
     $020:
-      begin
-        // STAT: M3R, M3P, IMT, OPH and APATH while a path is active.
-        Result := (MODE and 1) or (Cardinal(Ord(MaskedPath3)) shl 1) or (MODE and 4);
-        // PATH1 (XGKICK) runs to completion at once: never reported busy (an
-        // unterminated VU packet left it 'active' and sceGsSyncPath timed out).
-        for var K := 2 to 3 do
-          if Path[K].Active then
-          begin
-            Result := Result or $200 or (Cardinal(K) shl 10);
-            Break;
-          end;
-      end;
+    begin
+      // STAT: M3R, M3P, IMT, OPH and APATH while a path is active.
+      Result := (MODE and 1) or (Cardinal(Ord(Masked3)) shl 1) or (MODE and 4);
+      // PATH1 (XGKICK) runs to completion at once: never reported busy (an
+      // unterminated VU packet left it 'active' and sceGsSyncPath timed out).
+      for var K := 2 to 3 do
+        if Path[K].Active then
+        begin
+          Result := Result or $200 or (Cardinal(K) shl 10);
+          Break;
+        end;
+    end;
     $040: Result := Cardinal(Path[3].Tag.UW[0]);
     $050: Result := Cardinal(Path[3].Tag.UW[1]);
     $060: Result := Cardinal(Path[3].Tag.UW[2]);
@@ -1099,31 +1723,36 @@ end;
 
 procedure TPS2GIF.Write(Address: Cardinal; Value: UInt64; Size: Integer);
 begin
+  Domain.Check;
   Join;
   case Address and $FF0 of
     $000:
+    begin
+      CTRL := Cardinal(Value) and 8;
+      if (Value and 1) <> 0 then
       begin
-        CTRL := Cardinal(Value) and 8;
-        if (Value and 1) <> 0 then
-        begin
-          for var K := 1 to 3 do
-            Path[K] := Default(TPS2GIFPathState);
-        end;
+        for var K := 1 to 3 do
+          Path[K] := Default(TPS2GIFPathState);
+        FFront3 := Default(TPS2GIFPathState);
+        FKickLeft := 0;
+        FKickEOP := False;
       end;
+    end;
     $010:
-      begin
-        var WasMasked := (MODE and 1) <> 0;
-        MODE := Cardinal(Value) and 5;
-        if WasMasked and ((MODE and 1) = 0) and not MaskedPath3 then
-          StartPath3Burst
-        else if ((MODE and 1) = 0) and Assigned(OnPath3Resume) then
-          OnPath3Resume();
-      end;
+    begin
+      var WasMasked := (MODE and 1) <> 0;
+      MODE := Cardinal(Value) and 5;
+      if WasMasked and ((MODE and 1) = 0) and not MaskedPath3 then
+        StartPath3Burst
+      else if ((MODE and 1) = 0) and Assigned(OnPath3Resume) then
+        OnPath3Resume();
+    end;
   end;
 end;
 
 procedure TPS2GIF.WriteFIFO(Address: Cardinal; const Value: TPS2Reg128);
 begin
+  Domain.Check;
   var V := Value;
   Transfer(3, @V, 1);
 end;
@@ -1138,6 +1767,12 @@ begin
   State.Field(Path3Burst, SizeOf(Path3Burst));
   State.Field(Path3Held, SizeOf(Path3Held));
   State.Field(Path3BurstQuads, SizeOf(Path3BurstQuads));
+  if State.Loading then
+  begin
+    FFront3 := Path[3];
+    FKickLeft := PathLeft(Path[1]);
+    FKickEOP := Path[1].EOP;
+  end;
 end;
 
 { TPS2GIFPort }
@@ -1150,18 +1785,24 @@ end;
 
 function TPS2GIFPort.Push(Channel: Integer; Data: PByte; Count: Integer): Integer;
 begin
-  FGIF.Join;
-  var Pixels := FGIF.GS.Raster.PixelsDrawn;
-  Result := FGIF.Transfer(3, Data, Count, True);
-  Inc(FBusyPixels, FGIF.GS.Raster.PixelsDrawn - Pixels);
+  Result := FGIF.TransferPort(Data, Count);
 end;
 
 // The GS time of what this channel's data drew. Drawing from the other paths
 // does not hold the channel.
 function TPS2GIFPort.TakeBusyCycles: Int64;
 begin
-  Result := FBusyPixels div GSPixelsPerCycle;
-  FBusyPixels := 0;
+  Result := FGIF.TakePortCycles;
+end;
+
+function TPS2GIFPort.BusyFromGS: Boolean;
+begin
+  Result := True;
+end;
+
+function TPS2GIFPort.ChecksAhead: Boolean;
+begin
+  Result := True;
 end;
 
 end.

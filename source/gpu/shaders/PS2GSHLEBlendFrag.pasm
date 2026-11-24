@@ -7,6 +7,7 @@ var
   [Input, Location(1), NoPerspective] VSTQ: Single3;
   [Input, Location(2), NoPerspective] VLodFog: Single2;
   [Binding(0, 0)] UTexture: CombinedTexture2D;
+  [Binding(0, 1)] NativeTexture: CombinedTexture2D;
   [Input, Builtin(FragCoord)] FragmentPosition: Single4;
   [Binding(1, 0), Coherent] UTarget: Image2D_RGBA8;
 

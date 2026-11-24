@@ -7,53 +7,77 @@
 // triangles retain host coverage/interpolation and GPU fragment shading.
 // Queued draws retain their own parameters and CLUT until Sync publishes their
 // writes to CPU consumers. Compute barriers order draws within each batch.
-{$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
+// A host-to-local transfer into pages pending draws only read is written to
+// a staged copy of those pages (the CPU's own writes, so exact) which the GPU
+// copies into GS memory after those draws (StageWrites, CommitStaged).
+{$IFDEF PS2_CHECKED}
+  {$Q+}
+  {$R+}
+{$ELSE}
+  {$O+}
+  {$Q-}
+  {$R-}
+{$ENDIF}
 {$POINTERMATH ON}
 {$EXCESSPRECISION OFF}
 
 interface
 
 uses
-  System.SysUtils, System.Math, System.Generics.Collections, PS2.Types, PS2.GS.Raster, PS2.GS.Memory,
+  System.SysUtils,
+  System.Math,
+  System.Generics.Collections,
+  System.Diagnostics,
+  PS2.Types,
+  PS2.GS.Raster,
+  PS2.GS.Memory,
   PS2.Vulkan.Compute;
 
 type
   TPS2GSGpu = class(TPS2GSAccelerator)
-  private const
-    BatchSize = 2048;
-    FragmentCapacity = 65536;
-    ClusterSize = 128;
-    // (uints, 16 MiB: per cluster its tile table, two words a tile, and its
-    // entries, a word each.)
-    TileCapacity = 4 * 1024 * 1024;
-    // The most entries (a draw meeting a tile) a cluster takes: at least a
-    // 2048 x 2048 draw's tiles. Phase A's results hold one cluster's: each
-    // dispatch waits for the work recorded before it (TVulkanCompute), in
-    // this command buffer and those submitted earlier, so every cluster
-    // takes them from the start.
-    ClusterEntries = 65536;
-    HalfBatch = BatchSize div 2;
-    HalfFragments = FragmentCapacity div 2;
-    HalfTiles = TileCapacity div 2;
-    LodCapacity = 1024 * 1024; // uints for LOD tables
-  private type
-    TPages = TPS2GSPages;
-    TPush = record
-      Bounds: array[0..3] of Integer;
-      Slot: Cardinal;
-      Mode: Cardinal;
-    end;
-    // The triangle kernels' shared push block: a cluster's tile-aligned
-    // bounds, first state slot, phase (0 A, 1 B), its table and entries in
-    // the tile buffer, its first entry in the results, entries, tiles across,
-    // where the coverage masks start in the results.
-    TTrianglePush = record
-      Bounds: array[0..3] of Integer;
-      Slot, Mode, TileBase, EntryBase, ResultBase, Count, Width, MaskBase: Cardinal;
-    end;
+  private
+    const
+      BatchSize = 2048;
+      FragmentCapacity = 65536;
+      // (A cluster may take a whole half's draws: each one dispatched costs
+      // the GPU a barrier.)
+      ClusterSize = BatchSize div 2;
+      // (uints, 16 MiB: per cluster its tile table, two words a tile, and its
+      // entries, a word each.)
+      TileCapacity = 4 * 1024 * 1024;
+      // The most entries (a draw meeting a tile) a cluster takes: at least a
+      // 2048 x 2048 draw's tiles. Phase A's results hold one cluster's: each
+      // dispatch waits for the work recorded before it (TVulkanCompute), in
+      // this command buffer and those submitted earlier, so every cluster
+      // takes them from the start.
+      ClusterEntries = 65536;
+      HalfBatch = BatchSize div 2;
+      HalfFragments = FragmentCapacity div 2;
+      HalfTiles = TileCapacity div 2;
+      LodCapacity = 1024 * 1024; // uints for LOD tables
+      // Staged copies of GS memory: each a whole GS memory image of which only
+      // the pages being staged are used.
+      StageCount = 16;
+      PageBytes = 8192;
+  private
+    type
+      TPages = TPS2GSPages;
+      TPush = record
+        Bounds: array[0..3] of Integer;
+        Slot: Cardinal;
+        Mode: Cardinal;
+      end;
+      // The triangle kernels' shared push block: a cluster's tile-aligned
+      // bounds, first state slot, phase (0 A, 1 B), its table and entries in
+      // the tile buffer, its first entry in the results, entries, tiles across,
+      // where the coverage masks start in the results.
+      TTrianglePush = record
+        Bounds: array[0..3] of Integer;
+        Slot, Mode, TileBase, EntryBase, ResultBase, Count, Width, MaskBase: Cardinal;
+      end;
   private
     FCompute: TVulkanCompute;
-    FKernel, FTriangleKernel, FTriangleShadeKernel: TVulkanKernel;
+    FKernel, FTriangleKernel: TVulkanKernel;
     FRAM, FState, FCoordinates, FFragments, FTiles, FResults: TVulkanBuffer;
     FDraws: Int64;
     FTexturedDraws: Int64;
@@ -90,15 +114,53 @@ type
     // the compute's command buffer; the other half's draws may be running):
     // its ends.
     FUsedEnd, FFragmentsEnd, FTileWordsEnd: Integer;
+    FRAMData: PByte;
+    // Pages pending draws write (FWrites has staged copies' pages too).
+    FDrawWrites: TPages;
+    // Staged copies: their memory and the device's view of it; for each page
+    // the epoch of the copy last recorded from it (copies of epochs before
+    // FDoneEpoch are done); the copy holding a page's latest content and
+    // that copy's epoch (FRAM's content once done).
+    FStages: array[0..StageCount - 1] of TPS2GSMemory;
+    FStageBuffers: array[0..StageCount - 1] of TVulkanBuffer;
+    FStageEpoch: array[0..StageCount - 1, 0..511] of Int64;
+    FLatestStage: array[0..511] of Integer;
+    FLatestEpoch: array[0..511] of Int64;
+    // Every staged copy has its memory and the device's view of it.
+    FStagesReady: Boolean;
+    // Recording epoch (new after a submit or Finish), the epoch each slot's
+    // last submission recorded, and the first epoch not known done.
+    FEpoch, FDoneEpoch: Int64;
+    FSlotEpoch: array[0..MaxSlots - 1] of Int64;
+    // The open staged writes: their copy (-1: none) and pages.
+    FOpenStage: Integer;
+    FOpenPages: TPages;
+    // Pages draws read since their last staged copy was recorded: while a
+    // page has none, later staged writes may go to the copy that copy takes
+    // (it delivers them too; nothing reads the page in between).
+    FReadsSinceCopy: TPages;
+    // Pages of different copies read together (a CLUT across two pages).
+    FMixed: TPS2GSMemory;
+    FTriangleShadeKernel: TVulkanKernel;
+    function PageBusy(Stage, Page: Integer): Boolean; inline;
+    function LatestStaged(Page: Integer): Integer;
     procedure TakeHalf;
     procedure NextHalf;
     function LodTable(const D: TPS2GSDraw; Rounding: TRoundingMode): Integer;
     function LodLevels(Table: Integer; QLo, QHi: Single): Cardinal;
-    function Supports(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; Levels: Cardinal = $7F;
-      SmallAllowed: Boolean = False): Boolean;
+    function Supports(
+      const D: TPS2GSDraw;
+      X0, Y0, X1, Y1: Integer;
+      Levels: Cardinal = $7F;
+      SmallAllowed: Boolean = False
+    ): Boolean;
     procedure TrackAccess(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; Levels: Cardinal);
-    procedure BuildAccess(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; Levels: Cardinal;
-      out Reads, Writes, Textures: TPages);
+    procedure BuildAccess(
+      const D: TPS2GSDraw;
+      X0, Y0, X1, Y1: Integer;
+      Levels: Cardinal;
+      out Reads, Writes, Textures: TPages
+    );
     procedure FlushNative;
     procedure JoinCluster(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; const Writes, Textures: TPages);
     procedure AddToCluster(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; const Reads, Writes, Textures: TPages);
@@ -111,13 +173,20 @@ type
     procedure ReadPages(First, Last: Integer); override;
     procedure WritePages(First, Last: Integer); override;
     procedure AccessPages(const Reads, Writes: TPS2GSPages); override;
-    function Sprite(const D: TPS2GSDraw; const V0, V: TPS2GSVertex;
-      X0, Y0, X1, Y1: Integer; Lod: Single): Boolean; override;
-    function Triangle(const D: TPS2GSDraw; const V0, V1, V2: TPS2GSVertex;
-      X0, Y0, X1, Y1: Integer): Boolean; override;
+    function Sprite(
+      const D: TPS2GSDraw;
+      const V0, V: TPS2GSVertex;
+      X0, Y0, X1, Y1: Integer;
+      Lod: Single
+    ): Boolean; override;
+    function Triangle(const D: TPS2GSDraw; const V0, V1, V2: TPS2GSVertex; X0, Y0, X1, Y1: Integer): Boolean; override;
     function BeginTriangle(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer): Boolean; override;
     procedure Fragment(X, Y: Integer; Z: Cardinal; R, G, B, A, F, U, V: Integer; Lod: Single); override;
     procedure EndTriangle; override;
+    function StageWrites(const Pages: TPS2GSPages): TPS2GSMemory; override;
+    function WouldStage(const Pages: TPS2GSPages): Boolean; override;
+    procedure CommitStaged; override;
+    function StagedRead(First, Last: Integer; out Memory: TPS2GSMemory): Boolean; override;
     property Draws: Int64 read FDraws;
     property TexturedDraws: Int64 read FTexturedDraws;
     property Submissions: Int64 read FSubmissions;
@@ -128,7 +197,7 @@ type
 
 var
   // Clusters with a tile meeting at least this many draws take two passes
-  // (tests set it to exercise both paths).
+  // (tests set it to exercise both phase paths).
   PS2GSTwoPhaseDraws: Integer = 8;
 
 implementation
@@ -142,30 +211,57 @@ begin
   FHostClut := Clut;
   FLodKeys := TDictionary<UInt64, Integer>.Create;
   FCompute := TVulkanCompute.Create;
+  // (Its pages read and written are tracked: CPU reads and copies wait for
+  // the work on theirs only.)
+  PageReads := True;
+  FRAMData := RAM;
   FRAM := FCompute.ImportHost(RAM, PS2GSMemorySize);
   if FRAM = nil then
     raise Exception.Create('Vulkan GS needs coherent host-memory import for GS VRAM');
-  FState := FCompute.CreateBuffer(BatchSize * 384 * SizeOf(Cardinal), True);
-  FCoordinates := FCompute.CreateBuffer(BatchSize * 4096 * SizeOf(Integer), True);
-  FFragments := FCompute.CreateBuffer(FragmentCapacity * 11 * SizeOf(Cardinal), True);
+  for var S := 0 to StageCount - 1 do
+  begin
+    if not GpuStageEnabled then
+      Break;
+    FStages[S] := TPS2GSMemory.Create;
+    FStageBuffers[S] := FCompute.ImportHost(FStages[S].Data, PS2GSMemorySize);
+    if S = 0 then
+      FMixed := TPS2GSMemory.Create;
+    for var P := 0 to 511 do
+      FStageEpoch[S, P] := -1;
+  end;
+  FStagesReady := GpuStageEnabled;
+  for var S := 0 to StageCount - 1 do
+    if FStageBuffers[S] = nil then
+      FStagesReady := False;
+  for var P := 0 to 511 do
+  begin
+    FLatestStage[P] := -1;
+    FLatestEpoch[P] := -1;
+  end;
+  FOpenStage := -1;
+  for var K := 0 to MaxSlots - 1 do
+    FSlotEpoch[K] := -1;
+  FState := FCompute.CreateBuffer(HalfBatch * FCompute.SlotCount * 384 * SizeOf(Cardinal), True);
+  FCoordinates := FCompute.CreateBuffer(HalfBatch * FCompute.SlotCount * 4096 * SizeOf(Integer), True);
+  FFragments := FCompute.CreateBuffer(HalfFragments * FCompute.SlotCount * 11 * SizeOf(Cardinal), True);
   FKernel := FCompute.CreateKernel(PS2GSKernelCode(TPS2GSKernel.LLESprite), 4, SizeOf(TPush));
   FCompute.Bind(FKernel, [FRAM, FState, FCoordinates, FFragments]);
-  {$IFDEF CPUX64}
+{$IFDEF CPUX64}
   // (The triangle kernel's edge functions take 64-bit integers.)
   if FCompute.ExactDouble and FCompute.Int64 then
   begin
-    FTiles := FCompute.CreateBuffer(TileCapacity * SizeOf(Cardinal), True);
+    FTiles := FCompute.CreateBuffer(HalfTiles * FCompute.SlotCount * SizeOf(Cardinal), True);
     FLodBuffer := FCompute.CreateBuffer(LodCapacity * SizeOf(Cardinal), True);
     // (Each entry's 64 depths and colours, then each entry's coverage mask.)
     FResults := FCompute.CreateBuffer(UInt64(ClusterEntries) * 130 * SizeOf(Cardinal), False);
-    FTriangleKernel := FCompute.CreateKernel(PS2GSKernelCode(TPS2GSKernel.LLETriangleResolve),
-      6, SizeOf(TTrianglePush));
+    FTriangleKernel :=
+      FCompute.CreateKernel(PS2GSKernelCode(TPS2GSKernel.LLETriangleResolve), 6, SizeOf(TTrianglePush));
     FCompute.Bind(FTriangleKernel, [FRAM, FState, FTiles, FLodBuffer, FCoordinates, FResults]);
-    FTriangleShadeKernel := FCompute.CreateKernel(PS2GSKernelCode(TPS2GSKernel.LLETriangleShade),
-      6, SizeOf(TTrianglePush));
+    FTriangleShadeKernel :=
+      FCompute.CreateKernel(PS2GSKernelCode(TPS2GSKernel.LLETriangleShade), 6, SizeOf(TTrianglePush));
     FCompute.Bind(FTriangleShadeKernel, [FRAM, FState, FTiles, FLodBuffer, FCoordinates, FResults]);
   end;
-  {$ENDIF}
+{$ENDIF}
   TakeHalf;
 end;
 
@@ -184,7 +280,11 @@ end;
 // stay pending until Sync.
 procedure TPS2GSGpu.NextHalf;
 begin
+  FSlotEpoch[FCompute.Slot] := FEpoch;
   FCompute.Submit;
+  // (The new slot's last submission is done, and all before it.)
+  FDoneEpoch := Max(FDoneEpoch, FSlotEpoch[FCompute.Slot] + 1);
+  Inc(FEpoch);
   if FRecorded then
     Inc(FSubmissions);
   FRecorded := False;
@@ -196,13 +296,207 @@ begin
   Sync;
   FLodKeys.Free;
   FCompute.Free;
+  for var S := 0 to StageCount - 1 do
+    FStages[S].Free;
+  FMixed.Free;
   inherited;
+end;
+
+function TPS2GSGpu.PageBusy(Stage, Page: Integer): Boolean;
+begin
+  Result := FStageEpoch[Stage, Page] >= FDoneEpoch;
+end;
+
+// The staged copy holding the page's latest content while its copy into GS
+// memory may not be done (-1: GS memory has it).
+function TPS2GSGpu.LatestStaged(Page: Integer): Integer;
+begin
+  Result := FLatestStage[Page];
+  if (Result >= 0) and (FLatestEpoch[Page] < FDoneEpoch) then
+    Result := -1;
+end;
+
+function TPS2GSGpu.WouldStage(const Pages: TPS2GSPages): Boolean;
+begin
+  Result := False;
+  if not FStagesReady or not GpuStageEnabled then
+    Exit;
+  for var K := 0 to 15 do
+  begin
+    if (FDrawWrites[K] and Pages[K]) <> 0 then
+      Exit(False);
+    if ((FReads[K] or FWrites[K]) and Pages[K]) <> 0 then
+      Result := True;
+  end;
+end;
+
+function TPS2GSGpu.StageWrites(const Pages: TPS2GSPages): TPS2GSMemory;
+begin
+  Result := nil;
+  if not FStagesReady or not GpuStageEnabled then
+    Exit;
+  // Pending draws write some of them: those first (AccessPages).
+  var Conflict := False;
+  for var K := 0 to 15 do
+  begin
+    if (FDrawWrites[K] and Pages[K]) <> 0 then
+    begin
+      Exit;
+    end;
+    if ((FReads[K] or FWrites[K]) and Pages[K]) <> 0 then
+      Conflict := True;
+  end;
+  if not Conflict then
+  begin
+    Exit;
+  end;
+  // A copy where none of the pages waits to be copied from (the open one
+  // if it has them free).
+  var Stage := FOpenStage;
+  for var Attempt := -1 to StageCount - 1 do
+  begin
+    if Attempt >= 0 then
+    begin
+      if Attempt = FOpenStage then
+        Continue;
+      Stage := Attempt;
+    end;
+    if Stage < 0 then
+      Continue;
+    var Free := True;
+    for var P := 0 to 511 do
+      if (Pages[P shr 5] and (Cardinal(1) shl (P and 31))) <> 0 then
+        if PageBusy(Stage, P)
+          and not ((Stage = FOpenStage) and ((FOpenPages[P shr 5] and (Cardinal(1) shl (P and 31))) <> 0))
+          and not ((FLatestStage[P] = Stage) and ((FReadsSinceCopy[P shr 5] and (Cardinal(1) shl (P and 31))) = 0)) then
+        begin
+          Free := False;
+          Break;
+        end;
+    if Free then
+      Break;
+    Stage := -1;
+  end;
+  if Stage < 0 then
+  begin
+    Exit;
+  end;
+  if (FOpenStage >= 0) and (Stage <> FOpenStage) then
+    CommitStaged;
+  FOpenStage := Stage;
+  FStaging := True;
+  // The pages as they are now (in GS memory, or the copy that has their
+  // latest content) where the open writes do not have them yet.
+  for var P := 0 to 511 do
+    if ((Pages[P shr 5] and not FOpenPages[P shr 5]) and (Cardinal(1) shl (P and 31))) <> 0 then
+    begin
+      var Source := FRAMData;
+      var Latest := LatestStaged(P);
+      if Latest >= 0 then
+        Source := FStages[Latest].Data;
+      if Source <> FStages[Stage].Data then
+        Move((Source + P * PageBytes)^, (FStages[Stage].Data + P * PageBytes)^, PageBytes);
+      FOpenPages[P shr 5] := FOpenPages[P shr 5] or (Cardinal(1) shl (P and 31));
+      FLatestStage[P] := Stage;
+      FLatestEpoch[P] := High(Int64);
+    end;
+  // (CPU readers of them wait: Sync copies them first.)
+  for var K := 0 to 15 do
+    FWrites[K] := FWrites[K] or Pages[K];
+  FPending := True;
+  Result := FStages[Stage];
+end;
+
+function TPS2GSGpu.StagedRead(First, Last: Integer; out Memory: TPS2GSMemory): Boolean;
+begin
+  Memory := nil;
+  Result := False;
+  if not FStagesReady or not GpuStageEnabled then
+    Exit;
+  var Source := -2;
+  var Count := ((Last - First) and 511) + 1;
+  for var K := 0 to Count - 1 do
+  begin
+    var P := (First + K) and 511;
+    if (FDrawWrites[P shr 5] and (Cardinal(1) shl (P and 31))) <> 0 then
+    begin
+      Exit;
+    end;
+    var Latest := LatestStaged(P);
+    if Source = -2 then
+      Source := Latest
+    else if Latest <> Source then
+      Source := -3;
+  end;
+  if Source = -3 then
+  begin
+    // (Pages of different copies: each as its own copy has it, together.)
+    if Count > 8 then
+    begin
+      Exit;
+    end;
+    for var K := 0 to Count - 1 do
+    begin
+      var P := (First + K) and 511;
+      var From := FRAMData;
+      var Latest := LatestStaged(P);
+      if Latest >= 0 then
+        From := FStages[Latest].Data;
+      Move((From + P * PageBytes)^, (FMixed.Data + P * PageBytes)^, PageBytes);
+    end;
+    Memory := FMixed;
+  end
+  else if Source >= 0 then
+    Memory := FStages[Source];
+  Result := True;
+end;
+
+// The open staged pages go to GS memory after everything queued before.
+procedure TPS2GSGpu.CommitStaged;
+begin
+  if FOpenStage < 0 then
+    Exit;
+  FlushNative;
+  var Stage := FOpenStage;
+  var P := 0;
+  while P < 512 do
+  begin
+    if (FOpenPages[P shr 5] and (Cardinal(1) shl (P and 31))) = 0 then
+    begin
+      Inc(P);
+      Continue;
+    end;
+    var First := P;
+    while (P < 512) and ((FOpenPages[P shr 5] and (Cardinal(1) shl (P and 31))) <> 0) do
+    begin
+      FStageEpoch[Stage, P] := FEpoch;
+      FLatestEpoch[P] := FEpoch;
+      Inc(P);
+    end;
+    FCompute.Copy(
+      FStageBuffers[Stage],
+      FRAM,
+      UInt64(First) * PageBytes,
+      UInt64(First) * PageBytes,
+      UInt64(P - First) * PageBytes
+    );
+  end;
+  for var K := 0 to 15 do
+    FReadsSinceCopy[K] := FReadsSinceCopy[K] and not FOpenPages[K];
+  FRecorded := True;
+  FillChar(FOpenPages, SizeOf(FOpenPages), 0);
+  FOpenStage := -1;
+  FStaging := False;
+  Inc(FRevision);
 end;
 
 procedure TPS2GSGpu.Sync;
 begin
+  CommitStaged;
   if not FPending then
+  begin
     Exit;
+  end;
   FlushNative;
   FCompute.Finish;
   FPending := False;
@@ -210,6 +504,11 @@ begin
   FRecorded := False;
   FillChar(FReads, SizeOf(FReads), 0);
   FillChar(FWrites, SizeOf(FWrites), 0);
+  FillChar(FDrawWrites, SizeOf(FDrawWrites), 0);
+  FillChar(FReadsSinceCopy, SizeOf(FReadsSinceCopy), 0);
+  Inc(FEpoch);
+  FDoneEpoch := FEpoch;
+  Inc(FRevision);
   Inc(FSubmissions);
 end;
 
@@ -305,12 +604,21 @@ begin
   Result := D.TME and (D.TPSM in [PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH]);
 end;
 
-procedure TPS2GSGpu.BuildAccess(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; Levels: Cardinal;
-  out Reads, Writes, Textures: TPages);
+procedure TPS2GSGpu.BuildAccess(
+  const D: TPS2GSDraw;
+  X0, Y0, X1, Y1: Integer;
+  Levels: Cardinal;
+  out Reads, Writes, Textures: TPages
+);
 begin
-  FillChar(Reads, SizeOf(Reads), 0);
-  FillChar(Writes, SizeOf(Writes), 0);
-  FillChar(Textures, SizeOf(Textures), 0);
+  // (Stored here: FillChar's string store costs more for 64 bytes, once
+  // for each primitive.)
+  for var K := 0 to 15 do
+  begin
+    Reads[K] := 0;
+    Writes[K] := 0;
+    Textures[K] := 0;
+  end;
   // The pages of the draw's rectangle and of its textures' extents, as the
   // software path tracks them (not every page up to the last).
   AddRectPages(Writes, D.FBP, D.FBW, D.FPSM, X0, Y0, X1 - 1, Y1 - 1);
@@ -327,8 +635,13 @@ begin
   begin
     if (Levels and (Cardinal(1) shl L)) = 0 then
       Continue;
-    var BP := D.TBP; var BW := D.TBW;
-    if L > 0 then begin BP := D.LevelTBP[L]; BW := D.LevelTBW[L]; end;
+    var BP := D.TBP;
+    var BW := D.TBW;
+    if L > 0 then
+    begin
+      BP := D.LevelTBP[L];
+      BW := D.LevelTBW[L];
+    end;
     var W := Max(1, (1 shl D.TW) shr L);
     var H := Max(1, (1 shl D.TH) shr L);
     if D.WMS = 2 then
@@ -354,6 +667,8 @@ begin
   begin
     FReads[K] := FReads[K] or Reads[K];
     FWrites[K] := FWrites[K] or Writes[K];
+    FDrawWrites[K] := FDrawWrites[K] or Writes[K];
+    FReadsSinceCopy[K] := FReadsSinceCopy[K] or Reads[K];
   end;
   Inc(FRevision);
 end;
@@ -366,12 +681,16 @@ begin
   if FNativeCount > 0 then
   begin
     var DrawTiles := ((X1 + 7) shr 3 - X0 shr 3) * ((Y1 + 7) shr 3 - Y0 shr 3);
-    var Conflict := (FNativeCount = ClusterSize) or (FNativeEntries + DrawTiles > ClusterEntries) or
-      (D.FBP <> FNativeLayout.FBP) or (D.FBW <> FNativeLayout.FBW) or (D.FPSM <> FNativeLayout.FPSM) or
-      (D.ZBP <> FNativeLayout.ZBP) or (D.ZPSM <> FNativeLayout.ZPSM);
+    var Conflict :=
+      (FNativeCount = ClusterSize)
+        or (FNativeEntries + DrawTiles > ClusterEntries)
+        or (D.FBP <> FNativeLayout.FBP)
+        or (D.FBW <> FNativeLayout.FBW)
+        or (D.FPSM <> FNativeLayout.FPSM)
+        or (D.ZBP <> FNativeLayout.ZBP)
+        or (D.ZPSM <> FNativeLayout.ZPSM);
     for var K := 0 to 15 do
-      Conflict := Conflict or ((Textures[K] and FNativeWrites[K]) <> 0) or
-        ((Writes[K] and FNativeTextures[K]) <> 0);
+      Conflict := Conflict or ((Textures[K] and FNativeWrites[K]) <> 0) or ((Writes[K] and FNativeTextures[K]) <> 0);
     if not Conflict and (FNativeUsesZ or not D.ZMSK or (D.ZTST <> 1)) then
     begin
       // A draw not using depth may extend colour over another draw's
@@ -381,7 +700,7 @@ begin
       var F0 := D.FBP div 32;
       var F1 := (D.FBP + 31) div 32 + Cardinal((MY - 1) div FrameRows(D.FPSM)) * D.FBW + Cardinal((MX - 1) div 64);
       var Z0 := D.ZBP div 32;
-      var Z1 := (D.ZBP + 31) div 32 + Cardinal((MY - 1) div 32) * D.FBW + Cardinal((MX - 1) div 64);
+      var Z1 := (D.ZBP + 31) div 32 + Cardinal((MY - 1) div FrameRows(D.ZPSM)) * D.FBW + Cardinal((MX - 1) div 64);
       Conflict := (F1 >= 512) or (Z1 >= 512) or ((F1 >= Z0) and (Z1 >= F0));
     end;
     if Conflict then
@@ -397,8 +716,10 @@ begin
     FNativeStart := FUsed;
     FNativeLayout := D;
     FNativeUsesZ := False;
-    FNativeBounds[0] := X0; FNativeBounds[1] := Y0;
-    FNativeBounds[2] := X1; FNativeBounds[3] := Y1;
+    FNativeBounds[0] := X0;
+    FNativeBounds[1] := Y0;
+    FNativeBounds[2] := X1;
+    FNativeBounds[3] := Y1;
     FillChar(FNativeReads, SizeOf(FNativeReads), 0);
     FillChar(FNativeWrites, SizeOf(FNativeWrites), 0);
     FillChar(FNativeTextures, SizeOf(FNativeTextures), 0);
@@ -408,13 +729,20 @@ end;
 // The draw in state slot FUsed joins the cluster.
 procedure TPS2GSGpu.AddToCluster(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; const Reads, Writes, Textures: TPages);
 begin
-  FNativeRectangles[FNativeCount, 0] := X0; FNativeRectangles[FNativeCount, 1] := Y0;
-  FNativeRectangles[FNativeCount, 2] := X1; FNativeRectangles[FNativeCount, 3] := Y1;
-  FNativeBounds[0] := Min(FNativeBounds[0], X0); FNativeBounds[1] := Min(FNativeBounds[1], Y0);
-  FNativeBounds[2] := Max(FNativeBounds[2], X1); FNativeBounds[3] := Max(FNativeBounds[3], Y1);
+  FNativeRectangles[FNativeCount, 0] := X0;
+  FNativeRectangles[FNativeCount, 1] := Y0;
+  FNativeRectangles[FNativeCount, 2] := X1;
+  FNativeRectangles[FNativeCount, 3] := Y1;
+  FNativeBounds[0] := Min(FNativeBounds[0], X0);
+  FNativeBounds[1] := Min(FNativeBounds[1], Y0);
+  FNativeBounds[2] := Max(FNativeBounds[2], X1);
+  FNativeBounds[3] := Max(FNativeBounds[3], Y1);
   for var K := 0 to 15 do
   begin
-    FReads[K] := FReads[K] or Reads[K]; FWrites[K] := FWrites[K] or Writes[K];
+    FReads[K] := FReads[K] or Reads[K];
+    FWrites[K] := FWrites[K] or Writes[K];
+    FDrawWrites[K] := FDrawWrites[K] or Writes[K];
+    FReadsSinceCopy[K] := FReadsSinceCopy[K] or Reads[K];
     FNativeReads[K] := FNativeReads[K] or Reads[K];
     FNativeWrites[K] := FNativeWrites[K] or Writes[K];
     FNativeTextures[K] := FNativeTextures[K] or Textures[K];
@@ -520,13 +848,22 @@ begin
   FNativeEntries := 0;
 end;
 
-function TPS2GSGpu.Supports(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; Levels: Cardinal;
-  SmallAllowed: Boolean): Boolean;
+function TPS2GSGpu.Supports(
+  const D: TPS2GSDraw;
+  X0, Y0, X1, Y1: Integer;
+  Levels: Cardinal;
+  SmallAllowed: Boolean
+): Boolean;
 begin
   Result := False;
-  if not (D.FPSM in [PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMZ16, PSMZ16S]) or
-    (X0 < 0) or (Y0 < 0) or
-    (X1 <= X0) or (Y1 <= Y0) or (X1 > 2048) or (Y1 > 2048) then Exit;
+  if not (D.FPSM in [PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMZ16, PSMZ16S])
+    or (X0 < 0)
+    or (Y0 < 0)
+    or (X1 <= X0)
+    or (Y1 <= Y0)
+    or (X1 > 2048)
+    or (Y1 > 2048) then
+    Exit;
   // One invocation must own each pixel (a 16-bit one, half of a word):
   // reject zero stride, row aliases, VRAM wrapping and colour/depth
   // overlap. Bounds are deliberately broad.
@@ -535,13 +872,14 @@ begin
   var F0 := D.FBP div 32;
   var F1 := (D.FBP + 31) div 32 + Cardinal((Y1 - 1) div FrameRows(D.FPSM)) * D.FBW + Cardinal((X1 - 1) div 64);
   var Z0 := D.ZBP div 32;
-  var Z1 := (D.ZBP + 31) div 32 + Cardinal((Y1 - 1) div 32) * D.FBW + Cardinal((X1 - 1) div 64);
+  var Z1 := (D.ZBP + 31) div 32 + Cardinal((Y1 - 1) div FrameRows(D.ZPSM)) * D.FBW + Cardinal((X1 - 1) div 64);
   if F1 >= 512 then
     Exit;
   if not D.ZMSK or (D.ZTST <> 1) then
   begin
-    // Unused depth state does not constrain a colour-only draw.
-    if not (D.ZPSM in [PSMZ32, PSMZ24]) then
+    // Unused depth state does not constrain a colour-only draw. (A 16-bit
+    // depth pixel is half of a word: written with atomics on its bits.)
+    if not (D.ZPSM in [PSMZ32, PSMZ24, PSMZ16, PSMZ16S]) then
       Exit;
     if (Z1 >= 512) or ((F1 >= Z0) and (Z1 >= F0)) then
       Exit;
@@ -549,9 +887,26 @@ begin
   var Overlap := False;
   if D.TME then
   begin
-    if (D.TW > 10) or (D.TH > 10) or (D.MXL < 0) or (D.MXL > 6) or
-      not (D.TPSM in [PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMZ32, PSMZ24, PSMZ16, PSMZ16S,
-        PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH]) then Exit;
+    if (D.TW > 10)
+      or (D.TH > 10)
+      or (D.MXL < 0)
+      or (D.MXL > 6)
+      or not (D.TPSM
+        in [
+          PSMCT32,
+          PSMCT24,
+          PSMCT16,
+          PSMCT16S,
+          PSMZ32,
+          PSMZ24,
+          PSMZ16,
+          PSMZ16S,
+          PSMT8,
+          PSMT4,
+          PSMT8H,
+          PSMT4HL,
+          PSMT4HH]) then
+      Exit;
     if (D.TPSM in [PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH]) and (FHostClut = nil) then
       Exit;
     var Last := 0;
@@ -561,8 +916,13 @@ begin
     begin
       if (Levels and (Cardinal(1) shl L)) = 0 then
         Continue;
-      var BP := D.TBP; var BW := D.TBW;
-      if L > 0 then begin BP := D.LevelTBP[L]; BW := D.LevelTBW[L]; end;
+      var BP := D.TBP;
+      var BW := D.TBW;
+      if L > 0 then
+      begin
+        BP := D.LevelTBP[L];
+        BW := D.LevelTBW[L];
+      end;
       var W := Max(1, (1 shl D.TW) shr L);
       var H := Max(1, (1 shl D.TH) shr L);
       if D.WMS = 2 then
@@ -573,12 +933,15 @@ begin
         W := (D.MINU or D.MAXU) + 1;
       if D.WMT = 3 then
         H := (D.MINV or D.MAXV) + 1;
-      var PW := 64; var PH := 32;
+      var PW := 64;
+      var PH := 32;
       if D.TPSM in [PSMCT16, PSMCT16S, PSMZ16, PSMZ16S] then
         PH := 64;
       if D.TPSM in [PSMT8, PSMT4] then
       begin
-        PW := 128; PH := 64; BW := (BW + 1) shr 1;
+        PW := 128;
+        PH := 64;
+        BW := (BW + 1) shr 1;
         if D.TPSM = PSMT4 then
           PH := 128;
       end;
@@ -826,10 +1189,10 @@ begin
   end;
 end;
 
-function TPS2GSGpu.Triangle(const D: TPS2GSDraw; const V0, V1, V2: TPS2GSVertex;
-  X0, Y0, X1, Y1: Integer): Boolean;
+function TPS2GSGpu.Triangle(const D: TPS2GSDraw; const V0, V1, V2: TPS2GSVertex; X0, Y0, X1, Y1: Integer): Boolean;
 var
-  Vertices: array[0..2] of TPS2GSVertex;
+  // (The vertices in place: no copies of them.)
+  Vertices: array[0..2] of^TPS2GSVertex;
   Reads, Writes, Textures: TPages;
 
   function FiniteNormalOrZero(const Value: Single): Boolean;
@@ -843,7 +1206,7 @@ begin
   Result := False;
   if FTriangleKernel = nil then
     Exit;
-  var Rounding := GetRoundMode;
+  var Rounding := HostRounding;
   if not (Rounding in [rmNearest, rmTruncate]) then
     Exit;
   // A per-pixel LOD takes the host's choice from a table of Q (see
@@ -867,20 +1230,22 @@ begin
   end;
   if not Supports(D, X0, Y0, X1, Y1, Levels, True) then
     Exit;
-  Vertices[0] := V0; Vertices[1] := V1; Vertices[2] := V2;
+  Vertices[0] := @V0;
+  Vertices[1] := @V1;
+  Vertices[2] := @V2;
   for var K := 0 to 2 do
   begin
     var V := Vertices[K];
     if (V.X < -65535) or (V.X > 65535) or (V.Y < -65535) or (V.Y > 65535) then
       Exit;
-    // (Q of one sign: the host's S/Q and T/Q arithmetic is the same either
-    // way; per-pixel LOD, from |Q|, took positive ones only above.)
+    // (Q of either sign, mixed too: the kernel takes S/Q and T/Q as the
+    // host does, its estimates bounded by magnitudes, Q near zero exactly;
+    // per-pixel LOD, from |Q|, took positive ones only above.)
     if D.TME and not D.FST then
-      if not FiniteNormalOrZero(V.S) or not FiniteNormalOrZero(V.T) or
-        not FiniteNormalOrZero(V.Q) or (V.Q = 0) or ((V.Q > 0) <> (V0.Q > 0)) then Exit;
+      if not FiniteNormalOrZero(V.S) or not FiniteNormalOrZero(V.T) or not FiniteNormalOrZero(V.Q) or (V.Q = 0) then
+        Exit;
   end;
-  var Area := (Int64(V1.X) - V0.X) * (Int64(V2.Y) - V0.Y) -
-    (Int64(V2.X) - V0.X) * (Int64(V1.Y) - V0.Y);
+  var Area := (Int64(V1.X) - V0.X) * (Int64(V2.Y) - V0.Y) - (Int64(V2.X) - V0.X) * (Int64(V1.Y) - V0.Y);
   if Area = 0 then
     Exit;
   var InvArea: Double := 1.0 / Area;
@@ -904,16 +1269,27 @@ begin
   if Area < 0 then
     P[58] := $FFFFFFFF;
   P[59] := Ord((D.ZTST >= 2) or not D.ZMSK);
-  P[60] := Cardinal(X0); P[61] := Cardinal(Y0); P[62] := Cardinal(X1); P[63] := Cardinal(Y1);
+  P[60] := Cardinal(X0);
+  P[61] := Cardinal(Y0);
+  P[62] := Cardinal(X1);
+  P[63] := Cardinal(Y1);
   for var K := 0 to 2 do
   begin
     var V := Vertices[K];
     var W := P + 80 + K * 16;
-    W[0] := Cardinal(V.X); W[1] := Cardinal(V.Y); W[2] := V.Z;
-    W[3] := Cardinal(V.R); W[4] := Cardinal(V.G); W[5] := Cardinal(V.B);
-    W[6] := Cardinal(V.A); W[7] := Cardinal(V.F);
-    W[8] := Cardinal(V.U); W[9] := Cardinal(V.V);
-    W[10] := PCardinal(@V.S)^; W[11] := PCardinal(@V.T)^; W[12] := PCardinal(@V.Q)^;
+    W[0] := Cardinal(V.X);
+    W[1] := Cardinal(V.Y);
+    W[2] := V.Z;
+    W[3] := Cardinal(V.R);
+    W[4] := Cardinal(V.G);
+    W[5] := Cardinal(V.B);
+    W[6] := Cardinal(V.A);
+    W[7] := Cardinal(V.F);
+    W[8] := Cardinal(V.U);
+    W[9] := Cardinal(V.V);
+    W[10] := PCardinal(@V.S)^;
+    W[11] := PCardinal(@V.T)^;
+    W[12] := PCardinal(@V.Q)^;
   end;
   AddToCluster(D, X0, Y0, X1, Y1, Reads, Writes, Textures);
   Inc(FTriangles);

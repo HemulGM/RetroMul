@@ -108,15 +108,26 @@ end;
 procedure CheckDMA(C: TPS2Console);
 const
   Destination = $1FF0;
+
+  procedure ResumeVIF1;
+  begin
+    C.VU1Domain.Enter;
+    try
+      C.DMAC.Resume(DMAVIF1);
+    finally
+      C.VU1Domain.Leave;
+    end;
+  end;
+
 begin
   C.DMAC.Reset;
   var Expected := Prepare(C, PSMCT32, $100, 1, 0, 0, 8, 1);
   FillChar((C.Bus.RAM + Destination - 16)^, 96, $A5);
   var Generation := C.Bus.RAMGenerations[Destination shr 12];
-  C.DMAC.Write($E000, 1);
-  C.DMAC.Write($9010, Destination);
-  C.DMAC.Write($9020, 4);
-  C.DMAC.Write($9000, CHCRSTR);
+  C.Bus.Write($1000E000, 1, 4);
+  C.Bus.Write($10009010, Destination, 4);
+  C.Bus.Write($10009020, 4, 4);
+  C.Bus.Write($10009000, CHCRSTR, 4);
   Check(C.DMAC.Ch[DMAVIF1].MADR = Destination + 32, 'Partial DMA MADR mismatch');
   Check(C.DMAC.Ch[DMAVIF1].QWC = 2, 'Partial DMA QWC mismatch');
   Check(not C.DMAC.Ch[DMAVIF1].Finishing, 'Partial DMA completed early');
@@ -125,11 +136,11 @@ begin
   Check(C.Bus.RAM[Destination + 32] = $A5, 'DMA zero-filled missing data');
   Check(C.Bus.RAMGenerations[Destination shr 12] <> Generation, 'DMA did not mark RAM written');
   var EmptyGeneration := C.Bus.RAMGenerations[(Destination + 32) shr 12];
-  C.DMAC.Resume(DMAVIF1);
+  ResumeVIF1;
   Check(C.DMAC.Ch[DMAVIF1].QWC = 2, 'An empty retry consumed data');
   Check(C.Bus.RAMGenerations[(Destination + 32) shr 12] = EmptyGeneration, 'An empty DMA invalidated RAM');
   var Tail := Prepare(C, PSMCT32, $180, 1, 0, 0, 8, 1);
-  C.DMAC.Resume(DMAVIF1);
+  ResumeVIF1;
   Check(C.DMAC.Ch[DMAVIF1].MADR = Destination + 64, 'Completed DMA MADR mismatch');
   Check(C.DMAC.Ch[DMAVIF1].QWC = 0, 'Completed DMA QWC mismatch');
   Check(CompareMem(C.Bus.RAM + Destination + 32, @Tail[0], 32), 'Resumed DMA payload mismatch');
@@ -138,19 +149,17 @@ begin
   Check(C.DMAC.Ch[DMAVIF1].Finishing, 'Reverse DMA did not wait for bus time');
   var DoneAt := C.DMAC.Ch[DMAVIF1].DoneAt;
   C.Scheduler.Now := DoneAt - 1;
-  C.DMAC.Event;
-  Check((C.DMAC.Ch[DMAVIF1].CHCR and CHCRSTR) <> 0, 'Reverse DMA ended before bus time');
+  Check((C.Bus.Read($10009000, 4) and CHCRSTR) <> 0, 'Reverse DMA ended before bus time');
   C.Scheduler.Now := DoneAt;
-  C.DMAC.Event;
-  Check((C.DMAC.Ch[DMAVIF1].CHCR and CHCRSTR) = 0, 'Reverse DMA did not clear STR');
+  Check((C.Bus.Read($10009000, 4) and CHCRSTR) = 0, 'Reverse DMA did not clear STR');
   Check((C.DMAC.STAT and (1 shl DMAVIF1)) <> 0, 'Reverse DMA did not signal completion');
   C.DMAC.Reset;
   var FirstGeneration := C.Bus.RAMGenerations[0];
   var LastGeneration := C.Bus.RAMGenerations[8191];
-  C.DMAC.Write($E000, 1);
-  C.DMAC.Write($9010, 0);
-  C.DMAC.Write($9020, 1);
-  C.DMAC.Write($9000, CHCRSTR);
+  C.Bus.Write($1000E000, 1, 4);
+  C.Bus.Write($10009010, 0, 4);
+  C.Bus.Write($10009020, 1, 4);
+  C.Bus.Write($10009000, CHCRSTR, 4);
   Check((C.DMAC.Ch[DMAVIF1].QWC = 1) and (C.DMAC.Ch[DMAVIF1].MADR = 0), 'An empty DMA moved RAM');
   Check((C.Bus.RAMGenerations[0] = FirstGeneration) and (C.Bus.RAMGenerations[8191] = LastGeneration),
     'An empty DMA at address zero invalidated RAM');

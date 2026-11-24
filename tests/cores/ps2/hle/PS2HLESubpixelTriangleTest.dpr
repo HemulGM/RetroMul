@@ -76,8 +76,9 @@ begin
     for var Y := 0 to 16 * Scale - 1 do
       for var X := 0 to 16 * Scale - 1 do
       begin
-        var PX := 8 * (2 * X + 1 - Scale);
-        var PY := 8 * (2 * Y + 1 - Scale);
+        // The device sample at Scale div 2 maps to the native GS centre.
+        var PX := 16 * (X - Scale div 2);
+        var PY := 16 * (Y - Scale div 2);
         var Expected: Cardinal := $FF000000;
         if (PX >= X0 * Scale) and (PX < X1 * Scale) and
           (PY >= Y0 * Scale) and (PY < Y1 * Scale) then

@@ -68,6 +68,16 @@ begin
   Result := T;
 end;
 
+function LatticeTexel(P: Integer2; Level, Step, Phase: Integer; Sidecar: Boolean): Integer4;
+begin
+  if Sidecar then
+  begin
+    var Dim := TextureSize(NativeTexture, Level);
+    Exit(Integer4(RoundFloat(TexelFetch(NativeTexture, Clamp(P, Integer2(0), Dim - 1), Level) * 255.0)));
+  end;
+  Result := Texel(P * Step + Integer2(Phase), Level);
+end;
+
 function SampleTexLevel(Level: Integer; UV: Integer2; Linear: Boolean): Integer4;
 begin
   var W := Max(1, ArithmeticShiftRight(1 shl Integer((PC.Tex shr 24) and 15), Level));
@@ -88,11 +98,44 @@ begin
     MinV := ArithmeticShiftRight(MinV, Level);
     MaxV := ArithmeticShiftRight(MaxV, Level);
   end;
-  UV := ArithmeticShiftRight(UV, Level);
   var Scale := TextureScale;
+  var Step := 1;
+  var Phase := 0;
+  var Pixel := Integer2(FragmentPosition.XY);
+  var Sidecar := ((PC.Flags and 256) <> 0) and ((Pixel.X and 1) = 1) and ((Pixel.Y and 1) = 1);
+  if Sidecar then
+  begin
+    Scale := 1;
+    UV := UV div 2;
+  end;
+  if ((PC.Flags and 128) <> 0) and ((Pixel.X and 1) = 1) and ((Pixel.Y and 1) = 1) then
+  begin
+    // GS memory stores the lower-right sample of a 2x cell. A later GS
+    // lookup at the destination's stored sample must use that same lattice.
+    Step := 2;
+    Phase := 1;
+    Scale := 1;
+    UV := UV div 2;
+  end;
+  // Truncate to native GS fixed point before the signed mip-level shift.
+  UV := ArithmeticShiftRight(UV, Level);
   if not Linear then
-    Exit(Texel(Integer2(WrapScaled(ArithmeticShiftRight(UV.X, 4), W, WMS, MinU, MaxU, Scale),
-      WrapScaled(ArithmeticShiftRight(UV.Y, 4), H, WMT, MinV, MaxV, Scale)), Level));
+    Exit(
+      LatticeTexel(
+        Integer2(
+          WrapScaled(ArithmeticShiftRight(UV.X, 4), W, WMS, MinU, MaxU, Scale),
+          WrapScaled(ArithmeticShiftRight(UV.Y, 4), H, WMT, MinV, MaxV, Scale)
+        ),
+        Level,
+        Step,
+        Phase,
+        Sidecar
+      )
+    );
+  // An even-resolution rendered texel is centred half a device texel
+  // farther along each axis. Linear reads use that same physical lattice.
+  if ((PC.Flags and 64) <> 0) and (Step = 1) then
+    UV := UV + Integer2(8, 8);
   var U0 := ArithmeticShiftRight(UV.X - 8, 4);
   var V0 := ArithmeticShiftRight(UV.Y - 8, 4);
   var FU := (UV.X - 8) and 15;
@@ -101,8 +144,12 @@ begin
   var CU1 := WrapScaled(U0 + 1, W, WMS, MinU, MaxU, Scale);
   var CV0 := WrapScaled(V0, H, WMT, MinV, MaxV, Scale);
   var CV1 := WrapScaled(V0 + 1, H, WMT, MinV, MaxV, Scale);
-  var Top := Texel(Integer2(CU0, CV0), Level) * (16 - FU) + Texel(Integer2(CU1, CV0), Level) * FU;
-  var Bottom := Texel(Integer2(CU0, CV1), Level) * (16 - FU) + Texel(Integer2(CU1, CV1), Level) * FU;
+  var Top :=
+    LatticeTexel(Integer2(CU0, CV0), Level, Step, Phase, Sidecar) * (16 - FU)
+      + LatticeTexel(Integer2(CU1, CV0), Level, Step, Phase, Sidecar) * FU;
+  var Bottom :=
+    LatticeTexel(Integer2(CU0, CV1), Level, Step, Phase, Sidecar) * (16 - FU)
+      + LatticeTexel(Integer2(CU1, CV1), Level, Step, Phase, Sidecar) * FU;
   Result := ArithmeticShiftRight(Top * (16 - FV) + Bottom * FV, 8);
 end;
 

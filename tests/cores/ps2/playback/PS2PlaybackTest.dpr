@@ -3,7 +3,7 @@
 {$APPTYPE CONSOLE}
 
 uses
-  System.SysUtils, System.Math, PCM.Audio.Backend, Core.Platforms.PS2.Playback;
+  System.SysUtils, System.Math, PCM.Audio.Backend, Core.Platforms.PS2.Playback, PS2.AudioWait, PS2.HostTempo;
 
 type
   TFakeDevice = class(TInterfacedObject, IPCMAudioBackend, IPCMAudioPlaybackControl)
@@ -175,12 +175,53 @@ begin
   end;
 end;
 
+procedure CheckStereoReserve;
+const
+  Frames = 2048;
+var
+  Source, Output: TArray<SmallInt>;
+begin
+  SetLength(Source, Frames * 2);
+  for var I := 0 to Frames - 1 do
+  begin
+    Source[2 * I] := 100 + (I mod 97) * 10;
+    Source[2 * I + 1] := -Source[2 * I];
+  end;
+  var Extra := 777;
+  Output := StretchReserve(Source, Frames, Extra);
+  Check(Length(Output) = 2 * (Frames + Extra), 'Incorrect stereo reserve length');
+  Check(CompareMem(@Output[0], @Source[0], 256 * 4), 'Reserve changed the first hop');
+  Check(CompareMem(@Output[Length(Output) - 64], @Source[Length(Source) - 64], 64 * SizeOf(SmallInt)),
+    'Reserve did not rejoin the source tail');
+  for var I := 0 to Length(Output) div 2 - 1 do
+    Check((Output[I * 2] >= 100) and (Output[I * 2 + 1] = -Output[I * 2]), 'Stereo reserve lost channel phase');
+
+  var Tempo := TPS2HostTempo.Create;
+  try
+    Tempo.Clear;
+    for var I := 1 to 12 do
+      Check(not Tempo.Expand(Source, Frames, 6400, Output), 'Full-speed playback was stretched');
+    for var I := 1 to 12 do
+      Tempo.Expand(Source, Frames * 2, 2000, Output);
+    Check(Tempo.Stretching, 'A sustained host slowdown did not enable the reserve');
+    Check(Length(Output) > Length(Source), 'Slow playback did not produce extra device samples');
+    for var I := 0 to Length(Output) div 2 - 1 do
+      Check(Output[I * 2 + 1] = -Output[I * 2], 'Tempo correction split a stereo pair');
+    for var I := 1 to 32 do
+      Tempo.Expand(Source, Frames, 10000, Output);
+    Check(not Tempo.Stretching, 'Recovered playback did not return to native PCM');
+  finally
+    Tempo.Free;
+  end;
+end;
+
 begin
   try
     CheckClock(True, False);
     CheckClock(True, True);
     CheckClock(False, False);
     CheckClockRecovery;
+    CheckStereoReserve;
     Writeln('PS2 playback: per-sample pacing, pending frames, position wrap, Clear, underrun and block fallback OK');
   except
     on E: Exception do

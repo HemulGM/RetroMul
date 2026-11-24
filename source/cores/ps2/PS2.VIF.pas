@@ -9,13 +9,29 @@
 // cycles they took, and FLUSHE/FLUSH/FLUSHA/MSCAL/MSCALF/MSCNT/MPG wait for
 // that window to pass (the DMA channel waits with them).
 // References: EE User's Manual (VIF chapter), ps2tek.
-{$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
+{$IFDEF PS2_CHECKED}
+  {$Q+}
+  {$R+}
+{$ELSE}
+  {$O+}
+  {$Q-}
+  {$R-}
+{$ENDIF}
 {$POINTERMATH ON}
 
 interface
 
 uses
-  System.SysUtils, System.Math, Core.Snapshots, PS2.Types, PS2.Scheduler, PS2.EE.Bus, PS2.DMAC, PS2.VU, PS2.GIF;
+  System.SysUtils,
+  System.Math,
+  Core.Snapshots,
+  PS2.Types,
+  PS2.Scheduler,
+  PS2.EE.Bus,
+  PS2.DMAC,
+  PS2.VU,
+  PS2.GIF,
+  PS2.VU1Domain;
 
 type
   TPS2VIFState = record
@@ -44,6 +60,24 @@ type
     HeldCount: Integer;
   end;
 
+  // What the VIF registers read from (a copy answers reads later).
+  TPS2VIFRegisters = record
+    STAT, ERR, MARK, CYCLE, MODE, NUM, MASK, CODE, ITOPS, BASE, OFST, TOPS, ITOP, TOP: Cardinal;
+    Row, Col: array[0..3] of Cardinal;
+    Remaining, HeldCount: Integer;
+    DBF, Path3Masked: Boolean;
+  end;
+
+  // VIF1's part of the VU1 domain, kept to go back to (with the counts
+  // measurements read).
+  TPS2VIFSaved = record
+    S: TPS2VIFState;
+    DirectBuf: TPS2Reg128;
+    DirectWords: Integer;
+    DirectSent: Boolean;
+    Words, Starts, Unfinished: Int64;
+  end;
+
   TPS2VIF = class(TPS2Device)
   private
     FIndex: Integer;
@@ -58,6 +92,7 @@ type
     FDirectWords: Integer;
     // DIRECT data went to the GIF (not yet taken).
     FDirectSent: Boolean;
+    FDomain: TPS2VU1Domain;
     procedure StartCommand(W: Cardinal);
     // Diagnostics lines, apart: no string temporaries in the hot routines.
     procedure LogStartVU(Address: Cardinal);
@@ -65,10 +100,17 @@ type
     procedure NoteUnfinished(Address: Cardinal);
     procedure LogPath3Mask;
     procedure LogUnpack(Cmd: Cardinal; Num, Addr: Integer; Imm: Cardinal);
+    function UploadMicroQuads(Data: PCardinal; Available: Integer): Integer;
     procedure UnpackWord(W: Cardinal);
     function UnpackRun(Data: PCardinal; Count: Integer): Integer;
     function UnpackContiguous(Data: PCardinal; Count, WordsPerVector: Integer): Integer;
     function UnpackGroups(Data: PCardinal; Count: Integer): Integer;
+    function UnpackPlain(
+      Data: PCardinal;
+      Count, VN, VL, PerVector: Integer;
+      Unsigned: Boolean;
+      CL, WL: Integer
+    ): Integer;
     procedure WriteVector(const V: TPS2Reg128);
     procedure WriteMasked(const V: TPS2Reg128; P: PPS2Reg128);
     procedure FinishCommand;
@@ -111,6 +153,17 @@ type
     // Whether DIRECT data went to the GIF since the last call.
     function TakeDirectSent: Boolean;
     function Read(Address: Cardinal; Size: Integer): UInt64; override;
+    procedure GetRegisters(out R: TPS2VIFRegisters);
+    procedure SaveDomain(out C: TPS2VIFSaved);
+    procedure RestoreDomain(const C: TPS2VIFSaved);
+    // The register at Offset of VIF Index (VUBusy: its VU's busy window has
+    // not passed).
+    class function RegisterValue(
+      const R: TPS2VIFRegisters;
+      Index: Integer;
+      Offset: Cardinal;
+      VUBusy: Boolean
+    ): Cardinal; static;
     procedure Write(Address: Cardinal; Value: UInt64; Size: Integer); override;
     procedure WriteFIFO(Address: Cardinal; const Value: TPS2Reg128); override;
     procedure SerializeState(State: TStateArchive);
@@ -120,6 +173,8 @@ type
     // EE time for the VU busy window; the VIF0/VIF1 event wakes a command
     // that waits for it.
     property Scheduler: TPS2Scheduler read FScheduler write FScheduler;
+    // VIF1: the VU1 domain it belongs to (its time; nil: the scheduler's).
+    property Domain: TPS2VU1Domain read FDomain write FDomain;
     // Scheduler event: the VU program a command waited for has ended.
     procedure Wake;
   end;
@@ -138,10 +193,179 @@ type
     function Push(Channel: Integer; Data: PByte; Count: Integer): Integer; override;
     function Pull(Channel: Integer; Data: PByte; Count: Integer): Integer; override;
     procedure Tag(Channel: Integer; const Tag: TPS2Reg128); override;
+    function TagRoom(Channel: Integer): Boolean; override;
+    function BusyFromGS: Boolean; override;
     function TakeBusyCycles: Int64; override;
   end;
 
 implementation
+
+{$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+uses
+  PS2.VU.Float;
+
+// V4-8 unsigned plus ROW. No padding is read past the last source word.
+// One source word expands to one 16-byte destination vector.
+procedure ExpandBytesRow(Source: PCardinal; Target: PByte; Row: PCardinal; Count: Integer);
+asm
+  .NOFRAME
+  vbroadcasti128 ymm4, [r8]
+  cmp r9d, 8
+  jb @@Pairs
+@@Eight:
+  vpmovzxbd ymm0, qword ptr [rcx]
+  vpmovzxbd ymm1, qword ptr [rcx + 8]
+  vpmovzxbd ymm2, qword ptr [rcx + 16]
+  vpmovzxbd ymm3, qword ptr [rcx + 24]
+  vpaddd ymm0, ymm0, ymm4
+  vpaddd ymm1, ymm1, ymm4
+  vpaddd ymm2, ymm2, ymm4
+  vpaddd ymm3, ymm3, ymm4
+  vmovdqu [rdx], ymm0
+  vmovdqu [rdx + 32], ymm1
+  vmovdqu [rdx + 64], ymm2
+  vmovdqu [rdx + 96], ymm3
+  add rcx, 32
+  add rdx, 128
+  sub r9d, 8
+  cmp r9d, 8
+  jae @@Eight
+@@Pairs:
+  cmp r9d, 2
+  jb @@Tail
+  vpmovzxbd ymm0, qword ptr [rcx]
+  vpaddd ymm0, ymm0, ymm4
+  vmovdqu [rdx], ymm0
+  add rcx, 8
+  add rdx, 32
+  sub r9d, 2
+  jmp @@Pairs
+@@Tail:
+  test r9d, r9d
+  jz @@Done
+  vpmovzxbd xmm0, dword ptr [rcx]
+  vpaddd xmm0, xmm0, xmm4
+  vmovdqu [rdx], xmm0
+@@Done:
+  vzeroupper
+end;
+
+type
+  TExpandStride = procedure(Source: PCardinal; Target: PByte; Row: PCardinal; Count, StrideBytes: Integer);
+
+const
+  ZeroRow: array[0..3] of Cardinal = (0, 0, 0, 0);
+
+procedure ExpandByteUStride(Source: PCardinal; Target: PByte; Row: PCardinal; Count, StrideBytes: Integer);
+asm
+  .NOFRAME
+  mov r10d, [rsp + 40]
+  vmovdqu xmm4, [r8]
+@@Loop:
+  vpmovzxbd xmm0, dword ptr [rcx]
+  vpaddd xmm0, xmm0, xmm4
+  vmovdqu [rdx], xmm0
+  add rdx, r10
+  add rcx, 4
+  dec r9d
+  jnz @@Loop
+end;
+
+procedure ExpandByteSStride(Source: PCardinal; Target: PByte; Row: PCardinal; Count, StrideBytes: Integer);
+asm
+  .NOFRAME
+  mov r10d, [rsp + 40]
+  vmovdqu xmm4, [r8]
+@@Loop:
+  vpmovsxbd xmm0, dword ptr [rcx]
+  vpaddd xmm0, xmm0, xmm4
+  vmovdqu [rdx], xmm0
+  add rdx, r10
+  add rcx, 4
+  dec r9d
+  jnz @@Loop
+end;
+
+procedure ExpandShortUStride(Source: PCardinal; Target: PByte; Row: PCardinal; Count, StrideBytes: Integer);
+asm
+  .NOFRAME
+  mov r10d, [rsp + 40]
+  vmovdqu xmm4, [r8]
+@@Loop:
+  vpmovzxwd xmm0, qword ptr [rcx]
+  vpaddd xmm0, xmm0, xmm4
+  vmovdqu [rdx], xmm0
+  add rdx, r10
+  add rcx, 8
+  dec r9d
+  jnz @@Loop
+end;
+
+procedure ExpandShortSStride(Source: PCardinal; Target: PByte; Row: PCardinal; Count, StrideBytes: Integer);
+asm
+  .NOFRAME
+  mov r10d, [rsp + 40]
+  vmovdqu xmm4, [r8]
+@@Loop:
+  vpmovsxwd xmm0, qword ptr [rcx]
+  vpaddd xmm0, xmm0, xmm4
+  vmovdqu [rdx], xmm0
+  add rdx, r10
+  add rcx, 8
+  dec r9d
+  jnz @@Loop
+end;
+
+procedure ExpandPairUStride(Source: PCardinal; Target: PByte; Row: PCardinal; Count, StrideBytes: Integer);
+asm
+  .NOFRAME
+  mov r10d, [rsp + 40]
+  vmovdqu xmm4, [r8]
+@@Loop:
+  vmovd xmm0, dword ptr [rcx]
+  vpmovzxwd xmm0, xmm0
+  vpshufd xmm0, xmm0, $44
+  vpaddd xmm0, xmm0, xmm4
+  vmovdqu [rdx], xmm0
+  add rdx, r10
+  add rcx, 4
+  dec r9d
+  jnz @@Loop
+end;
+
+procedure ExpandPairSStride(Source: PCardinal; Target: PByte; Row: PCardinal; Count, StrideBytes: Integer);
+asm
+  .NOFRAME
+  mov r10d, [rsp + 40]
+  vmovdqu xmm4, [r8]
+@@Loop:
+  vmovd xmm0, dword ptr [rcx]
+  vpmovsxwd xmm0, xmm0
+  vpshufd xmm0, xmm0, $44
+  vpaddd xmm0, xmm0, xmm4
+  vmovdqu [rdx], xmm0
+  add rdx, r10
+  add rcx, 4
+  dec r9d
+  jnz @@Loop
+end;
+
+procedure ExpandTripleStride(Source: PCardinal; Target: PByte; Row: PCardinal; Count, StrideBytes: Integer);
+asm
+  .NOFRAME
+  mov r10d, [rsp + 40]
+  vmovdqu xmm4, [r8]
+@@Loop:
+  vmovq xmm0, qword ptr [rcx]
+  vpinsrd xmm0, xmm0, dword ptr [rcx + 8], 2
+  vpaddd xmm0, xmm0, xmm4
+  vmovdqu [rdx], xmm0
+  add rdx, r10
+  add rcx, 12
+  dec r9d
+  jnz @@Loop
+end;
+{$ENDIF}
 
 { TPS2VIF }
 
@@ -297,7 +521,9 @@ end;
 
 function TPS2VIF.Now: Int64;
 begin
-  if FScheduler <> nil then
+  if FDomain <> nil then
+    Result := FDomain.Now
+  else if FScheduler <> nil then
     Result := FScheduler.Now
   else
     Result := 0;
@@ -314,19 +540,23 @@ begin
     Exit;
   case (W shr 24) and $7F of
     $10, $11, $13, $14, $15, $17, $4A:
-      begin
-        S.WaitVU := True;
-        var Event := TPS2Event.VIF0;
-        if FIndex = 1 then
-          Event := TPS2Event.VIF1;
+    begin
+      S.WaitVU := True;
+      var Event := TPS2Event.VIF0;
+      if FIndex = 1 then
+        Event := TPS2Event.VIF1;
+      if FDomain <> nil then
+        FScheduler.ScheduleAt(Event, FVU.S.BusyUntil)
+      else
         FScheduler.Schedule(Event, FVU.S.BusyUntil);
-        Result := True;
-      end;
+      Result := True;
+    end;
   end;
 end;
 
 procedure TPS2VIF.Wake;
 begin
+  FDomain.Check;
   if S.WaitVU then
   begin
     S.WaitVU := False;
@@ -691,8 +921,18 @@ begin
   var Words: Integer;
   case VL of
     0: Words := VN + 1;
-    1: if VN = 1 then Words := 1 else if VN = 3 then Words := 2 else Exit(UnpackGroups(Data, Count));
-    2: if VN = 3 then Words := 1 else Exit(UnpackGroups(Data, Count));
+    1:
+      if VN = 1 then
+        Words := 1
+      else if VN = 3 then
+        Words := 2
+      else
+        Exit(UnpackGroups(Data, Count));
+    2:
+      if VN = 3 then
+        Words := 1
+      else
+        Exit(UnpackGroups(Data, Count));
   else
     Exit;
   end;
@@ -706,35 +946,62 @@ begin
     if Result > 0 then
       Exit;
   end;
-  while (Result + Words <= Count) and (S.UnpackCount < Integer(S.NUM)) and
-    not ((WL > CL) and (CL > 0) and (S.CycleWritten >= CL)) do
+  // No mask, no row kept from the data and no fill rows: see UnpackPlain.
+  if ((Cmd and $10) = 0) and (S.MODE <= 1) and not ((WL > CL) and (CL > 0)) then
+    Exit(UnpackPlain(Data, Count, VN, VL, Words, Unsigned, CL, WL));
+  while (Result + Words <= Count)
+    and (S.UnpackCount < Integer(S.NUM))
+    and not ((WL > CL) and (CL > 0) and (S.CycleWritten >= CL)) do
   begin
     var D := Data + Result;
     case VL of
       0:
         case VN of
-          0: begin V.UW[0] := D[0]; V.UW[1] := D[0]; V.UW[2] := D[0]; V.UW[3] := D[0]; end;
-          1: begin V.UW[0] := D[0]; V.UW[1] := D[1]; V.UW[2] := D[0]; V.UW[3] := D[1]; end;
-          2: begin V.UW[0] := D[0]; V.UW[1] := D[1]; V.UW[2] := D[2]; V.UW[3] := 0; end;
+          0:
+          begin
+            V.UW[0] := D[0];
+            V.UW[1] := D[0];
+            V.UW[2] := D[0];
+            V.UW[3] := D[0];
+          end;
+          1:
+          begin
+            V.UW[0] := D[0];
+            V.UW[1] := D[1];
+            V.UW[2] := D[0];
+            V.UW[3] := D[1];
+          end;
+          2:
+          begin
+            V.UW[0] := D[0];
+            V.UW[1] := D[1];
+            V.UW[2] := D[2];
+            V.UW[3] := 0;
+          end;
         else
-          begin V.UW[0] := D[0]; V.UW[1] := D[1]; V.UW[2] := D[2]; V.UW[3] := D[3]; end;
+          begin
+            V.UW[0] := D[0];
+            V.UW[1] := D[1];
+            V.UW[2] := D[2];
+            V.UW[3] := D[3];
+          end;
         end;
       1:
+      begin
+        // Halfwords, sign-extended unless unsigned; V2-16 repeats its two.
+        for var K := 0 to Words * 2 - 1 do
         begin
-          // Halfwords, sign-extended unless unsigned; V2-16 repeats its two.
-          for var K := 0 to Words * 2 - 1 do
-          begin
-            var Raw := (D[K shr 1] shr ((K and 1) * 16)) and $FFFF;
-            if not Unsigned and ((Raw and $8000) <> 0) then
-              Raw := Raw or $FFFF0000;
-            V.UW[K] := Raw;
-          end;
-          if VN = 1 then
-          begin
-            V.UW[2] := V.UW[0];
-            V.UW[3] := V.UW[1];
-          end;
+          var Raw := (D[K shr 1] shr ((K and 1) * 16)) and $FFFF;
+          if not Unsigned and ((Raw and $8000) <> 0) then
+            Raw := Raw or $FFFF0000;
+          V.UW[K] := Raw;
         end;
+        if VN = 1 then
+        begin
+          V.UW[2] := V.UW[0];
+          V.UW[3] := V.UW[1];
+        end;
+      end;
     else
       for var K := 0 to 3 do
       begin
@@ -751,6 +1018,203 @@ begin
     WriteVector(V);
     Inc(Result, Words);
   end;
+  Inc(Self.Words, Result);
+end;
+
+// UnpackRun's vectors (PerVector words each) with no mask, MODE 0 or 1 (the
+// row added) and no fill rows: each as WriteVector writes it, its counters
+// kept here meanwhile (no callback runs). (Each vector's words are read
+// before it is written, as in UnpackRun: a source inside VU memory reads
+// what earlier vectors wrote.)
+function TPS2VIF.UnpackPlain(
+  Data: PCardinal;
+  Count, VN, VL, PerVector: Integer;
+  Unsigned: Boolean;
+  CL, WL: Integer
+): Integer;
+var
+  V, Last: array[0..3] of Cardinal;
+begin
+  Result := 0;
+  var N := Min(Count div PerVector, Integer(S.NUM) - S.UnpackCount);
+  if N <= 0 then
+    Exit;
+  var Addr := S.UnpackAddr;
+  var Written := S.CycleWritten;
+  var Skip := 1;
+  if CL > WL then
+    Skip := CL - WL + 1;
+  var AddRow := S.MODE = 1;
+{$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+  if (FIndex = 1)
+    and ((CL = WL) or ((WL = 1) and (CL >= 2) and (CL <= 8)))
+    and (N >= 8)
+    and (N <= 256)
+    and (FDataMask = $3FFF)
+    and (Written >= 0)
+    and (Written < WL)
+    and (Addr >= 0)
+    and (Addr < $100000)
+    and PS2VectorAVX2 then
+  begin
+    var Kernel: TExpandStride := nil;
+    case VN * 4 + VL of
+      $05:
+        if Unsigned then
+          Kernel := ExpandPairUStride
+        else
+          Kernel := ExpandPairSStride;
+      $08: Kernel := ExpandTripleStride;
+      $0D:
+        if Unsigned then
+          Kernel := ExpandShortUStride
+        else
+          Kernel := ExpandShortSStride;
+      $0E:
+        if Unsigned then
+          Kernel := ExpandByteUStride
+        else
+          Kernel := ExpandByteSStride;
+    end;
+    var Src := NativeUInt(Data);
+    var Dest := NativeUInt(FData);
+    var Obj := NativeUInt(Self);
+    if Assigned(Kernel)
+      and ((Src + NativeUInt(N * PerVector) * 4 <= Dest) or (Src >= Dest + $4000))
+      and ((Obj + NativeUInt(InstanceSize) <= Dest) or (Obj >= Dest + $4000)) then
+    begin
+      var Stride := 1;
+      if CL <> WL then
+        Stride := CL;
+      var Row: PCardinal := @ZeroRow[0];
+      if AddRow then
+        Row := @S.Row[0];
+      var D := Data;
+      var Remaining := N;
+      while Remaining > 0 do
+      begin
+        var Offset := Addr and $3FF;
+        var Span := Remaining;
+        if Offset + (Span - 1) * Stride > $3FF then
+          Span := 1 + ($3FF - Offset) div Stride;
+        if (VL = 2) and Unsigned and (Stride = 1) then
+          ExpandBytesRow(D, FData + Offset * 16, Row, Span)
+        else
+          Kernel(D, FData + Offset * 16, Row, Span, Stride * 16);
+        Inc(Addr, Span * Stride);
+        Inc(D, Span * PerVector);
+        Dec(Remaining, Span);
+      end;
+      if VL = 0 then
+      begin
+        Dec(D, PerVector);
+        for var K := 0 to VN do
+          S.UnpackWords[K] := D[K];
+      end;
+      S.UnpackAddr := Addr;
+      S.CycleWritten := (Written + N) mod WL;
+      Inc(S.UnpackCount, N);
+      Result := N * PerVector;
+      Inc(Self.Words, Result);
+
+      Exit;
+    end;
+  end;
+{$ENDIF}
+  var D := Data;
+  for var I := 0 to N - 1 do
+  begin
+    case VL of
+      0:
+      begin
+        for var K := 0 to VN do
+          Last[K] := D[K];
+        case VN of
+          0:
+          begin
+            V[0] := Last[0];
+            V[1] := Last[0];
+            V[2] := Last[0];
+            V[3] := Last[0];
+          end;
+          1:
+          begin
+            V[0] := Last[0];
+            V[1] := Last[1];
+            V[2] := Last[0];
+            V[3] := Last[1];
+          end;
+          2:
+          begin
+            V[0] := Last[0];
+            V[1] := Last[1];
+            V[2] := Last[2];
+            V[3] := 0;
+          end;
+        else
+          begin
+            V[0] := Last[0];
+            V[1] := Last[1];
+            V[2] := Last[2];
+            V[3] := Last[3];
+          end;
+        end;
+      end;
+      1:
+      begin
+        // Halfwords, sign-extended unless unsigned; V2-16 repeats its two.
+        for var K := 0 to PerVector * 2 - 1 do
+        begin
+          var Raw := (D[K shr 1] shr ((K and 1) * 16)) and $FFFF;
+          if not Unsigned and ((Raw and $8000) <> 0) then
+            Raw := Raw or $FFFF0000;
+          V[K] := Raw;
+        end;
+        if VN = 1 then
+        begin
+          V[2] := V[0];
+          V[3] := V[1];
+        end;
+      end;
+    else
+      begin
+        var W := D[0];
+        for var K := 0 to 3 do
+        begin
+          var Raw := (W shr (K * 8)) and $FF;
+          if not Unsigned and ((Raw and $80) <> 0) then
+            Raw := Raw or $FFFFFF00;
+          V[K] := Raw;
+        end;
+      end;
+    end;
+    if AddRow then
+      for var K := 0 to 3 do
+        V[K] := Cardinal(UInt64(V[K]) + S.Row[K]);
+    var P := PCardinal(FData + ((Cardinal(Addr) * 16) and FDataMask));
+    P[0] := V[0];
+    P[1] := V[1];
+    P[2] := V[2];
+    P[3] := V[3];
+    // Write cycle: after WL writes, skip CL - WL vectors.
+    Inc(Written);
+    if Written >= WL then
+    begin
+      Written := 0;
+      Inc(Addr, Skip);
+    end
+    else
+      Inc(Addr);
+    Inc(D, PerVector);
+  end;
+  // (32-bit elements stay in UnpackWords, as UnpackWord leaves them.)
+  if VL = 0 then
+    for var K := 0 to VN do
+      S.UnpackWords[K] := Last[K];
+  S.UnpackAddr := Addr;
+  S.CycleWritten := Written;
+  Inc(S.UnpackCount, N);
+  Result := N * PerVector;
   Inc(Self.Words, Result);
 end;
 
@@ -959,13 +1423,18 @@ end;
 
 function TPS2VIF.Feed(Data: PCardinal; Count: Integer): Integer;
 begin
+  FDomain.Check;
   Result := 0;
   while Result < Count do
   begin
     // Inside an UNPACK nothing stalls the VIF until the command ends: its
     // data words go straight to the unpacker.
-    if (S.Remaining > 1) and (S.Command >= $60) and (S.HeldCount = 0) and not CaptureUnfinished and
-      not Stalled and not S.WaitVU then
+    if (S.Remaining > 1)
+      and (S.Command >= $60)
+      and (S.HeldCount = 0)
+      and not CaptureUnfinished
+      and not Stalled
+      and not S.WaitVU then
     begin
       while (Result < Count) and (S.Remaining > 1) do
       begin
@@ -988,8 +1457,13 @@ begin
     // Inside DIRECT/DIRECTHL the same: whole quadwords go to the GIF as
     // ProcessWord would hand them over (through FDirectBuf), the last word
     // of the command left to it.
-    if ((S.Command = $50) or (S.Command = $51)) and (S.Remaining > 1) and (S.HeldCount = 0) and
-      not CaptureUnfinished and not Stalled and not S.WaitVU and PS2VIFRuns then
+    if ((S.Command = $50) or (S.Command = $51))
+      and (S.Remaining > 1)
+      and (S.HeldCount = 0)
+      and not CaptureUnfinished
+      and not Stalled
+      and not S.WaitVU
+      and PS2VIFRuns then
     begin
       if (FDirectWords = 0) and (FGIF <> nil) then
       begin
@@ -998,8 +1472,8 @@ begin
         begin
           var Source := NativeUInt(Data + Result);
           var Bytes := NativeUInt(Quads) * SizeOf(TPS2Reg128);
-          if (Source <= High(NativeUInt) - Bytes) and
-            ((Source + Bytes <= NativeUInt(Self)) or (Source >= NativeUInt(Self) + NativeUInt(InstanceSize))) then
+          if (Source <= High(NativeUInt) - Bytes)
+            and ((Source + Bytes <= NativeUInt(Self)) or (Source >= NativeUInt(Self) + NativeUInt(InstanceSize))) then
           begin
             var Taken := FGIF.TransferDirectRun(Data + Result, Quads);
             if Taken > 0 then
@@ -1047,8 +1521,58 @@ begin
   end;
 end;
 
+// Interior of a VIF1 MPG command: no boundary, stall or callback occurs
+// while these quadwords are consumed. Leave its last word to ProcessWord.
+function TPS2VIF.UploadMicroQuads(Data: PCardinal; Available: Integer): Integer;
+begin
+  Result := 0;
+  if not PS2VIFRuns
+    or (FIndex <> 1)
+    or (FCodeMask <> $3FFF)
+    or (FVU = nil)
+    or (FCode <> FVU.Code)
+    or (Data = nil)
+    or (S.Remaining <= 8)
+    or (S.Remaining > 512)
+    or (S.HeldCount <> 0)
+    or CaptureUnfinished
+    or Stalled
+    or S.WaitVU
+    or ((S.MPGAddr and 3) <> 0) then
+    Exit;
+  var Offset := S.MPGAddr and FCodeMask;
+  var Quads := Min(Min(Available, (S.Remaining - 1) div 4), Integer((FCodeMask + 1 - Offset) div 16));
+  if Quads < 2 then
+    Exit;
+  var Taken := Quads * 4;
+  var Bytes := Cardinal(Taken * SizeOf(Cardinal));
+  if (S.MPGAddr > High(Cardinal) - Bytes)
+    or (Words > High(Int64) - Taken)
+    or (NativeUInt(Data) > High(NativeUInt) - Bytes)
+    or (NativeUInt(FCode) > High(NativeUInt) - FCodeMask - 1) then
+    Exit;
+  // The scalar path updates VIF fields after each word, which aliased
+  // input can see. A destination must not modify the parser itself.
+  var Owner := NativeUInt(Self);
+  var OwnerEnd := Owner + NativeUInt(InstanceSize);
+  if ((NativeUInt(Data) < OwnerEnd) and (Owner < NativeUInt(Data) + Bytes))
+    or ((NativeUInt(FCode) < OwnerEnd) and (Owner < NativeUInt(FCode) + FCodeMask + 1)) then
+    Exit;
+  if (FDomain <> nil)
+    and (NativeUInt(FCode) < NativeUInt(FDomain) + NativeUInt(FDomain.InstanceSize))
+    and (NativeUInt(FDomain) < NativeUInt(FCode) + FCodeMask + 1) then
+    Exit;
+  if not FVU.TryUploadMicroWords(Offset, Data, Taken) then
+    Exit;
+  Inc(S.MPGAddr, Bytes);
+  Inc(Words, Taken);
+  Dec(S.Remaining, Taken);
+  Result := Quads;
+end;
+
 function TPS2VIF.FeedQuads(Data: PCardinal; Count: Integer): Integer;
 begin
+  FDomain.Check;
   // FIFO: 8 quadwords on VIF0, 16 on VIF1.
   var FIFOWords := 32;
   if FIndex = 1 then
@@ -1058,10 +1582,23 @@ begin
   begin
     if S.HeldCount >= FIFOWords then
       Exit;
+    if (S.Command = $4A) and (Count - Result >= 2) and (Result <= MaxInt div 4 - 128) then
+    begin
+      var Taken := UploadMicroQuads(Data + Result * 4, Count - Result);
+      if Taken <> 0 then
+      begin
+        Inc(Result, Taken);
+        Continue;
+      end;
+    end;
     // Inside an UNPACK or DIRECT nothing stalls before its last word: the
     // quadwords up to there at once (Feed takes them all, as one at a time).
-    if (S.Remaining > 5) and ((S.Command >= $60) or (((S.Command = $50) or (S.Command = $51)) and PS2VIFRuns)) and
-      (S.HeldCount = 0) and not CaptureUnfinished and not Stalled and not S.WaitVU then
+    if (S.Remaining > 5)
+      and ((S.Command >= $60) or (((S.Command = $50) or (S.Command = $51)) and PS2VIFRuns))
+      and (S.HeldCount = 0)
+      and not CaptureUnfinished
+      and not Stalled
+      and not S.WaitVU then
     begin
       var N := Min(Count - Result, (S.Remaining - 1) div 4);
       Feed(Data + Result * 4, N * 4);
@@ -1121,50 +1658,109 @@ end;
 
 function TPS2VIF.Read(Address: Cardinal; Size: Integer): UInt64;
 begin
-  case Address and $1F0 of
+  FDomain.Check;
+  var R: TPS2VIFRegisters;
+  GetRegisters(R);
+  Result := RegisterValue(R, FIndex, Address and $1F0, FVU.Busy(Now));
+end;
+
+procedure TPS2VIF.SaveDomain(out C: TPS2VIFSaved);
+begin
+  C.S := S;
+  C.DirectBuf := FDirectBuf;
+  C.DirectWords := FDirectWords;
+  C.DirectSent := FDirectSent;
+  C.Words := Words;
+  C.Starts := Starts;
+  C.Unfinished := Unfinished;
+end;
+
+procedure TPS2VIF.RestoreDomain(const C: TPS2VIFSaved);
+begin
+  S := C.S;
+  FDirectBuf := C.DirectBuf;
+  FDirectWords := C.DirectWords;
+  FDirectSent := C.DirectSent;
+  Words := C.Words;
+  Starts := C.Starts;
+  Unfinished := C.Unfinished;
+end;
+
+procedure TPS2VIF.GetRegisters(out R: TPS2VIFRegisters);
+begin
+  R.STAT := S.STAT;
+  R.ERR := S.ERR;
+  R.MARK := S.MARK;
+  R.CYCLE := S.CYCLE;
+  R.MODE := S.MODE;
+  R.NUM := S.NUM;
+  R.MASK := S.MASK;
+  R.CODE := S.CODE;
+  R.ITOPS := S.ITOPS;
+  R.BASE := S.BASE;
+  R.OFST := S.OFST;
+  R.TOPS := S.TOPS;
+  R.ITOP := S.ITOP;
+  R.TOP := S.TOP;
+  Move(S.Row, R.Row, SizeOf(R.Row));
+  Move(S.Col, R.Col, SizeOf(R.Col));
+  R.Remaining := S.Remaining;
+  R.HeldCount := S.HeldCount;
+  R.DBF := S.DBF;
+  R.Path3Masked := S.Path3Masked;
+end;
+
+class function TPS2VIF.RegisterValue(
+  const R: TPS2VIFRegisters;
+  Index: Integer;
+  Offset: Cardinal;
+  VUBusy: Boolean
+): Cardinal;
+begin
+  case Offset of
     $000:
-      begin
-        // STAT: VPS (waiting for data while a command is open, or a
-        // command fetched while stalled), VEW, MRK, DBF, VSS/VFS/VIS, INT,
-        // FQC (0, as hardware reads with held data in ps2autotests).
-        var V := S.STAT and $FC0;
-        if S.Remaining > 0 then
-          V := V or 1
-        else if Stalled and (S.HeldCount > 0) then
-          V := V or 2;
-        if FVU.Busy(Now) then
-          V := V or 4;
-        if S.DBF then
-          V := V or $80;
-        if S.Path3Masked then
-          V := V or $10;
-        Result := V;
-      end;
-    $020: Result := S.ERR;
-    $030: Result := S.MARK;
-    $040: Result := S.CYCLE;
-    $050: Result := S.MODE;
+    begin
+      // STAT: VPS (waiting for data while a command is open, or a
+      // command fetched while stalled), VEW, MRK, DBF, VSS/VFS/VIS, INT,
+      // FQC (0, as hardware reads with held data in ps2autotests).
+      var V := R.STAT and $FC0;
+      if R.Remaining > 0 then
+        V := V or 1
+      else if ((R.STAT and $700) <> 0) and (R.HeldCount > 0) then
+        V := V or 2;
+      if VUBusy then
+        V := V or 4;
+      if R.DBF then
+        V := V or $80;
+      if R.Path3Masked then
+        V := V or $10;
+      Result := V;
+    end;
+    $020: Result := R.ERR;
+    $030: Result := R.MARK;
+    $040: Result := R.CYCLE;
+    $050: Result := R.MODE;
     $060:
-      if FIndex = 0 then
-        Result := S.NUM and $FF
+      if Index = 0 then
+        Result := R.NUM and $FF
       else
-        Result := S.NUM;
-    $070: Result := S.MASK;
-    $080: Result := S.CODE;
-    $090: Result := S.ITOPS;
-    $0A0: Result := S.BASE;
-    $0B0: Result := S.OFST;
-    $0C0: Result := S.TOPS;
-    $0D0: Result := S.ITOP;
-    $0E0: Result := S.TOP;
-    $100: Result := S.Row[0];
-    $110: Result := S.Row[1];
-    $120: Result := S.Row[2];
-    $130: Result := S.Row[3];
-    $140: Result := S.Col[0];
-    $150: Result := S.Col[1];
-    $160: Result := S.Col[2];
-    $170: Result := S.Col[3];
+        Result := R.NUM;
+    $070: Result := R.MASK;
+    $080: Result := R.CODE;
+    $090: Result := R.ITOPS;
+    $0A0: Result := R.BASE;
+    $0B0: Result := R.OFST;
+    $0C0: Result := R.TOPS;
+    $0D0: Result := R.ITOP;
+    $0E0: Result := R.TOP;
+    $100: Result := R.Row[0];
+    $110: Result := R.Row[1];
+    $120: Result := R.Row[2];
+    $130: Result := R.Row[3];
+    $140: Result := R.Col[0];
+    $150: Result := R.Col[1];
+    $160: Result := R.Col[2];
+    $170: Result := R.Col[3];
   else
     Result := 0;
   end;
@@ -1172,39 +1768,40 @@ end;
 
 procedure TPS2VIF.Write(Address: Cardinal; Value: UInt64; Size: Integer);
 begin
+  FDomain.Check;
   case Address and $1F0 of
     $010:
+    begin
+      // FBRST: reset with the FIFO (bit 0), force break (1: VFS now),
+      // STOP (2: VSS at the next command), stall cancel (3: clears VSS,
+      // VFS, VIS, INT, ER0, ER1; held words run).
+      var Resume := False;
+      if (Value and 1) <> 0 then
       begin
-        // FBRST: reset with the FIFO (bit 0), force break (1: VFS now),
-        // STOP (2: VSS at the next command), stall cancel (3: clears VSS,
-        // VFS, VIS, INT, ER0, ER1; held words run).
-        var Resume := False;
-        if (Value and 1) <> 0 then
-        begin
-          Reset;
-          Resume := True;
-        end;
-        if (Value and 2) <> 0 then
-          S.STAT := S.STAT or $200;
-        if (Value and 4) <> 0 then
-          S.StopNext := True;
-        if (Value and 8) <> 0 then
-        begin
-          S.STAT := S.STAT and not Cardinal($3F00);
-          S.StallNext := False;
-          S.StopNext := False;
-          Release;
-        end
-        else if Resume and Assigned(FOnResume) then
-          FOnResume();
+        Reset;
+        Resume := True;
       end;
+      if (Value and 2) <> 0 then
+        S.STAT := S.STAT or $200;
+      if (Value and 4) <> 0 then
+        S.StopNext := True;
+      if (Value and 8) <> 0 then
+      begin
+        S.STAT := S.STAT and not Cardinal($3F00);
+        S.StallNext := False;
+        S.StopNext := False;
+        Release;
+      end
+      else if Resume and Assigned(FOnResume) then
+        FOnResume();
+    end;
     $020: S.ERR := Cardinal(Value);
     $030:
-      begin
-        // MARK: writes clear MRK.
-        S.MARK := Cardinal(Value);
-        S.STAT := S.STAT and not Cardinal($40);
-      end;
+    begin
+      // MARK: writes clear MRK.
+      S.MARK := Cardinal(Value);
+      S.STAT := S.STAT and not Cardinal($40);
+    end;
     $100: S.Row[0] := Cardinal(Value);
     $110: S.Row[1] := Cardinal(Value);
     $120: S.Row[2] := Cardinal(Value);
@@ -1258,6 +1855,15 @@ begin
   end;
 end;
 
+// (As FeedQuads takes a quadword: while the FIFO is not full.)
+function TPS2VIFPort.TagRoom(Channel: Integer): Boolean;
+begin
+  var FIFOWords := 32;
+  if FVIF.FIndex = 1 then
+    FIFOWords := 64;
+  Result := FVIF.S.HeldCount < FIFOWords;
+end;
+
 procedure TPS2VIFPort.Tag(Channel: Integer; const Tag: TPS2Reg128);
 begin
   // TTE: the upper half of the DMA tag goes to the VIF as two words.
@@ -1268,6 +1874,11 @@ end;
 // DIRECT data reaches the GS after what is queued before it (PATH1 packets
 // from earlier kicks, drawing in progress): the channel ends once the GS has
 // drawn it all.
+function TPS2VIFPort.BusyFromGS: Boolean;
+begin
+  Result := FVIF.TakeDirectSent;
+end;
+
 function TPS2VIFPort.TakeBusyCycles: Int64;
 begin
   Result := 0;

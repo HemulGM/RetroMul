@@ -47,10 +47,16 @@ function PS2RegisterMathNative(Kind: TPS2RegisterMath): Pointer;
 // rounding to nearest have fast paths, others the exact routine at once).
 function PS2RegisterMathNativeFor(Kind: TPS2RegisterMath; Mode: TRoundingMode): Pointer;
 function PS2RegisterMathModel(Kind: TPS2RegisterMath): Pointer;
+// Register ABI as above, Context points to ACC: its value plus or minus the
+// separately truncated product. No fused arithmetic; both O/U groups kept.
+function PS2RegisterAccNative(Subtract: Boolean; Mode: TRoundingMode): Pointer;
+function PS2RegisterAccModel(Subtract: Boolean): Pointer;
 // MIN/MAX use the exact raw-bit PS2FloatKey ordering, never host MINPS/MAXPS.
 // Register ABI/model signature is the same as the existing vector routines.
 function PS2RegisterSelectNative(Maximum: Boolean): Pointer;
 function PS2RegisterSelectModel(Maximum: Boolean): Pointer;
+// Register fixed-point conversions (VU specials10h..17h).
+function PS2RegisterFixed(Special: Cardinal; out Native, Model, Parameters: Pointer): Boolean;
 // Whether the AVX-512 forms of the rounding-to-nearest fast paths are used
 // (AVX-512F/DQ/VL and the OS's ZMM state; tests may turn them off).
 function PS2VectorAVX512: Boolean;
@@ -121,9 +127,9 @@ begin
 end;
 
 {$IFDEF CPUX64}
-{$IFDEF MSWINDOWS}
-{$DEFINE PS2_VU_SSE}
-{$ENDIF}
+  {$IFDEF MSWINDOWS}
+    {$DEFINE PS2_VU_SSE}
+  {$ENDIF}
 {$ENDIF}
 
 {$IFDEF PS2_VU_SSE}
@@ -162,6 +168,64 @@ const
   CShift23: array[0..1] of UInt64 = (23, 23);
   CIntMin: array[0..1] of Double = (-2147483648.0, -2147483648.0);
   CIntMax: array[0..1] of Double = (2147483647.0, 2147483647.0);
+
+type
+  TFixedVectorScale = packed record
+    Delta, Last, Scale: array[0..3] of Cardinal;
+  end;
+
+const
+  FixedVectorScale: array[0..3] of TFixedVectorScale = (
+    (
+      Delta: ($00000000, $00000000, $00000000, $00000000);
+      Last: ($4E800000, $4E800000, $4E800000, $4E800000);
+      Scale: ($3F800000, $3F800000, $3F800000, $3F800000)
+    ),
+    (
+      Delta: ($02000000, $02000000, $02000000, $02000000);
+      Last: ($4C800000, $4C800000, $4C800000, $4C800000);
+      Scale: ($3D800000, $3D800000, $3D800000, $3D800000)
+    ),
+    (
+      Delta: ($06000000, $06000000, $06000000, $06000000);
+      Last: ($48800000, $48800000, $48800000, $48800000);
+      Scale: ($39800000, $39800000, $39800000, $39800000)
+    ),
+    (
+      Delta: ($07800000, $07800000, $07800000, $07800000);
+      Last: ($47000000, $47000000, $47000000, $47000000);
+      Scale: ($38000000, $38000000, $38000000, $38000000)
+    )
+  );
+
+// Win64 VectorCall: input and result in xmm0, scale descriptor in rcx.
+function FixedToSingle(Context: Pointer): NativeUInt;
+asm
+  .NOFRAME
+  vcvtdq2ps xmm0, xmm0
+  vmulps xmm0, xmm0, [rcx + 32]
+  xor eax, eax
+end;
+
+function SingleToFixed(Context: Pointer): NativeUInt;
+asm
+  .NOFRAME
+  // Exponent zero reads as zero. At or above 2^31 after scaling, use the
+  // signed endpoint without feeding an invalid operand to host conversion.
+  vpand xmm1, xmm0, [rip + CExpMask]
+  vpxor xmm5, xmm5, xmm5
+  vpcmpeqd xmm2, xmm1, xmm5
+  vpcmpgtd xmm1, xmm1, [rcx + 16]
+  vpsrad xmm3, xmm0, 31
+  vpxor xmm3, xmm3, [rip + CAbsMask]
+  vpand xmm3, xmm3, xmm1
+  vpor xmm2, xmm2, xmm1
+  vpaddd xmm0, xmm0, [rcx]
+  vpandn xmm2, xmm2, xmm0
+  vcvttps2dq xmm0, xmm2
+  vpor xmm0, xmm0, xmm3
+  xor eax, eax
+end;
 
 procedure PS2Itof4(const A: TPS2Reg128; Shift: Integer; out R: TPS2Reg128);
 asm
@@ -1317,15 +1381,15 @@ asm
   vpternlogd xmm0, xmm4, [rip + CSignMask], $B0
   vpcmpeqd xmm4, xmm3, xmm5
   vpternlogd xmm1, xmm4, [rip + CSignMask], $B0
-  vpand xmm4, xmm0, [rip + CAbsMask]
-  vpand xmm5, xmm1, [rip + CAbsMask]
-  vpcmpgtd xmm5, xmm5, xmm4            // B the larger magnitude
-  vblendvps xmm4, xmm0, xmm1, xmm5     // the larger, L
-  vblendvps xmm0, xmm1, xmm0, xmm5     // the smaller, S
-  vblendvps xmm1, xmm2, xmm3, xmm5     // their exponent fields
-  vblendvps xmm2, xmm3, xmm2, xmm5
-  vpsubd xmm1, xmm1, xmm2
-  vpsrld xmm1, xmm1, 23
+  // Different exponents order the magnitudes. Equal ones do not shift
+  // either operand, so their order does not affect the guard-bit sum.
+  vpcmpud k1, xmm3, xmm2, 6
+  // vblendmps xmm4{k1}, xmm0, xmm1 (L); xmm0{k1}, xmm1, xmm0 (S).
+  db $62, $F2, $7D, $09, $65, $E1
+  db $62, $F2, $75, $09, $65, $C0
+  vpsubd xmm2, xmm2, xmm3
+  vpabsd xmm2, xmm2
+  vpsrld xmm1, xmm2, 23
   vpsubd xmm1, xmm1, [rip + COne]
   vpxor xmm2, xmm2, xmm2
   vpmaxsd xmm1, xmm1, xmm2             // D: S's bits below L's guard bit
@@ -1342,6 +1406,235 @@ asm
   vzeroupper
   jmp RegisterAddExact
 end;
+
+const
+  C253Field: array[0..3] of Cardinal = ($7E800000, $7E800000, $7E800000, $7E800000);
+
+// The fallback's Context survives the product call, and its O/U groups
+// survive the add. Inputs whose exponent is zero may already be sanitized.
+function RegisterMaddExact(Context: Pointer): NativeUInt;
+asm
+  .PARAMS 1
+  .PUSHNV RBX
+  .PUSHNV RSI
+  mov rsi, rcx
+  call RegisterMulExact
+  mov ebx, eax
+  vmovdqa xmm1, xmm0
+  vmovdqu xmm0, [rsi]
+  call RegisterAddExact
+  or eax, ebx
+end;
+
+function MaddRegistersRN512(Context: Pointer): NativeUInt;
+asm
+  .NOFRAME
+  vpand xmm2, xmm0, [rip + CExpMask]
+  vpand xmm3, xmm1, [rip + CExpMask]
+  vpcmpeqd xmm4, xmm2, [rip + CExpMask]
+  vpcmpeqd xmm5, xmm3, [rip + CExpMask]
+  vpor xmm4, xmm4, xmm5
+  vptest xmm4, xmm4                    // an exponent 255
+  jnz @@No
+  vpxor xmm5, xmm5, xmm5
+  vpcmpeqd xmm4, xmm2, xmm5            // exponent 0: zero, its sign kept
+  vpternlogd xmm0, xmm4, [rip + CSignMask], $B0
+  vpcmpeqd xmm5, xmm3, xmm5
+  vpternlogd xmm1, xmm5, [rip + CSignMask], $B0
+  vpor xmm4, xmm4, xmm5                // either operand zero
+  vpsrld xmm2, xmm2, 23
+  vpsrld xmm3, xmm3, 23
+  vpaddd xmm2, xmm2, xmm3
+  vpsubd xmm2, xmm2, [rip + C127]
+  vpcmpgtd xmm3, xmm2, [rip + C252]
+  vmovdqu xmm5, [rip + C64]
+  vpcmpgtd xmm5, xmm5, xmm2
+  vpor xmm3, xmm3, xmm5
+  vpandn xmm3, xmm4, xmm3              // the product's exponent out of range
+  vptest xmm3, xmm3
+  jnz @@No
+  // A lane of A with mantissa 0 (neither operand zero) may lose the
+  // multiplier's bit.
+  vptestnmd k1, xmm0, [rip + CMantissa]
+  vptestnmd k2, xmm4, xmm4
+  kandw k1, k1, k2
+  kortestw k1, k1
+  jnz @@Lost
+@@Plain:
+  // vmulps zmm0, zmm0, zmm1, {rz-sae} (the assembler omits the rounding).
+  db $62, $F1, $7C, $78, $59, $C1
+  jmp @@Add
+@@Lost:
+  // (MulLostBitLanes with mask registers; the range is checked above.)
+  cmp byte ptr [rip + PS2MulLostBit], 0
+  je @@Plain
+  vpslld xmm3, xmm1, 1
+  vpand xmm3, xmm3, xmm1
+  vpslld xmm3, xmm3, 1                 // where bits 2I and 2I-1 are both set
+  vpternlogd xmm3, xmm1, [rip + COddBits], $08  // B and not that, odd bits 1..15
+  vptestmd k2, xmm3, xmm3              // a negative digit
+  kandw k1, k1, k2
+  vpmovm2d xmm4, k1
+  db $62, $F1, $7C, $78, $59, $C1
+  vpaddd xmm0, xmm0, xmm4
+  jmp @@Add
+@@No:
+  vzeroupper
+  jmp RegisterMaddExact
+@@Add:
+  vmovdqa xmm1, xmm0
+  vmovdqu xmm0, [rcx]
+  // The product is canonical zero or normal, with exponent 64..253. Even
+  // when ACC is tiny, a nonzero sum cannot underflow: either the product
+  // bounds cancellation, or it is zero and the sum is ACC itself. Only an
+  // ACC exponent above 253 needs the general adder.
+  vpand xmm2, xmm0, [rip + CExpMask]
+  vpand xmm3, xmm1, [rip + CExpMask]
+  vpcmpud k1, xmm2, [rip + C253Field], 6
+  kortestw k1, k1
+  jnz @@AddSlow
+  vpxor xmm5, xmm5, xmm5
+  vpcmpeqd xmm4, xmm2, xmm5
+  vpternlogd xmm0, xmm4, [rip + CSignMask], $B0
+  // Different exponents order the magnitudes. Equal ones do not shift
+  // either operand, so their order does not affect the guard-bit sum.
+  vpcmpud k1, xmm3, xmm2, 6
+  // vblendmps xmm4{k1}, xmm0, xmm1 (L); xmm0{k1}, xmm1, xmm0 (S).
+  db $62, $F2, $7D, $09, $65, $E1
+  db $62, $F2, $75, $09, $65, $C0
+  vpsubd xmm2, xmm2, xmm3
+  vpabsd xmm2, xmm2
+  vpsrld xmm1, xmm2, 23
+  vpsubd xmm1, xmm1, [rip + COne]
+  vpxor xmm2, xmm2, xmm2
+  vpmaxsd xmm1, xmm1, xmm2             // D: S's bits below L's guard bit
+  vpcmpgtd xmm2, xmm1, [rip + C23]     // all of S where D > 23
+  vpcmpeqd xmm3, xmm3, xmm3
+  vpsllvd xmm3, xmm3, xmm1
+  vpternlogd xmm0, xmm3, xmm2, $40     // S and (-1 shl D), not where D > 23
+  // vaddps zmm0, zmm4, zmm0, {rz-sae}
+  db $62, $F1, $5C, $78, $58, $C0
+  xor eax, eax
+  vzeroupper
+  ret
+@@AddSlow:
+  vzeroupper
+  jmp RegisterAddExact
+end;
+
+
+function RegisterMsubExact(Context: Pointer): NativeUInt;
+asm
+  .PARAMS 1
+  .PUSHNV RBX
+  .PUSHNV RSI
+  mov rsi, rcx
+  call RegisterMulExact
+  mov ebx, eax
+  vxorps xmm0, xmm0, [rip + CSignMask]
+  vmovdqa xmm1, xmm0
+  vmovdqu xmm0, [rsi]
+  call RegisterAddExact
+  or eax, ebx
+end;
+
+function MsubRegistersRN512(Context: Pointer): NativeUInt;
+asm
+  .NOFRAME
+  vpand xmm2, xmm0, [rip + CExpMask]
+  vpand xmm3, xmm1, [rip + CExpMask]
+  vpcmpeqd xmm4, xmm2, [rip + CExpMask]
+  vpcmpeqd xmm5, xmm3, [rip + CExpMask]
+  vpor xmm4, xmm4, xmm5
+  vptest xmm4, xmm4                    // an exponent 255
+  jnz @@No
+  vpxor xmm5, xmm5, xmm5
+  vpcmpeqd xmm4, xmm2, xmm5            // exponent 0: zero, its sign kept
+  vpternlogd xmm0, xmm4, [rip + CSignMask], $B0
+  vpcmpeqd xmm5, xmm3, xmm5
+  vpternlogd xmm1, xmm5, [rip + CSignMask], $B0
+  vpor xmm4, xmm4, xmm5                // either operand zero
+  vpsrld xmm2, xmm2, 23
+  vpsrld xmm3, xmm3, 23
+  vpaddd xmm2, xmm2, xmm3
+  vpsubd xmm2, xmm2, [rip + C127]
+  vpcmpgtd xmm3, xmm2, [rip + C252]
+  vmovdqu xmm5, [rip + C64]
+  vpcmpgtd xmm5, xmm5, xmm2
+  vpor xmm3, xmm3, xmm5
+  vpandn xmm3, xmm4, xmm3              // the product's exponent out of range
+  vptest xmm3, xmm3
+  jnz @@No
+  // A lane of A with mantissa 0 (neither operand zero) may lose the
+  // multiplier's bit.
+  vptestnmd k1, xmm0, [rip + CMantissa]
+  vptestnmd k2, xmm4, xmm4
+  kandw k1, k1, k2
+  kortestw k1, k1
+  jnz @@Lost
+@@Plain:
+  // vmulps zmm0, zmm0, zmm1, {rz-sae} (the assembler omits the rounding).
+  db $62, $F1, $7C, $78, $59, $C1
+  jmp @@Add
+@@Lost:
+  // (MulLostBitLanes with mask registers; the range is checked above.)
+  cmp byte ptr [rip + PS2MulLostBit], 0
+  je @@Plain
+  vpslld xmm3, xmm1, 1
+  vpand xmm3, xmm3, xmm1
+  vpslld xmm3, xmm3, 1                 // where bits 2I and 2I-1 are both set
+  vpternlogd xmm3, xmm1, [rip + COddBits], $08  // B and not that, odd bits 1..15
+  vptestmd k2, xmm3, xmm3              // a negative digit
+  kandw k1, k1, k2
+  vpmovm2d xmm4, k1
+  db $62, $F1, $7C, $78, $59, $C1
+  vpaddd xmm0, xmm0, xmm4
+  jmp @@Add
+@@No:
+  vzeroupper
+  jmp RegisterMsubExact
+@@Add:
+  vxorps xmm0, xmm0, [rip + CSignMask]
+  vmovdqa xmm1, xmm0
+  vmovdqu xmm0, [rcx]
+  // The product is canonical zero or normal, with exponent 64..253. Even
+  // when ACC is tiny, a nonzero sum cannot underflow: either the product
+  // bounds cancellation, or it is zero and the sum is ACC itself. Only an
+  // ACC exponent above 253 needs the general adder.
+  vpand xmm2, xmm0, [rip + CExpMask]
+  vpand xmm3, xmm1, [rip + CExpMask]
+  vpcmpud k1, xmm2, [rip + C253Field], 6
+  kortestw k1, k1
+  jnz @@AddSlow
+  vpxor xmm5, xmm5, xmm5
+  vpcmpeqd xmm4, xmm2, xmm5
+  vpternlogd xmm0, xmm4, [rip + CSignMask], $B0
+  // Different exponents order the magnitudes. Equal ones do not shift
+  // either operand, so their order does not affect the guard-bit sum.
+  vpcmpud k1, xmm3, xmm2, 6
+  // vblendmps xmm4{k1}, xmm0, xmm1 (L); xmm0{k1}, xmm1, xmm0 (S).
+  db $62, $F2, $7D, $09, $65, $E1
+  db $62, $F2, $75, $09, $65, $C0
+  vpsubd xmm2, xmm2, xmm3
+  vpabsd xmm2, xmm2
+  vpsrld xmm1, xmm2, 23
+  vpsubd xmm1, xmm1, [rip + COne]
+  vpxor xmm2, xmm2, xmm2
+  vpmaxsd xmm1, xmm1, xmm2             // D: S's bits below L's guard bit
+  vpcmpgtd xmm2, xmm1, [rip + C23]     // all of S where D > 23
+  vpcmpeqd xmm3, xmm3, xmm3
+  vpsllvd xmm3, xmm3, xmm1
+  vpternlogd xmm0, xmm3, xmm2, $40     // S and (-1 shl D), not where D > 23
+  // vaddps zmm0, zmm4, zmm0, {rz-sae}
+  db $62, $F1, $5C, $78, $58, $C0
+  xor eax, eax
+  vzeroupper
+  ret
+@@AddSlow:
+  vzeroupper
+  jmp RegisterAddExact
+end;
+
 
 function MinRegisters(Context: Pointer): NativeUInt;
 asm
@@ -1757,6 +2050,42 @@ begin
   end;
 end;
 
+function ModelItofRegisters(const A, B: TPS2Reg128; Context: Pointer; out R: TPS2Reg128): NativeUInt;
+begin
+  PS2Itof4(A, Integer(PCardinal(Context)^ shr 23), R);
+  Result := 0;
+end;
+
+function ModelFtoiRegisters(const A, B: TPS2Reg128; Context: Pointer; out R: TPS2Reg128): NativeUInt;
+begin
+  PS2Ftoi4(A, Integer(PCardinal(Context)^ shr 23), R);
+  Result := 0;
+end;
+
+function PS2RegisterFixed(Special: Cardinal; out Native, Model, Parameters: Pointer): Boolean;
+begin
+  Result := False;
+  Native := nil;
+  Model := nil;
+  Parameters := nil;
+{$IFDEF PS2_VU_SSE}
+  if not VectorAVX2 or (Special < $10) or (Special > $17) then
+    Exit;
+  Parameters := @FixedVectorScale[Special and 3];
+  if Special < $14 then
+  begin
+    Native := @FixedToSingle;
+    Model := @ModelItofRegisters;
+  end
+  else
+  begin
+    Native := @SingleToFixed;
+    Model := @ModelFtoiRegisters;
+  end;
+  Result := True;
+{$ENDIF}
+end;
+
 function ModelAddRegisters(const A, B: TPS2Reg128; Context: Pointer; out R: TPS2Reg128): NativeUInt;
 begin
   var Flags: Cardinal;
@@ -1789,6 +2118,53 @@ begin
     else
       R.UW[K] := B.UW[K];
   Result := 0;
+end;
+
+function ModelMaddRegisters(const A, B: TPS2Reg128; Context: Pointer; out R: TPS2Reg128): NativeUInt;
+begin
+  var Product: TPS2Reg128;
+  var MulFlags, AddFlags: Cardinal;
+  PS2Mul4(A, B, Product, MulFlags);
+  PS2Add4(PPS2Reg128(Context)^, Product, R, AddFlags);
+  Result := RegisterOU(MulFlags or AddFlags);
+end;
+
+function ModelMsubRegisters(const A, B: TPS2Reg128; Context: Pointer; out R: TPS2Reg128): NativeUInt;
+begin
+  var Product: TPS2Reg128;
+  var MulFlags, AddFlags: Cardinal;
+  PS2Mul4(A, B, Product, MulFlags);
+  for var K := 0 to 3 do
+    Product.UW[K] := Product.UW[K] xor $80000000;
+  PS2Add4(PPS2Reg128(Context)^, Product, R, AddFlags);
+  Result := RegisterOU(MulFlags or AddFlags);
+end;
+
+function PS2RegisterAccNative(Subtract: Boolean; Mode: TRoundingMode): Pointer;
+begin
+  Result := nil;
+{$IFDEF PS2_VU_SSE}
+  if VectorAVX2 then
+    if VectorAVX512 and (Mode = rmNearest) then
+    begin
+      if Subtract then
+        Result := @MsubRegistersRN512
+      else
+        Result := @MaddRegistersRN512;
+    end
+    else if Subtract then
+      Result := @RegisterMsubExact
+    else
+      Result := @RegisterMaddExact;
+{$ENDIF}
+end;
+
+function PS2RegisterAccModel(Subtract: Boolean): Pointer;
+begin
+  if Subtract then
+    Result := @ModelMsubRegisters
+  else
+    Result := @ModelMaddRegisters;
 end;
 
 function PS2RegisterSelectNative(Maximum: Boolean): Pointer;

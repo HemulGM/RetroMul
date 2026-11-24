@@ -62,6 +62,71 @@ begin
   finally GPU.Free; Memory.Free; end;
 end;
 
+procedure CheckTextureWriteOrder;
+const
+  TextureBase = 4096;
+  TexturePage = TextureBase div 32;
+  FirstColor = $80123456;
+  SecondColor = $80ABCDEF;
+begin
+  var Memory := TPS2GSMemory.Create;
+  var GPU := TPS2GSGpu.Create(Memory.Data);
+  try
+    var D := Default(TPS2GSDraw);
+    D.FBW := 4;
+    D.FPSM := PSMCT32;
+    D.ZPSM := PSMZ32;
+    D.ZMSK := True;
+    D.ZTST := 1;
+    D.TME := True;
+    D.FST := True;
+    D.TCC := True;
+    D.TFX := 1;
+    D.ColClamp := True;
+    D.TPSM := PSMCT32;
+    D.TBP := TextureBase;
+    D.TBW := 1;
+    D.TW := 6;
+    D.TH := 6;
+    var V0 := Default(TPS2GSVertex);
+    var V1 := V0;
+    V0.Q := 1;
+    V1.Q := 1;
+    V1.X := 64 * 16;
+    V1.Y := 64 * 16;
+    Memory.WriteRaw(PSMCT32, TextureBase, 1, 0, 0, FirstColor);
+    if not GPU.Sprite(D, V0, V1, 0, 0, 64, 64, 0) then
+      raise Exception.Create('First texture ordering probe declined');
+    var Pages := Default(TPS2GSPages);
+    Pages[TexturePage div 32] := Cardinal(1) shl (TexturePage mod 32);
+    var Pending := GPU.StageWrites(Pages);
+    if Pending <> nil then
+    begin
+      Pending.WriteRaw(PSMCT32, TextureBase, 1, 0, 0, SecondColor);
+      if Memory.ReadRaw(PSMCT32, TextureBase, 1, 0, 0) <> FirstColor then
+        raise Exception.Create('A staged write overwrote a pending texture input');
+      GPU.CommitStaged;
+    end
+    else
+    begin
+      GPU.WritePages(TexturePage, TexturePage);
+      Memory.WriteRaw(PSMCT32, TextureBase, 1, 0, 0, SecondColor);
+    end;
+    V0.X := 64 * 16;
+    V1.X := 128 * 16;
+    if not GPU.Sprite(D, V0, V1, 64, 0, 128, 64, 0) then
+      raise Exception.Create('Second texture ordering probe declined');
+    GPU.Sync;
+    if (Memory.ReadRaw(PSMCT32, 0, 4, 32, 32) <> FirstColor) or
+      (Memory.ReadRaw(PSMCT32, 0, 4, 96, 32) <> SecondColor) or
+      (Memory.ReadRaw(PSMCT32, TextureBase, 1, 0, 0) <> SecondColor) then
+      raise Exception.Create('Draws did not sample the texture version visible at submission');
+  finally
+    GPU.Free;
+    Memory.Free;
+  end;
+end;
+
 procedure CheckTextureFormats;
 const
   Formats: array[0..12] of Cardinal = (PSMCT32, PSMCT24, PSMCT16, PSMCT16S,
@@ -538,7 +603,12 @@ begin
         R.WriteRegister(GSRegHWREG, $FEDCBA9876543210);
       end;
       var Expected := Before + 1;
-      if N = 0 then Expected := Before;
+      if N = 0 then
+        Expected := Before;
+      // A texture-only hazard may be staged instead of draining the GPU.
+      // Devices without an importable staging page must still submit.
+      if (N = 6) and (B.VulkanSubmissions = Before) then
+        Expected := Before;
       if B.VulkanSubmissions <> Expected then
         raise Exception.CreateFmt('Transfer barrier mismatch case=%d', [N]);
       B.Sync;
@@ -586,7 +656,10 @@ begin
       Vertex(R, V); V.X := 128 * 16; V.Y := 128 * 16; Vertex(R, V);
       R.WriteRegister(GSRegHWREG, $FEDCBA9876543210);
     end;
-    if B.VulkanSubmissions <> 1 then raise Exception.Create('Transfer revision did not invalidate cached barrier');
+    // A staging copy can order the new HWREG words after the preceding draw
+    // without a host wait. The pixel sampled by that draw must stay unchanged.
+    if B.VulkanSubmissions > 1 then
+      raise Exception.Create('Partial transfer drained the GPU more than once');
     B.Sync;
     if not CompareMem(A.Memory.Data, B.Memory.Data, PS2GSMemorySize) then
       raise Exception.Create('Partial transfer / newly sampled texture mismatch');
@@ -1164,6 +1237,7 @@ begin
     CheckPaletteBarriers;
     CheckFragmentRollover;
     CheckClutSnapshots;
+    CheckTextureWriteOrder;
   except
     on E: Exception do
     begin

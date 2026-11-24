@@ -3,10 +3,12 @@
 
 var
   [PushConstant] PC: TPS2HLEPush;
+  [Input, Builtin(FragCoord)] FragmentPosition: Single4;
   [Input, Location(0), NoPerspective] VColor: Single4;
   [Input, Location(1), NoPerspective] VSTQ: Single3;
   [Input, Location(2), NoPerspective] VLodFog: Single2;
   [Binding(0, 0)] UTexture: CombinedTexture2D;
+  [Binding(0, 1)] NativeTexture: CombinedTexture2D;
   [Output, Location(0), Index(0)] OColor: Single4;
   [Output, Location(0), Index(1)] OFactor: Single4;
 

@@ -7,14 +7,50 @@
 // and the IOP start at their reset vectors and run the BIOS kernels; the IOP
 // side is TPS2IOPMachine with the SIF hardware (TPS2SIFBridge) and the CDVD
 // drive, and the high-level kernels and servers stay idle.
-{$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
+{$IFDEF PS2_CHECKED}
+  {$Q+}
+  {$R+}
+{$ELSE}
+  {$O+}
+  {$Q-}
+  {$R-}
+{$ENDIF}
 
 interface
 
 uses
-  System.SysUtils, System.Classes, System.IOUtils, System.Generics.Collections, Core.Snapshots, Core.DVD.Image, PS2.Types, PS2.Scheduler, PS2.EE.CPU,
-  PS2.EE.Bus, PS2.Timers, PS2.DMAC, PS2.SIF, PS2.GS, PS2.GIF, PS2.Kernel, PS2.ELF, PS2.IOP.FileIO, PS2.IOP.HLE, PS2.IOP.CDVD, PS2.IOP.Pad, PS2.IOP.MemoryCard, PS2.IOP.Kernel, PS2.VU, PS2.VIF, PS2.IPU,
-  PS2.SIF.Bridge, PS2.CDVD.Drive, PS2.IOP.Machine, PS2.BIOS;
+  System.SysUtils,
+  System.Classes,
+  System.IOUtils,
+  System.Generics.Collections,
+  Core.Snapshots,
+  Core.DVD.Image,
+  PS2.Types,
+  PS2.Scheduler,
+  PS2.EE.CPU,
+  PS2.EE.Bus,
+  PS2.Timers,
+  PS2.DMAC,
+  PS2.SIF,
+  PS2.GS,
+  PS2.GIF,
+  PS2.Kernel,
+  PS2.ELF,
+  PS2.IOP.FileIO,
+  PS2.IOP.HLE,
+  PS2.IOP.CDVD,
+  PS2.IOP.Pad,
+  PS2.IOP.MemoryCard,
+  PS2.IOP.Kernel,
+  PS2.VU,
+  PS2.VIF,
+  PS2.IPU,
+  PS2.SIF.Bridge,
+  PS2.CDVD.Drive,
+  PS2.IOP.Machine,
+  PS2.BIOS,
+  PS2.VU1Domain,
+  PS2.VU1Thread;
 
 const
   // Serialized layout of TPS2Console.SerializeState. Increase it with every
@@ -38,6 +74,34 @@ type
     NVM: TBytes;
   end;
 
+  // Experimental: the VU1 domain's registers the EE reads, as the domain had
+  // them from Time on (its events up to then done).
+  TPS2DomainView = record
+    Time: Int64;
+    Ch: array[DMAVIF1..DMAGIF] of TPS2DMAChannel;
+    PortOnEE: array[DMAVIF1..DMAGIF] of Boolean;
+    VIF: TPS2VIFRegisters;
+    VU1BusyUntil: Int64;
+    VU1Running, MaskedPath3: Boolean;
+    DrainWaiting: array[DMAVIF1..DMAGIF] of Boolean;
+  end;
+  PPS2DomainView = ^TPS2DomainView;
+
+  // The VU1 domain as it was when it went ahead (going back starts there).
+  TPS2DomainCheckpoint = record
+    Now: Int64;
+    Scheduler: TPS2SchedulerSaved;
+    Ch: array[DMAVIF1..DMAGIF] of TPS2DMAChannel;
+    Moved: array[DMAVIF1..DMAGIF] of Integer;
+    PortOnEE: array[DMAVIF1..DMAGIF] of Boolean;
+    PortEndAt: array[DMAVIF1..DMAGIF] of Int64;
+    DrainWaiting: array[DMAVIF1..DMAGIF] of Boolean;
+    VIF: TPS2VIFSaved;
+    VU1: TPS2VU1Saved;
+    GIF: TPS2GIFSaved;
+    Code, Data: array[0..$3FFF] of Byte;
+  end;
+
   TPS2Console = class
   private
     FConfig: TPS2ConsoleConfig;
@@ -51,6 +115,20 @@ type
     FProgram: TBytes;
     FProgramName: string;
     FIdleCycles: Int64;
+    // EE interrupts the VU1 domain raised (VIF1, DMAC, GS): ends an idle wait.
+    FDomainSignals: Int64;
+    // The VU1 domain ahead of the EE on a thread while channel 1 runs (off
+    // with PS2_VU1_THREAD=0).
+    FAheadThread: TPS2VU1Thread;
+    // Running ahead: views the domain thread posts (the EE side keeps the
+    // one at FViewDone, the last up to its time).
+    FViews: TArray<TPS2DomainView>;
+    FViewPosted, FViewDone: Int64;
+    // State from the start of the speculative session, restored on conflict.
+    FCheckpoint: TPS2DomainCheckpoint;
+    // RunEE's limit and the deadline it ran the EE to (-1: not in RunEE);
+    // deadlines the EE went on past (EEDeadline).
+    FRunLimit, FRunStop: Int64;
     // FINISH writes not in CSR yet: the EE cycle each shows, oldest first.
     FFinishDue: array[0..7] of Int64;
     FFinishCount: Integer;
@@ -64,6 +142,38 @@ type
     procedure GSInterrupt;
     function GSInterruptRaised: Boolean;
     procedure HandleEvent(Event: TPS2Event; At: Int64);
+    procedure HandleEventHere(Event: TPS2Event; At: Int64);
+    procedure CatchUpDomain(T: Int64);
+    procedure RunEE(Limit: Int64);
+    procedure IdleTo(Limit: Int64);
+    procedure DomainLeft;
+    procedure RunDomainEvent;
+    function NextDomainStop: Int64;
+    function CanGoAhead: Boolean;
+    procedure StartAhead;
+    procedure StopAhead;
+    procedure EndAhead;
+    procedure AbandonAhead;
+    procedure SaveDomain(var C: TPS2DomainCheckpoint);
+    procedure RestoreDomain(const C: TPS2DomainCheckpoint);
+    procedure RollBack(Applied: Int64);
+    procedure WaitDomain(T: Int64);
+    procedure ServeAhead(UpTo: Int64);
+    procedure ApplyOutput(Kind: Integer; Value: Cardinal);
+    function AnswerAhead(Kind: Integer; Time: Int64): Int64;
+    function AheadStep: TPS2AheadStep;
+    procedure PostView(Time: Int64);
+    function ViewIndex(T: Int64): Int64;
+    procedure RetireViews(T: Int64; SkipUnchanged: Boolean); inline;
+    function ViewAt(T: Int64): PPS2DomainView;
+    function ReadAheadRegister(Address: Cardinal; out Value: UInt64): Boolean;
+    function AheadVU1Busy(out Busy: Boolean): Boolean;
+    function AheadCopy(Key: Integer; Source: PByte; Size: Integer; out Token: Int64): PByte;
+    procedure AheadCopyUsed(Token: Int64; Used: Integer);
+    function AheadLimit(Key: Integer; Source: PByte; Count: Integer): Integer;
+    function AheadCheck(Source: PCardinal; Mask, Offset, Value: Cardinal; Decided: Boolean): Boolean;
+    procedure AheadResume(N: Integer);
+    function EEDeadline: Boolean;
     procedure SetVideo(PAL: Boolean);
     procedure SetVideoTiming(PAL: Boolean);
     procedure LoadExec(const Path: string; const Args: TArray<string>);
@@ -75,8 +185,12 @@ type
     function ImageVersion(const ResetArgs: string): Integer;
     procedure VU1Kick(Address: Cardinal; Data: PByte);
     procedure NoteModuleVersion(const Path: string; const Image: TBytes);
-    function StartModule(Server: TPS2LoadFileServer; const Path: string; const Image, Args: TBytes;
-      out ModResult: Integer): Integer;
+    function StartModule(
+      Server: TPS2LoadFileServer;
+      const Path: string;
+      const Image, Args: TBytes;
+      out ModResult: Integer
+    ): Integer;
     procedure ModuleDone(const Token: TBytes; ModuleId, Result: Integer);
     function GetHalted: Boolean;
     procedure CreateMachine;
@@ -85,8 +199,13 @@ type
     procedure HandleMachineEvent(Event: TPS2Event; At: Int64);
     procedure RunMachine;
     procedure VUCodeWritten(Index: Integer);
+    procedure SerializeStateHere(State: TStateArchive);
   public
     Scheduler: TPS2Scheduler;
+    // DMA channels 1 and 2, VIF1, VU1, the GIF and the GS, with their own
+    // events (VIF1 wake, PATH3 release, ends of channels 1 and 2).
+    VU1Domain: TPS2VU1Domain;
+    DomainScheduler: TPS2Scheduler;
     Bus: TPS2EEBus;
     CPU: TEECPU;
     VU0: TPS2VU0;
@@ -141,6 +260,7 @@ type
     // The console boots its BIOS (External BIOS mode).
     property BIOSBoot: Boolean read GetBIOSBoot;
     property IdleCycles: Int64 read FIdleCycles;
+    // Experimental: the VU1 thread's counters ('' without it).
     // Snapshot header policy: version and the errors users see.
     class function SnapshotPolicy: TSnapshotPolicy; static;
   end;
@@ -148,7 +268,10 @@ type
 implementation
 
 uses
-  System.Math, PS2.IOP.Loader;
+  System.Math,
+  System.Diagnostics,
+  System.SyncObjs,
+  PS2.IOP.Loader;
 
 const
   // EE cycles per IOP slice while IOP code has work.
@@ -167,10 +290,16 @@ begin
   FConfig := Config;
   FTTY := TStringBuilder.Create;
   Scheduler := TPS2Scheduler.Create;
+  VU1Domain := TPS2VU1Domain.Create(Scheduler);
+  VU1Domain.OnCatchUp := CatchUpDomain;
+  VU1Domain.OnLeave := DomainLeft;
+  DomainScheduler := TPS2Scheduler.Create;
   Bus := TPS2EEBus.Create(Scheduler);
+  Bus.VU1Domain := VU1Domain;
   VU0 := TPS2VU0.Create(Bus.VU0Code, Bus.VU0Data);
   VU1 := TPS2VU1.Create(Bus.VU1Code, Bus.VU1Data);
   VU0.VU1 := VU1.Core;
+  VU0.VU1Domain := VU1Domain;
   VU0.Clock := @Scheduler.Now;
   VU0.OnStartVU1 := StartVU1;
   VU1.Core.OnKick := VU1Kick;
@@ -183,6 +312,8 @@ begin
   DMAC := TPS2DMAC.Create(Scheduler, Bus.RAM, CPU.Scratchpad, Bus.RAMGenerations);
   DMAC.OnInterrupt := DMACInterrupt;
   Bus.DMAC := DMAC;
+  DMAC.Domain := VU1Domain;
+  DMAC.DomainScheduler := DomainScheduler;
   SIF := TPS2SIF.Create(Scheduler, DMAC, Bus.RAM, Bus.IOPRAM);
   SIF.OnReset := IOPReset;
   SIF.StubUnknownServers := True;
@@ -193,20 +324,66 @@ begin
   GS.Raster.OnFinish := GSFinishWritten;
   Bus.GS := GS;
   GIF := TPS2GIF.Create(GS);
-  GIF.Clock := @Scheduler.Now;
+  GIF.Domain := VU1Domain;
+  GIF.Clock := @VU1Domain.Now;
+  // Speculative execution restores the guest's exact host floating-point state.
+{$IF DEFINED(MSWINDOWS) AND DEFINED(CPUX64)}
+  if GetEnvironmentVariable('PS2_VU1_THREAD') <> '0' then
+  begin
+    GIF.DeferWork := True;
+    GIF.CommitClock := @Scheduler.Now;
+    GIF.OnRequest := function(Kind: Integer; Time: Int64): Int64 begin Result := FAheadThread.Request(Kind, Time); end;
+    DMAC.OnAheadStat := procedure(Mask: Cardinal) begin FAheadThread.Output(VU1Domain.Now, 1, Mask); end;
+    VU1Domain.OnStopAhead := procedure begin StopAhead; end;
+    DMAC.OnAheadPortEnd := procedure(Channel, Moved: Integer) begin GIF.PostPortEnd(Channel, Moved); end;
+    GIF.OnPortEnd :=
+      procedure(Channel, Moved: Integer; Time: Int64)
+      begin
+        if Channel = DMAGIF then
+          DMAC.PortDoneAt(Channel, Moved, GIF.TakePortCyclesHere, Time)
+        else
+          DMAC.PortDoneAt(Channel, Moved, GIF.GSBusyCyclesAt(Time), Time);
+      end;
+    FAheadThread := TPS2VU1Thread.Create(AheadStep);
+    SetLength(FViews, 1 shl 14);
+    DMAC.OnAheadRead := AheadCopy;
+    DMAC.OnAheadReadUsed := AheadCopyUsed;
+    DMAC.OnAheadLimit := AheadLimit;
+    DMAC.OnAheadCheck := AheadCheck;
+    DMAC.OnAheadResume := AheadResume;
+    GIF.OnAheadRead := AheadCopy;
+    GIF.OnAheadReadUsed := AheadCopyUsed;
+    VU1Domain.OnAheadRead := ReadAheadRegister;
+    VU1Domain.OnAheadBusy := AheadVU1Busy;
+    FRunStop := -1;
+    CPU.OnDeadline := EEDeadline;
+  end;
+{$ENDIF}
   Bus.GIF := GIF;
   GIFPort := TPS2GIFPort.Create(GIF);
   GIF.OnPath3Resume := procedure begin DMAC.Resume(DMAGIF); end;
-  GIF.OnPath3Held := procedure(Cycles: Int64) begin Scheduler.Schedule(TPS2Event.GIF, Scheduler.Now + Cycles); end;
+  GIF.OnPath3Held :=
+    procedure(Cycles: Int64) begin DomainScheduler.ScheduleAt(TPS2Event.GIF, VU1Domain.Now + Cycles); end;
   DMAC.Ports[DMAGIF] := GIFPort;
   VIF0 := TPS2VIF.Create(0, VU0.Core, nil, Bus.VU0Code, Bus.VU0Data, $1000, $1000);
   VIF1 := TPS2VIF.Create(1, VU1.Core, GIF, Bus.VU1Code, Bus.VU1Data, $4000, $4000);
   VIF0.OnInterrupt := procedure begin Bus.RaiseIRQ(4); end;
-  VIF1.OnInterrupt := procedure begin Bus.RaiseIRQ(5); end;
+  VIF1.OnInterrupt :=
+    procedure
+    begin
+      if VU1Domain.Ahead then
+        FAheadThread.Output(VU1Domain.Now, 0, 5)
+      else
+      begin
+        Inc(FDomainSignals);
+        Bus.RaiseIRQ(5);
+      end;
+    end;
   VIF0.OnResume := procedure begin DMAC.Resume(DMAVIF0); end;
   VIF1.OnResume := procedure begin DMAC.Resume(DMAVIF1); end;
   VIF0.Scheduler := Scheduler;
-  VIF1.Scheduler := Scheduler;
+  VIF1.Scheduler := DomainScheduler;
+  VIF1.Domain := VU1Domain;
   Bus.VIF0 := VIF0;
   Bus.VIF1 := VIF1;
   VIF0Port := TPS2VIFPort.Create(VIF0);
@@ -248,10 +425,7 @@ begin
   IOMan.Cards := TPS2MCDevice.Create(MemoryCards);
   IOP := TPS2IOPKernel.Create(Scheduler, SIF, IOPHeap, IOMan, FDiscFS, Bus.RAM, Bus.IOPRAM);
   IOP.OnTTY := IOPTTY;
-  IOP.OnHighLevelModule := procedure(Name: string; Image: TBytes)
-    begin
-      NoteModuleVersion(Name, Image);
-    end;
+  IOP.OnHighLevelModule := procedure(Name: string; Image: TBytes) begin NoteModuleVersion(Name, Image); end;
   IOP.OnModuleDone := ModuleDone;
   IOP.OnMarkEE := Bus.MarkRAM;
   IOP.Hardware.SIO2.PadSource := PadMan;
@@ -335,6 +509,10 @@ end;
 
 destructor TPS2Console.Destroy;
 begin
+  // (No going back: the domain goes with the console.)
+  if (FAheadThread <> nil) and VU1Domain.Ahead then
+    AbandonAhead;
+  FAheadThread.Free;
   IOPMachine.Free;
   Drive.Free;
   SIF0Port.Free;
@@ -369,6 +547,8 @@ begin
   VU1.Free;
   VU0.Free;
   Bus.Free;
+  VU1Domain.Free;
+  DomainScheduler.Free;
   Scheduler.Free;
   FTTY.Free;
   inherited;
@@ -397,11 +577,13 @@ end;
 
 procedure TPS2Console.DMACInterrupt(Active: Boolean);
 begin
+  Inc(FDomainSignals);
   CPU.SetInt1(Active);
 end;
 
 procedure TPS2Console.GSInterrupt;
 begin
+  Inc(FDomainSignals);
   Bus.RaiseIRQ(0);
 end;
 
@@ -416,7 +598,8 @@ end;
 // count FINISH interrupts, one per packet they send.
 procedure TPS2Console.GSFinishWritten;
 begin
-  var Due := Max(Scheduler.Now + GSFinishDelay, GIF.GSBusyUntil);
+  // (On the GIF's GS side, at the time of the work that wrote FINISH.)
+  var Due := Max(GIF.CommitNow + GSFinishDelay, GIF.GSBusyUntil);
   if FFinishCount > 0 then
     Due := Max(Due, FFinishDue[FFinishCount - 1]);
   if FFinishCount = Length(FFinishDue) then
@@ -427,7 +610,7 @@ begin
   FFinishDue[FFinishCount] := Due;
   Inc(FFinishCount);
   if FFinishCount = 1 then
-    Scheduler.Schedule(TPS2Event.GSSignal, Due);
+    Scheduler.ScheduleAt(TPS2Event.GSSignal, Due);
 end;
 
 procedure TPS2Console.GSFinishShown;
@@ -440,7 +623,7 @@ begin
   GIF.Join;
   GS.Raster.SetFinish;
   if FFinishCount > 0 then
-    Scheduler.Schedule(TPS2Event.GSSignal, FFinishDue[0]);
+    Scheduler.ScheduleAt(TPS2Event.GSSignal, FFinishDue[0]);
 end;
 
 procedure TPS2Console.SetVideo(PAL: Boolean);
@@ -473,7 +656,12 @@ end;
 
 procedure TPS2Console.Reset;
 begin
+  // (The thread works on what the reset replaces.)
+  if (FAheadThread <> nil) and VU1Domain.Ahead then
+    StopAhead;
   Scheduler.Reset;
+  DomainScheduler.Reset;
+  VU1Domain.Reset;
   FFinishCount := 0;
   Bus.Reset;
   CPU.Reset;
@@ -590,8 +778,7 @@ begin
         Exit;
       end;
     end;
-    Scheduler.Deadline := Min(Scheduler.NextDue, Scheduler.Now + IOPSlice);
-    CPU.Run;
+    RunEE(Min(Scheduler.NextDue, Scheduler.Now + IOPSlice));
     IOPMachine.Run(Scheduler.Now);
   end;
 end;
@@ -738,8 +925,13 @@ end;
 procedure TPS2Console.StartVU1(Address: Cardinal);
 begin
   // CMSAR1 holds a 16-bit instruction address.
-  VU1.Core.Start((Address and $FFFF) * 8);
-  VU1.Core.RunProgram(Scheduler.Now, 4000000);
+  VU1Domain.Enter;
+  try
+    VU1.Core.Start((Address and $FFFF) * 8);
+    VU1.Core.RunProgram(VU1Domain.Now, 4000000);
+  finally
+    VU1Domain.Leave;
+  end;
 end;
 
 procedure TPS2Console.VU1Kick(Address: Cardinal; Data: PByte);
@@ -865,7 +1057,628 @@ begin
   LoadProgram(Data, Path);
 end;
 
+// Events reaching the VU1 domain (the GS at VBlank start and when FINISH
+// shows) run inside it at the EE time.
 procedure TPS2Console.HandleEvent(Event: TPS2Event; At: Int64);
+begin
+  if not (Event in [TPS2Event.VBlankStart, TPS2Event.GSSignal]) then
+  begin
+    HandleEventHere(Event, At);
+    Exit;
+  end;
+  var Entered := VU1Domain.EnterKind(deGS);
+  // Only this outermost event restores the actual saved caller word. Its
+  // non-BIOS tail updates pad RAM, queues IOP notifications and an integer
+  // deadline. A GS IRQ or a kernel vsync write excludes this handoff.
+{$IF DEFINED(MSWINDOWS) AND DEFINED(CPUX64)}
+  var Scoped :=
+    (Event = TPS2Event.VBlankStart)
+      and Entered
+      and (VU1Domain.Depth = 1)
+      and (IOPMachine = nil)
+      and (Kernel <> nil)
+      and (Kernel.PendingVSyncWrite = 0)
+      and ((GS.IMR and $1F00) = $1F00);
+  var Expected: Cardinal := 0;
+  if Scoped then
+    Expected := VU1Domain.SavedHostWord;
+{$ELSE}
+  const Scoped = False;
+{$ENDIF}
+  var Previous := GS.ClosedDisplayScope;
+  GS.ClosedDisplayScope := Scoped;
+  try
+    HandleEventHere(Event, At);
+  finally
+    GS.ClosedDisplayScope := Previous;
+    if Entered then
+      VU1Domain.Leave;
+{$IF DEFINED(MSWINDOWS) AND DEFINED(CPUX64)}
+    if Scoped and (GetMXCSR <> Expected) then
+      raise Exception.Create('Lost enclosing domain host status');
+{$ENDIF}
+  end;
+end;
+
+// The VU1 domain's events due by T, in time order (ties: DMAC, GIF, VIF1),
+// each at its own time.
+procedure TPS2Console.CatchUpDomain(T: Int64);
+begin
+  while DomainScheduler.NextDue <= T do
+    RunDomainEvent;
+end;
+
+// The VU1 domain's earliest event, at its time.
+procedure TPS2Console.RunDomainEvent;
+begin
+  var Event := TPS2Event.DMAC;
+  var At := DomainScheduler.Due(TPS2Event.DMAC);
+  for var E in [TPS2Event.GIF, TPS2Event.VIF1] do
+    if DomainScheduler.Due(E) < At then
+    begin
+      Event := E;
+      At := DomainScheduler.Due(E);
+    end;
+  DomainScheduler.Cancel(Event);
+  VU1Domain.EnterEvent(At);
+  try
+    case Event of
+      TPS2Event.DMAC: DMAC.Event(True);
+      TPS2Event.GIF: GIF.ReleasePath3;
+      TPS2Event.VIF1: VIF1.Wake;
+    end;
+  finally
+    VU1Domain.Leave;
+  end;
+end;
+
+// Leaving the VU1 domain: its events may be due earlier now, the EE stops for
+// them.
+procedure TPS2Console.DomainLeft;
+begin
+  if VU1Domain.Ahead then
+    Exit;
+  // (With an end of a channel the EE side holds.)
+  var Stop := NextDomainStop;
+  if Stop < Scheduler.Deadline then
+    Scheduler.Deadline := Stop;
+end;
+
+// Where the EE next stops for the VU1 domain: its next event, or running
+// ahead the time it is complete up to; and what it handed the EE side
+// (outputs, GS work, a question).
+function TPS2Console.NextDomainStop: Int64;
+begin
+  if VU1Domain.Ahead then
+    Result := Min(FAheadThread.Complete, FAheadThread.RequestTime)
+  else
+    Result := DomainScheduler.NextDue;
+  if FAheadThread <> nil then
+    Result := Min(Min(Result, DMAC.PortEnd), Min(Min(FAheadThread.OutputHead, GIF.WorkHead), FAheadThread.ReadHead));
+end;
+
+function TPS2Console.CanGoAhead: Boolean;
+begin
+  // While channel 1 runs from memory (the domain then only reads memory),
+  // without stall control, with events of the domain due.
+  Result :=
+    (FAheadThread <> nil)
+      and not VU1Domain.Ahead
+      and (VU1Domain.Depth = 0)
+      and ((DMAC.Ch[DMAVIF1].CHCR and CHCRSTR) <> 0)
+      and ((DMAC.Ch[DMAVIF1].CHCR and CHCRDir) <> 0)
+      and not DMAC.PortOnEE[DMAVIF1]
+      and ((DMAC.CTRL and $F0) = 0)
+      and (GIF.TagLog = nil)
+      and (DomainScheduler.NextDue <> PS2Never);
+end;
+
+procedure TPS2Console.StartAhead;
+begin
+  CatchUpDomain(Scheduler.Now);
+  for var N := DMAVIF1 to DMAGIF do
+    DMAC.PortEndedAt[N] := PS2Never;
+  SaveDomain(FCheckpoint);
+  FAheadThread.TakenUpTo := Scheduler.Now;
+  PostView(Scheduler.Now);
+  VU1Domain.Ahead := True;
+  GIF.Ahead := True;
+  FAheadThread.Go(DomainScheduler.NextDue, VU1Domain.Now);
+end;
+
+// The EE takes the domain back. One that went past the EE's time (an access
+// reached it there), or read memory that has changed since, goes back to
+// where it went ahead and does its events up to there again (RollBack).
+procedure TPS2Console.StopAhead;
+begin
+  if not VU1Domain.Ahead then
+    Exit;
+  var Failure := '';
+  var Sound := False;
+  // (What the thread still does is past the EE's time: none of it is taken.)
+  FAheadThread.Quieten;
+  GIF.Discard(True);
+  try
+    FAheadThread.Pause(
+      procedure
+      begin
+        ServeAhead(Scheduler.Now);
+        StoreShared(FViewDone, LoadShared(FViewPosted));
+      end
+    );
+    // (What the last event posted: the thread may have parked after the last
+    // serving.)
+    ServeAhead(Scheduler.Now);
+    Failure := FAheadThread.TakeFailure;
+    if Failure = '' then
+    begin
+      var Applied := Scheduler.Now;
+      if FAheadThread.ConflictAt <= Applied then
+      begin
+        Applied := FAheadThread.ConflictAt - 1;
+      end;
+      if FAheadThread.Last > Applied then
+      begin
+        RollBack(Applied);
+      end;
+      Sound := True;
+    end;
+  finally
+    // (Failed, here or on the thread: the session is given up as it is.)
+    if Sound then
+      EndAhead
+    else
+      AbandonAhead;
+  end;
+  if Failure <> '' then
+    raise Exception.Create('VU1 thread: ' + Failure);
+end;
+
+// The session ends (parked thread): the domain is the EE side's again.
+procedure TPS2Console.EndAhead;
+begin
+  FAheadThread.EndSession;
+  GIF.Discard(False);
+  FViewDone := FViewPosted;
+  VU1Domain.Ahead := False;
+  GIF.Ahead := False;
+end;
+
+// The session is given up: the thread parks, nothing more is taken from it
+// and nothing done again (the console goes, or taking the domain back
+// failed).
+procedure TPS2Console.AbandonAhead;
+begin
+  FAheadThread.Quieten;
+  GIF.Discard(True);
+  FAheadThread.Pause(procedure begin StoreShared(FViewDone, LoadShared(FViewPosted)); end);
+  FAheadThread.TakeFailure;
+  // (Work not done yet may read the session's copies.)
+  GIF.DropWork;
+  EndAhead;
+end;
+
+procedure TPS2Console.SaveDomain(var C: TPS2DomainCheckpoint);
+begin
+  C.Now := VU1Domain.Now;
+  DomainScheduler.Save(C.Scheduler);
+  for var N := DMAVIF1 to DMAGIF do
+  begin
+    C.Ch[N] := DMAC.Ch[N];
+    C.Moved[N] := DMAC.Moved[N];
+    C.PortOnEE[N] := DMAC.PortOnEE[N];
+    C.PortEndAt[N] := DMAC.PortEndAt[N];
+    C.DrainWaiting[N] := DMAC.DrainWaiting[N];
+  end;
+  VIF1.SaveDomain(C.VIF);
+  VU1.SaveDomain(C.VU1);
+  GIF.SaveDomain(C.GIF);
+  Move(Bus.VU1Code^, C.Code, SizeOf(C.Code));
+  Move(Bus.VU1Data^, C.Data, SizeOf(C.Data));
+end;
+
+procedure TPS2Console.RestoreDomain(const C: TPS2DomainCheckpoint);
+begin
+  VU1Domain.Now := C.Now;
+  DomainScheduler.Restore(C.Scheduler);
+  for var N := DMAVIF1 to DMAGIF do
+  begin
+    DMAC.Ch[N] := C.Ch[N];
+    DMAC.Moved[N] := C.Moved[N];
+    DMAC.PortOnEE[N] := C.PortOnEE[N];
+    DMAC.PortEndAt[N] := C.PortEndAt[N];
+    DMAC.DrainWaiting[N] := C.DrainWaiting[N];
+  end;
+  VIF1.RestoreDomain(C.VIF);
+  Move(C.Code, Bus.VU1Code^, SizeOf(C.Code));
+  Move(C.Data, Bus.VU1Data^, SizeOf(C.Data));
+  VU1.RestoreDomain(C.VU1);
+  GIF.RestoreDomain(C.GIF);
+end;
+
+// Going back (parked thread): the domain does its events up to Applied again
+// from where it went ahead, with the session's copies and answers, handing
+// the EE side nothing again (it has taken all of that up to Applied and
+// nothing past it); a channel it handed to the EE side by then stays as the
+// EE side has it.
+procedure TPS2Console.RollBack(Applied: Int64);
+var
+  Ch: array[DMAVIF1..DMAGIF] of TPS2DMAChannel;
+  OnEE: array[DMAVIF1..DMAGIF] of Boolean;
+  EndAt: array[DMAVIF1..DMAGIF] of Int64;
+begin
+  FAheadThread.DropOutputs;
+  GIF.DropWork;
+  for var N := DMAVIF1 to DMAGIF do
+  begin
+    Ch[N] := DMAC.Ch[N];
+    OnEE[N] := DMAC.PortOnEE[N];
+    EndAt[N] := DMAC.PortEndAt[N];
+  end;
+  RestoreDomain(FCheckpoint);
+  FAheadThread.BeginReplay;
+  GIF.Replaying := True;
+  VU1Domain.Replaying := True;
+  try
+    while DomainScheduler.NextDue <= Applied do
+    begin
+      if ((DMAC.Ch[DMAVIF1].CHCR and CHCRSTR) = 0) or DMAC.PortOnEE[DMAVIF1] then
+        raise EPS2Replay.Create('VU1 replay: channel 1 ended before the session did');
+      RunDomainEvent;
+    end;
+    FAheadThread.EndReplay(Applied);
+  finally
+    GIF.Replaying := False;
+    VU1Domain.Replaying := False;
+  end;
+  for var N := DMAVIF1 to DMAGIF do
+    if DMAC.PortOnEE[N] then
+    begin
+      DMAC.PortOnEE[N] := OnEE[N];
+      DMAC.PortEndAt[N] := EndAt[N];
+      DMAC.Ch[N].DoneAt := Ch[N].DoneAt;
+      DMAC.Ch[N].Finishing := Ch[N].Finishing;
+      DMAC.Ch[N].CHCR := (DMAC.Ch[N].CHCR and not Cardinal(CHCRSTR)) or (Ch[N].CHCR and CHCRSTR);
+    end;
+end;
+
+const
+  FastViewRetire = True;
+
+procedure TPS2Console.RetireViews(T: Int64; SkipUnchanged: Boolean);
+begin
+  if FViewDone < LoadShared(FViewPosted) then
+  begin
+    var Index := ViewIndex(T);
+
+    // Only a changed index releases slots. Publishing the same retained
+    // view again gives the producer no new ownership or ordering fact.
+{$IFDEF CPUX64}
+    if not SkipUnchanged or (Index <> FViewDone) then
+{$ENDIF}
+    begin
+      StoreShared(FViewDone, Index);
+
+    end;
+  end;
+end;
+
+// Running ahead: until the domain is complete past T (its outputs up to T
+// applied), or it stopped.
+procedure TPS2Console.WaitDomain(T: Int64);
+begin
+  while VU1Domain.Ahead do
+  begin
+    // (Before serving: complete past T, the domain has posted all its events
+    // up to T hand over, and serving takes or refuses all of it.)
+    var Done := (FAheadThread.Complete > T) and (FAheadThread.RequestTime > T);
+    ServeAhead(T);
+    // A parked thread hands the domain back once the EE has reached the last
+    // event it ran (until then the EE reads what that left) or what it is
+    // complete up to, a read whose copy differs from memory takes it back;
+    // the domain catches up from there.
+    if (FAheadThread.ConflictAt <> PS2Never)
+      or FAheadThread.Parked and ((FAheadThread.Last <= T) or (FAheadThread.Complete <= T) or FAheadThread.Failed) then
+    begin
+      StopAhead;
+      CatchUpDomain(T);
+      Break;
+    end;
+    if Done then
+      Break;
+    YieldProcessor;
+  end;
+  // (Taken back: what catching up handed over, ends the EE side holds.)
+  if not VU1Domain.Ahead then
+    ServeAhead(T);
+end;
+
+procedure TPS2Console.ServeAhead(UpTo: Int64);
+begin
+  // What the domain read up to UpTo, against memory as the EE has it there
+  // (nothing is taken from a read whose copy differs on: it goes back).
+  FAheadThread.CheckReads(UpTo);
+  if FAheadThread.ConflictAt <= UpTo then
+    UpTo := FAheadThread.ConflictAt - 1;
+  if UpTo > FAheadThread.TakenUpTo then
+    FAheadThread.TakenUpTo := UpTo;
+  FAheadThread.TakeOutputs(UpTo, ApplyOutput);
+  GIF.CommitTo(UpTo);
+  FAheadThread.ServeRequest(UpTo, AnswerAhead);
+  if DMAC.PortEnd <= UpTo then
+    DMAC.EndPorts(UpTo);
+  RetireViews(UpTo, FastViewRetire);
+end;
+
+// Domain thread (or the EE side starting it): the registers the EE may read
+// from Time on.
+procedure TPS2Console.PostView(Time: Int64);
+begin
+  var Rounds := 0;
+  while FViewPosted - LoadShared(FViewDone) >= Length(FViews) do
+    WaitRound(Rounds);
+  var V := PPS2DomainView(@FViews[FViewPosted and High(FViews)]);
+  V.Time := Time;
+  // (PortOnEE first: the EE side clears STR before it.)
+  for var N := DMAVIF1 to DMAGIF do
+    V.PortOnEE[N] := DMAC.PortOnEE[N];
+  V.Ch[DMAVIF1] := DMAC.Ch[DMAVIF1];
+  V.Ch[DMAGIF] := DMAC.Ch[DMAGIF];
+  VIF1.GetRegisters(V.VIF);
+  V.VU1Running := VU1.Core.S.Running;
+  V.VU1BusyUntil := VU1.Core.S.BusyUntil;
+  V.MaskedPath3 := GIF.MaskedPath3;
+  for var N := DMAVIF1 to DMAGIF do
+    V.DrainWaiting[N] := DMAC.DrainWaiting[N];
+  StoreShared(FViewPosted, FViewPosted + 1);
+end;
+
+// The last view up to T (from the one kept).
+function TPS2Console.ViewIndex(T: Int64): Int64;
+begin
+  var Posted := LoadShared(FViewPosted);
+  Result := FViewDone;
+  while (Result + 1 < Posted) and (FViews[(Result + 1) and High(FViews)].Time <= T) do
+    Inc(Result);
+end;
+
+function TPS2Console.ViewAt(T: Int64): PPS2DomainView;
+begin
+  if FViewDone >= LoadShared(FViewPosted) then
+    Exit(nil);
+  Result := @FViews[ViewIndex(T) and High(FViews)];
+  if Result.Time > T then
+    Result := nil;
+end;
+
+// Running ahead, the EE reads a register of channel 1 or 2, VIF1 or the GIF
+// as the domain had it at the EE time.
+function TPS2Console.ReadAheadRegister(Address: Cardinal; out Value: UInt64): Boolean;
+begin
+  var V := ViewAt(Scheduler.Now);
+  if V = nil then
+    Exit(False);
+  Result := True;
+  case Address of
+    $10003000..$100037FF: Value := GIF.ReadRegister(Address, V.MaskedPath3);
+    $10003C00..$10003FFF:
+      Value := TPS2VIF.RegisterValue(V.VIF, 1, Address and $1F0, V.VU1Running or (Scheduler.Now < V.VU1BusyUntil));
+  else
+    begin
+      var N := DMAVIF1;
+      if (Address and $F000) = $A000 then
+        N := DMAGIF;
+      var R := TPS2DMAC.ChannelRegister(V.Ch[N], Address and $FC);
+      // A channel whose end the EE side has: ended once it passed.
+      if ((Address and $FC) = 0) and V.PortOnEE[N] and (DMAC.PortEndedAt[N] <= Scheduler.Now) then
+        R := R and not Cardinal(CHCRSTR);
+      Value := R;
+    end;
+  end;
+end;
+
+function TPS2Console.AheadVU1Busy(out Busy: Boolean): Boolean;
+begin
+  var V := ViewAt(Scheduler.Now);
+  Result := V <> nil;
+  if Result then
+  begin
+    Busy := V.VU1Running or (Scheduler.Now < V.VU1BusyUntil);
+  end;
+end;
+
+function TPS2Console.AheadCopy(Key: Integer; Source: PByte; Size: Integer; out Token: Int64): PByte;
+begin
+  Result := FAheadThread.ReadCopy(Key, VU1Domain.Now, Source, Size, Token);
+end;
+
+procedure TPS2Console.AheadCopyUsed(Token: Int64; Used: Integer);
+begin
+  FAheadThread.ReadUsed(Token, Used);
+end;
+
+function TPS2Console.AheadLimit(Key: Integer; Source: PByte; Count: Integer): Integer;
+begin
+  Result := FAheadThread.ReadLimit(Key, Source, Count);
+end;
+
+function TPS2Console.AheadCheck(Source: PCardinal; Mask, Offset, Value: Cardinal; Decided: Boolean): Boolean;
+begin
+  Result := FAheadThread.PostCheck(VU1Domain.Now, Source, Mask, Offset, Value, Decided);
+end;
+
+// Running ahead, the EE side has channel N of the domain try again at its
+// time (fromSPR filled the MFIFO ring, a write to the DMAC's shared
+// registers). A channel that waits for its device finds it as it left it;
+// what trying again still does is done here, from the view at that time:
+// the drain on the still empty ring raises MEIS again, PATH3 taking nothing
+// brings the GS side's time up to the EE's. For anything else the domain is
+// entered (it goes back if it is past that time) and the channel goes on.
+procedure TPS2Console.AheadResume(N: Integer);
+begin
+  var T := Scheduler.Now;
+  var V := ViewAt(T);
+  if V <> nil then
+  begin
+    if ((V.Ch[N].CHCR and CHCRSTR) = 0) or V.Ch[N].Finishing or ((DMAC.CTRL and 1) = 0) then
+      Exit;
+    if V.DrainWaiting[N] then
+    begin
+      if DMAC.RingEmptyAt(V.Ch[N].TADR) then
+      begin
+        DMAC.SetStat($4000);
+        Exit;
+      end;
+    end
+    else if N = DMAVIF1 then
+      Exit
+    else if FAheadThread.ConflictAt = PS2Never then
+    begin
+      GIF.GSBusyCyclesAt(T);
+      Exit;
+    end;
+  end;
+  VU1Domain.Enter;
+  try
+    DMAC.Resume(N);
+  finally
+    VU1Domain.Leave;
+  end;
+end;
+
+// The EE reached its deadline inside RunEE. When only the domain's reads were
+// due there (checked now) and RunEE would go on at once, the EE goes on to the
+// next deadline without leaving its run.
+function TPS2Console.EEDeadline: Boolean;
+begin
+  Result := False;
+  var T := Scheduler.Now;
+  // (Not lowered meanwhile, no limit or event of the EE's own.)
+  if not VU1Domain.Ahead or (Scheduler.Deadline <> FRunStop) or (T >= FRunLimit) or (Scheduler.NextDue <= T) then
+    Exit;
+  // (Nothing to wait for, take or hand back.)
+  if (FAheadThread.Complete <= T)
+    or (FAheadThread.RequestTime <= T)
+    or (FAheadThread.OutputHead <= T)
+    or (GIF.WorkHead <= T)
+    or (DMAC.PortEnd <= T)
+    or FAheadThread.Parked and (FAheadThread.Last <= T) then
+    Exit;
+  FAheadThread.CheckReads(T);
+  if FAheadThread.ReadHead <= T then
+    Exit;
+  RetireViews(T, FastViewRetire);
+  var D := Min(Min(FRunLimit, Scheduler.NextDue), NextDomainStop);
+  if D <= T then
+    Exit;
+  Scheduler.Deadline := D;
+  FRunStop := D;
+  Result := True;
+end;
+
+procedure TPS2Console.ApplyOutput(Kind: Integer; Value: Cardinal);
+begin
+  case Kind of
+    0:
+    begin
+      Inc(FDomainSignals);
+      Bus.RaiseIRQ(Value);
+    end;
+    1: DMAC.SetStat(Value);
+  end;
+end;
+
+function TPS2Console.AnswerAhead(Kind: Integer; Time: Int64): Int64;
+begin
+  if Kind = 1 then
+  begin
+    GIF.CommitTo(Time);
+    Result := GIF.TakePortCyclesHere;
+  end
+  else
+    Result := GIF.GSBusyCyclesAt(Time);
+end;
+
+// The VU1 thread's step: one domain event; done once channel 1 ended.
+function TPS2Console.AheadStep: TPS2AheadStep;
+begin
+  if ((DMAC.Ch[DMAVIF1].CHCR and CHCRSTR) = 0) or DMAC.PortOnEE[DMAVIF1] or FAheadThread.SessionFull then
+    Exit(asEnd);
+  var At := DomainScheduler.NextDue;
+  if At = PS2Never then
+    Exit(asIdle);
+  RunDomainEvent;
+  PostView(At);
+  FAheadThread.Publish(DomainScheduler.NextDue, At);
+  Result := asDone;
+end;
+
+// The EE up to Limit (an event of its own, the IOP slice). It stops for the
+// VU1 domain's events too, which then run, and goes on: those stops do not
+// let the IOP or the scheduler run (they come only at the EE's own stops).
+procedure TPS2Console.RunEE(Limit: Int64);
+begin
+  while True do
+  begin
+    if VU1Domain.Ahead then
+      WaitDomain(Scheduler.Now)
+    else if CanGoAhead then
+      StartAhead;
+    // (With the scheduler's next event: one scheduled since the caller
+    // took its limit, while the EE ran.)
+    Scheduler.Deadline := Min(Min(Limit, Scheduler.NextDue), NextDomainStop);
+    var Stop := Scheduler.Deadline;
+    FRunLimit := Limit;
+    FRunStop := Stop;
+    CPU.Run;
+    FRunStop := -1;
+    if VU1Domain.Ahead then
+      WaitDomain(Scheduler.Now)
+    else
+    begin
+      CatchUpDomain(Scheduler.Now);
+      if FAheadThread <> nil then
+        ServeAhead(Scheduler.Now);
+    end;
+    // An exit request, an event of the EE's own or the limit: done. (Not by
+    // where the EE stopped: the domain's stops are not the same with its
+    // thread running ahead.)
+    if CPU.ExitTaken or (Scheduler.Now >= Limit) or (Scheduler.NextDue <= Scheduler.Now) then
+      Exit;
+  end;
+end;
+
+// The EE waits (its kernel idles) up to Limit; the VU1 domain's events run
+// meanwhile, and one that interrupts the EE ends the wait there.
+procedure TPS2Console.IdleTo(Limit: Int64);
+begin
+  while Scheduler.Now < Limit do
+  begin
+    if VU1Domain.Ahead then
+      WaitDomain(Scheduler.Now);
+    var T := Min(Min(Limit, Scheduler.NextDue), NextDomainStop);
+    if T < Scheduler.Now then
+      T := Scheduler.Now;
+    Inc(FIdleCycles, T - Scheduler.Now);
+    Scheduler.Now := T;
+    var Signals := FDomainSignals;
+    if VU1Domain.Ahead then
+      WaitDomain(T)
+    else
+    begin
+      CatchUpDomain(T);
+      if FAheadThread <> nil then
+        ServeAhead(T);
+    end;
+    if FDomainSignals <> Signals then
+      Exit;
+    // (An event of the EE's own came with the domain's work: FINISH shown.)
+    if Scheduler.NextDue <= Scheduler.Now then
+      Exit;
+  end;
+end;
+
+procedure TPS2Console.HandleEventHere(Event: TPS2Event; At: Int64);
 begin
   if IOPMachine <> nil then
   begin
@@ -874,24 +1687,24 @@ begin
   end;
   case Event of
     TPS2Event.VBlankStart:
-      begin
-        FInVBlank := True;
-        Bus.RaiseIRQ(2);
-        GS.FrameNumber := FFrameCount + 1;
-        GS.VBlank;
-        PadMan.Update;
-        IOP.VBlank(True);
-        Kernel.VBlankStart(GS.OddField);
-        Scheduler.Schedule(TPS2Event.VBlankEnd, FFieldStart + FFieldCycles);
-      end;
+    begin
+      FInVBlank := True;
+      Bus.RaiseIRQ(2);
+      GS.FrameNumber := FFrameCount + 1;
+      GS.VBlank;
+      PadMan.Update;
+      IOP.VBlank(True);
+      Kernel.VBlankStart(GS.OddField);
+      Scheduler.Schedule(TPS2Event.VBlankEnd, FFieldStart + FFieldCycles);
+    end;
     TPS2Event.VBlankEnd:
-      begin
-        FInVBlank := False;
-        Bus.RaiseIRQ(3);
-        IOP.VBlank(False);
-        FFieldStart := FFieldStart + FFieldCycles;
-        Scheduler.Schedule(TPS2Event.VBlankStart, FFieldStart + FVisibleCycles);
-      end;
+    begin
+      FInVBlank := False;
+      Bus.RaiseIRQ(3);
+      IOP.VBlank(False);
+      FFieldStart := FFieldStart + FFieldCycles;
+      Scheduler.Schedule(TPS2Event.VBlankStart, FFieldStart + FVisibleCycles);
+    end;
     TPS2Event.Timer0: Timers.Event(0);
     TPS2Event.Timer1: Timers.Event(1);
     TPS2Event.Timer2: Timers.Event(2);
@@ -909,11 +1722,11 @@ begin
     TPS2Event.IOPTimers: IOP.TimerEvent;
     TPS2Event.IOPDMA: IOP.Hardware.Event;
     TPS2Event.SPU2:
-      begin
-        // 48 kHz output in batches (6144 EE cycles a sample).
-        IOP.Hardware.SPU2.Tick(SPU2Batch);
-        Scheduler.Schedule(TPS2Event.SPU2, At + SPU2BatchCycles);
-      end;
+    begin
+      // 48 kHz output in batches (6144 EE cycles a sample).
+      IOP.Hardware.SPU2.Tick(SPU2Batch);
+      Scheduler.Schedule(TPS2Event.SPU2, At + SPU2BatchCycles);
+    end;
   end;
 end;
 
@@ -938,26 +1751,28 @@ begin
         Exit;
       end;
     end;
-    Scheduler.Deadline := Scheduler.NextDue;
+    var Limit := Scheduler.NextDue;
     // IOP code runs in slices behind the EE.
     var IOPActive := IOP.Active;
-    if IOPActive and (Scheduler.Deadline > Scheduler.Now + IOPSlice) then
-      Scheduler.Deadline := Scheduler.Now + IOPSlice;
+    if IOPActive and (Limit > Scheduler.Now + IOPSlice) then
+      Limit := Scheduler.Now + IOPSlice;
     if Kernel.Exited then
     begin
-      Scheduler.Now := Scheduler.Deadline;
+      StopAhead;
+      Scheduler.Now := Limit;
+      CatchUpDomain(Scheduler.Now);
       Continue;
     end;
     if Kernel.Idle then
     begin
-      // Nothing runs until the next event.
-      Inc(FIdleCycles, Scheduler.Deadline - Scheduler.Now);
-      Scheduler.Now := Scheduler.Deadline;
+      // Nothing runs on the EE until the next event (or an interrupt from
+      // the VU1 domain).
+      IdleTo(Limit);
       Kernel.Idle := False;
       IOP.Run(Scheduler.Now);
       Continue;
     end;
-    CPU.Run;
+    RunEE(Limit);
     IOP.Run(Scheduler.Now);
   end;
 end;
@@ -980,12 +1795,63 @@ end;
 
 procedure TPS2Console.SerializeState(State: TStateArchive);
 begin
+  if State.Loading then
+  begin
+    // (The thread works on what the snapshot replaces.)
+    if (FAheadThread <> nil) and VU1Domain.Ahead then
+      StopAhead;
+    VU1Domain.EnterRestore;
+  end
+  else
+  begin
+    VU1Domain.Enter;
+  end;
+  try
+    SerializeStateHere(State);
+  finally
+    VU1Domain.Leave;
+  end;
+end;
+
+procedure TPS2Console.SerializeStateHere(State: TStateArchive);
+begin
+  // The VU1 domain's events go in the scheduler's VIF1, GIF and DMAC slots
+  // (the layout before the domain had its own).
+  var Kept: array[0..2] of Int64;
+  if not State.Loading then
+  begin
+    Kept[0] := Scheduler.Due(TPS2Event.VIF1);
+    Kept[1] := Scheduler.Due(TPS2Event.GIF);
+    Kept[2] := Scheduler.Due(TPS2Event.DMAC);
+    Scheduler.ScheduleAt(TPS2Event.VIF1, DomainScheduler.Due(TPS2Event.VIF1));
+    Scheduler.ScheduleAt(TPS2Event.GIF, DomainScheduler.Due(TPS2Event.GIF));
+    // (With the ends of channels the EE side holds: their events too.)
+    Scheduler.ScheduleAt(TPS2Event.DMAC, Min(Min(Kept[2], DomainScheduler.Due(TPS2Event.DMAC)), DMAC.PortEnd));
+  end;
   Scheduler.SerializeState(State);
+  if not State.Loading then
+  begin
+    Scheduler.ScheduleAt(TPS2Event.VIF1, Kept[0]);
+    Scheduler.ScheduleAt(TPS2Event.GIF, Kept[1]);
+    Scheduler.ScheduleAt(TPS2Event.DMAC, Kept[2]);
+  end
+  else
+  begin
+    // (The domain caught up with the EE when the snapshot was taken.)
+    VU1Domain.Now := Scheduler.Now;
+    DomainScheduler.Reset;
+    DomainScheduler.ScheduleAt(TPS2Event.VIF1, Scheduler.Due(TPS2Event.VIF1));
+    DomainScheduler.ScheduleAt(TPS2Event.GIF, Scheduler.Due(TPS2Event.GIF));
+    Scheduler.Cancel(TPS2Event.VIF1);
+    Scheduler.Cancel(TPS2Event.GIF);
+  end;
   Bus.SerializeState(State);
   CPU.SerializeState(State);
   VU1.SerializeState(State);
   Timers.SerializeState(State);
   DMAC.SerializeState(State);
+  if State.Loading then
+    DMAC.Reschedule;
   // The IOP's server list (booted or between a reset and its boot).
   var Booted := SIF.ServerCount > 0;
   State.Field(Booted, SizeOf(Booted));

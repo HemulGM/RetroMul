@@ -13,7 +13,14 @@
 interface
 
 uses
-  System.SysUtils, System.Math, RM.Vulkan.Bindings, RM.Vulkan.Loader;
+  System.SysUtils,
+  System.Math,
+  RM.Vulkan.Bindings,
+  RM.Vulkan.Loader;
+
+const
+  // Command buffers TVulkanCompute may have in flight.
+  MaxSlots = 4;
 
 type
   VkDescriptorSetLayout = UInt64;
@@ -56,54 +63,176 @@ type
     FFamily: Cardinal;
     FMemory: VkPhysicalDeviceMemoryProperties;
     FPool: VkCommandPool;
-    // The command buffer being recorded and its fence: one of two, the other
-    // possibly running (Submit).
+    // The command buffer being recorded and its fence: one of SlotCount, the
+    // others possibly running (Submit).
     FCommands: VkCommandBuffer;
     FFence: VkFence;
     FRecording: Boolean;
-    FSlot: Integer;
-    FSlotCommands: array[0..1] of VkCommandBuffer;
-    FSlotFences: array[0..1] of VkFence;
-    FInFlight: array[0..1] of Boolean;
+    FSlot, FSlotCount: Integer;
+    FSlotCommands: array[0..MaxSlots - 1] of VkCommandBuffer;
+    FSlotFences: array[0..MaxSlots - 1] of VkFence;
+    FInFlight: array[0..MaxSlots - 1] of Boolean;
     FName: string;
     FHostImport, FExactFloat, FExactDouble, FInt64: Boolean;
     FHostAlignment: UInt64;
     FBuffers, FKernels: TArray<TObject>;
-    vkGetPhysicalDeviceFeatures: procedure(physicalDevice: VkPhysicalDevice; pFeatures: Pointer);
-      {$IFDEF MSWINDOWS}stdcall{$ELSE}cdecl{$ENDIF};
-    vkCreateBuffer: function(device: VkDevice; pCreateInfo: Pointer; pAllocator: Pointer; pBuffer: Pointer): VkResult;
-      {$IFDEF MSWINDOWS}stdcall{$ELSE}cdecl{$ENDIF};
-    vkDestroyBuffer: procedure(device: VkDevice; buffer: VkBuffer; pAllocator: Pointer);
-      {$IFDEF MSWINDOWS}stdcall{$ELSE}cdecl{$ENDIF};
-    vkGetBufferMemoryRequirements: procedure(device: VkDevice; buffer: VkBuffer; pRequirements: Pointer);
-      {$IFDEF MSWINDOWS}stdcall{$ELSE}cdecl{$ENDIF};
-    vkBindBufferMemory: function(device: VkDevice; buffer: VkBuffer; memory: VkDeviceMemory;
-      offset: VkDeviceSize): VkResult; {$IFDEF MSWINDOWS}stdcall{$ELSE}cdecl{$ENDIF};
-    vkMapMemory: function(device: VkDevice; memory: VkDeviceMemory; offset, size: VkDeviceSize; flags: Cardinal;
-      ppData: PPointer): VkResult; {$IFDEF MSWINDOWS}stdcall{$ELSE}cdecl{$ENDIF};
-    vkCreateDescriptorSetLayout: function(device: VkDevice; pCreateInfo: Pointer; pAllocator: Pointer;
-      pSetLayout: Pointer): VkResult; {$IFDEF MSWINDOWS}stdcall{$ELSE}cdecl{$ENDIF};
-    vkDestroyDescriptorSetLayout: procedure(device: VkDevice; layout: VkDescriptorSetLayout; pAllocator: Pointer);
-      {$IFDEF MSWINDOWS}stdcall{$ELSE}cdecl{$ENDIF};
-    vkCreateDescriptorPool: function(device: VkDevice; pCreateInfo: Pointer; pAllocator: Pointer;
-      pPool: Pointer): VkResult; {$IFDEF MSWINDOWS}stdcall{$ELSE}cdecl{$ENDIF};
-    vkDestroyDescriptorPool: procedure(device: VkDevice; pool: VkDescriptorPool; pAllocator: Pointer);
-      {$IFDEF MSWINDOWS}stdcall{$ELSE}cdecl{$ENDIF};
-    vkAllocateDescriptorSets: function(device: VkDevice; pAllocateInfo: Pointer; pSets: Pointer): VkResult;
-      {$IFDEF MSWINDOWS}stdcall{$ELSE}cdecl{$ENDIF};
-    vkUpdateDescriptorSets: procedure(device: VkDevice; writeCount: Cardinal; pWrites: Pointer; copyCount: Cardinal;
-      pCopies: Pointer); {$IFDEF MSWINDOWS}stdcall{$ELSE}cdecl{$ENDIF};
-    vkCreateComputePipelines: function(device: VkDevice; cache: UInt64; count: Cardinal; pCreateInfos: Pointer;
-      pAllocator: Pointer; pPipelines: Pointer): VkResult; {$IFDEF MSWINDOWS}stdcall{$ELSE}cdecl{$ENDIF};
-    vkCmdBindDescriptorSets: procedure(commandBuffer: VkCommandBuffer; bindPoint: Integer; layout: VkPipelineLayout;
-      firstSet, setCount: Cardinal; pSets: Pointer; dynamicOffsetCount: Cardinal; pDynamicOffsets: Pointer);
-      {$IFDEF MSWINDOWS}stdcall{$ELSE}cdecl{$ENDIF};
-    vkCmdDispatch: procedure(commandBuffer: VkCommandBuffer; x, y, z: Cardinal);
-      {$IFDEF MSWINDOWS}stdcall{$ELSE}cdecl{$ENDIF};
-    vkCmdCopyBuffer: procedure(commandBuffer: VkCommandBuffer; src, dst: VkBuffer; regionCount: Cardinal;
-      pRegions: Pointer); {$IFDEF MSWINDOWS}stdcall{$ELSE}cdecl{$ENDIF};
-    vkGetMemoryHostPointerPropertiesEXT: function(device: VkDevice; handleType: Cardinal; pHost: Pointer;
-      pProperties: Pointer): VkResult; {$IFDEF MSWINDOWS}stdcall{$ELSE}cdecl{$ENDIF};
+    vkGetPhysicalDeviceFeatures:
+      procedure(physicalDevice: VkPhysicalDevice; pFeatures: Pointer);
+{$IFDEF MSWINDOWS}
+      stdcall
+{$ELSE}
+      cdecl
+{$ENDIF}
+      ;
+    vkCreateBuffer:
+      function(device: VkDevice; pCreateInfo: Pointer; pAllocator: Pointer; pBuffer: Pointer): VkResult;
+{$IFDEF MSWINDOWS}
+      stdcall
+{$ELSE}
+      cdecl
+{$ENDIF}
+      ;
+    vkDestroyBuffer:
+      procedure(device: VkDevice; buffer: VkBuffer; pAllocator: Pointer);
+{$IFDEF MSWINDOWS}
+      stdcall
+{$ELSE}
+      cdecl
+{$ENDIF}
+      ;
+    vkGetBufferMemoryRequirements:
+      procedure(device: VkDevice; buffer: VkBuffer; pRequirements: Pointer);
+{$IFDEF MSWINDOWS}
+      stdcall
+{$ELSE}
+      cdecl
+{$ENDIF}
+      ;
+    vkBindBufferMemory:
+      function(device: VkDevice; buffer: VkBuffer; memory: VkDeviceMemory; offset: VkDeviceSize): VkResult;
+{$IFDEF MSWINDOWS}
+      stdcall
+{$ELSE}
+      cdecl
+{$ENDIF}
+      ;
+    vkMapMemory:
+      function(
+        device: VkDevice;
+        memory: VkDeviceMemory;
+        offset, size: VkDeviceSize;
+        flags: Cardinal;
+        ppData: PPointer
+      ): VkResult;
+{$IFDEF MSWINDOWS}
+      stdcall
+{$ELSE}
+      cdecl
+{$ENDIF}
+      ;
+    vkCreateDescriptorSetLayout:
+      function(device: VkDevice; pCreateInfo: Pointer; pAllocator: Pointer; pSetLayout: Pointer): VkResult;
+{$IFDEF MSWINDOWS}
+      stdcall
+{$ELSE}
+      cdecl
+{$ENDIF}
+      ;
+    vkDestroyDescriptorSetLayout:
+      procedure(device: VkDevice; layout: VkDescriptorSetLayout; pAllocator: Pointer);
+{$IFDEF MSWINDOWS}
+      stdcall
+{$ELSE}
+      cdecl
+{$ENDIF}
+      ;
+    vkCreateDescriptorPool:
+      function(device: VkDevice; pCreateInfo: Pointer; pAllocator: Pointer; pPool: Pointer): VkResult;
+{$IFDEF MSWINDOWS}
+      stdcall
+{$ELSE}
+      cdecl
+{$ENDIF}
+      ;
+    vkDestroyDescriptorPool:
+      procedure(device: VkDevice; pool: VkDescriptorPool; pAllocator: Pointer);
+{$IFDEF MSWINDOWS}
+      stdcall
+{$ELSE}
+      cdecl
+{$ENDIF}
+      ;
+    vkAllocateDescriptorSets:
+      function(device: VkDevice; pAllocateInfo: Pointer; pSets: Pointer): VkResult;
+{$IFDEF MSWINDOWS}
+      stdcall
+{$ELSE}
+      cdecl
+{$ENDIF}
+      ;
+    vkUpdateDescriptorSets:
+      procedure(device: VkDevice; writeCount: Cardinal; pWrites: Pointer; copyCount: Cardinal; pCopies: Pointer);
+{$IFDEF MSWINDOWS}
+      stdcall
+{$ELSE}
+      cdecl
+{$ENDIF}
+      ;
+    vkCreateComputePipelines:
+      function(
+        device: VkDevice;
+        cache: UInt64;
+        count: Cardinal;
+        pCreateInfos: Pointer;
+        pAllocator: Pointer;
+        pPipelines: Pointer
+      ): VkResult;
+{$IFDEF MSWINDOWS}
+      stdcall
+{$ELSE}
+      cdecl
+{$ENDIF}
+      ;
+    vkCmdBindDescriptorSets:
+      procedure(
+        commandBuffer: VkCommandBuffer;
+        bindPoint: Integer;
+        layout: VkPipelineLayout;
+        firstSet, setCount: Cardinal;
+        pSets: Pointer;
+        dynamicOffsetCount: Cardinal;
+        pDynamicOffsets: Pointer
+      );
+{$IFDEF MSWINDOWS}
+      stdcall
+{$ELSE}
+      cdecl
+{$ENDIF}
+      ;
+    vkCmdDispatch:
+      procedure(commandBuffer: VkCommandBuffer; x, y, z: Cardinal);
+{$IFDEF MSWINDOWS}
+      stdcall
+{$ELSE}
+      cdecl
+{$ENDIF}
+      ;
+    vkCmdCopyBuffer:
+      procedure(commandBuffer: VkCommandBuffer; src, dst: VkBuffer; regionCount: Cardinal; pRegions: Pointer);
+{$IFDEF MSWINDOWS}
+      stdcall
+{$ELSE}
+      cdecl
+{$ENDIF}
+      ;
+    vkGetMemoryHostPointerPropertiesEXT:
+      function(device: VkDevice; handleType: Cardinal; pHost: Pointer; pProperties: Pointer): VkResult;
+{$IFDEF MSWINDOWS}
+      stdcall
+{$ELSE}
+      cdecl
+{$ENDIF}
+      ;
     function DeviceProc(const Name: AnsiString; Required: Boolean = True): Pointer;
     function MemoryType(Bits, Wanted: Cardinal; out Index: Cardinal): Boolean;
     procedure SelectDevice;
@@ -134,10 +263,12 @@ type
     procedure Copy(Src, Dst: TVulkanBuffer; SrcOffset, DstOffset, Size: UInt64);
     // Runs what was recorded and waits for it (and for what Submit started).
     procedure Finish;
-    // Starts what was recorded without waiting for it and goes on in the other
-    // command buffer (Slot 0 or 1), once what that one ran before is done.
+    // Starts what was recorded without waiting for it and goes on in the next
+    // command buffer (Slot 0 to SlotCount - 1), once what that one ran before
+    // is done.
     procedure Submit;
     property Slot: Integer read FSlot;
+    property SlotCount: Integer read FSlotCount;
     property Name: string read FName;
     property HostImport: Boolean read FHostImport;
     // Kernels may keep denormals, signed zeros, infinities and NaNs and round
@@ -233,8 +364,8 @@ type
     sType: Integer;
     pNext: Pointer;
     denormBehaviorIndependence, roundingModeIndependence: Integer;
-    shaderSignedZeroInfNanPreserveFloat16, shaderSignedZeroInfNanPreserveFloat32,
-      shaderSignedZeroInfNanPreserveFloat64: Cardinal;
+    shaderSignedZeroInfNanPreserveFloat16, shaderSignedZeroInfNanPreserveFloat32, shaderSignedZeroInfNanPreserveFloat64:
+      Cardinal;
     shaderDenormPreserveFloat16, shaderDenormPreserveFloat32, shaderDenormPreserveFloat64: Cardinal;
     shaderDenormFlushToZeroFloat16, shaderDenormFlushToZeroFloat32, shaderDenormFlushToZeroFloat64: Cardinal;
     shaderRoundingModeRTEFloat16, shaderRoundingModeRTEFloat32, shaderRoundingModeRTEFloat64: Cardinal;
@@ -359,7 +490,7 @@ begin
       FAPI.vkFreeMemory(FDevice, B.FMemory, nil);
       B.Free;
     end;
-    for var S := 0 to 1 do
+    for var S := 0 to MaxSlots - 1 do
       if FSlotFences[S] <> 0 then
         FAPI.vkDestroyFence(FDevice, FSlotFences[S], nil);
     if FPool <> 0 then
@@ -468,10 +599,15 @@ begin
     Props.sType := VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
     Props.pNext := @FloatProps;
     FAPI.vkGetPhysicalDeviceProperties2(FPhysical, @Props);
-    FExactFloat := (FloatProps.shaderDenormPreserveFloat32 <> 0) and
-      (FloatProps.shaderSignedZeroInfNanPreserveFloat32 <> 0) and (FloatProps.shaderRoundingModeRTEFloat32 <> 0);
-    FExactDouble := FExactFloat and (FloatProps.shaderDenormPreserveFloat64 <> 0) and
-      (FloatProps.shaderSignedZeroInfNanPreserveFloat64 <> 0) and (FloatProps.shaderRoundingModeRTEFloat64 <> 0);
+    FExactFloat :=
+      (FloatProps.shaderDenormPreserveFloat32 <> 0)
+        and (FloatProps.shaderSignedZeroInfNanPreserveFloat32 <> 0)
+        and (FloatProps.shaderRoundingModeRTEFloat32 <> 0);
+    FExactDouble :=
+      FExactFloat
+        and (FloatProps.shaderDenormPreserveFloat64 <> 0)
+        and (FloatProps.shaderSignedZeroInfNanPreserveFloat64 <> 0)
+        and (FloatProps.shaderRoundingModeRTEFloat64 <> 0);
   end;
   var Supported := Default(VkPhysicalDeviceFeatures);
   vkGetPhysicalDeviceFeatures(FPhysical, @Supported);
@@ -571,11 +707,12 @@ begin
   Alloc.sType := VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
   Alloc.commandPool := FPool;
   Alloc.level := VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-  Alloc.commandBufferCount := 2;
+  FSlotCount := MaxSlots;
+  Alloc.commandBufferCount := FSlotCount;
   CheckVulkan(FAPI.vkAllocateCommandBuffers(FDevice, @Alloc, @FSlotCommands[0]), 'vkAllocateCommandBuffers');
   var FenceInfo := Default(VkFenceCreateInfo);
   FenceInfo.sType := VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-  for var S := 0 to 1 do
+  for var S := 0 to FSlotCount - 1 do
     CheckVulkan(FAPI.vkCreateFence(FDevice, @FenceInfo, nil, @FSlotFences[S]), 'vkCreateFence');
   FSlot := 0;
   FCommands := FSlotCommands[0];
@@ -889,16 +1026,16 @@ procedure TVulkanCompute.Finish;
 begin
   if FRecording then
     SubmitRecorded;
-  // Submission order: the other buffer's work was submitted first.
-  WaitSlot(1 - FSlot);
-  WaitSlot(FSlot);
+  // Submission order: the next buffers' work was submitted first.
+  for var K := 1 to FSlotCount do
+    WaitSlot((FSlot + K) mod FSlotCount);
 end;
 
 procedure TVulkanCompute.Submit;
 begin
   if FRecording then
     SubmitRecorded;
-  FSlot := 1 - FSlot;
+  FSlot := (FSlot + 1) mod FSlotCount;
   FCommands := FSlotCommands[FSlot];
   FFence := FSlotFences[FSlot];
   WaitSlot(FSlot);

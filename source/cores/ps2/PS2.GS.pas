@@ -6,13 +6,29 @@
 // one or two read circuits merged into the output picture. Drawing itself is
 // done by PS2.GS.Raster.
 // References: GS User's Manual (PS2 Linux Kit), ps2tek.
-{$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
+{$IFDEF PS2_CHECKED}
+  {$Q+}
+  {$R+}
+{$ELSE}
+  {$O+}
+  {$Q-}
+  {$R-}
+{$ENDIF}
 {$POINTERMATH ON}
 
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Math, System.SyncObjs, Core.Snapshots, PS2.Types, PS2.EE.Bus, PS2.GS.Memory, PS2.GS.Raster;
+  PS2.Display.Pixels,
+  System.SysUtils,
+  System.Classes,
+  System.Math,
+  System.SyncObjs,
+  Core.Snapshots,
+  PS2.Types,
+  PS2.EE.Bus,
+  PS2.GS.Memory,
+  PS2.GS.Raster;
 
 type
   TPS2GSInterrupt = procedure of object;
@@ -22,7 +38,7 @@ type
   // The display registers a picture is built from (at a VBlank).
   TPS2GSDisplay = record
     PMODE, SMODE2, DISPFB1, DISPLAY1, DISPFB2, DISPLAY2, BGCOLOR: UInt64;
-    Interlaced: Boolean;
+    Interlaced, PAL: Boolean;
   end;
 
   // A picture built: Width x Height pixels (ARGB), the frame Number it is.
@@ -34,11 +50,16 @@ type
   // with the raster Async): the GS worker copies the pages into a free
   // snapshot and hands it over, so it goes on drawing at once.
   TPS2GSComposer = class(TThread)
-  private type
-    TJob = record
-      Display: TPS2GSDisplay;
-      Number: Int64;
-    end;
+  private
+    type
+      TJob = record
+        Display: TPS2GSDisplay;
+        Number: Int64;
+        Scale: Integer;
+        Word: Cardinal;
+        WithWord: Boolean;
+        High1, High2: TArray<Cardinal>;
+      end;
   private
     FGS: TPS2GS;
     FSnapshots: array[0..1] of TPS2GSMemory;
@@ -59,7 +80,24 @@ type
     // Copies Pages of Memory into the next snapshot (once it is free) and
     // hands it over (one thread at a time: the GS worker's or, with no copy
     // of it outstanding, the emulation thread).
-    procedure Post(const Display: TPS2GSDisplay; const Pages: TPS2GSPages; Memory: TPS2GSMemory; Number: Int64);
+    procedure Post(
+      const Display: TPS2GSDisplay;
+      const Pages: TPS2GSPages;
+      Memory: TPS2GSMemory;
+      Number: Int64;
+      Word: Cardinal;
+      WithWord: Boolean
+    );
+    procedure PostPixels(
+      const Display: TPS2GSDisplay;
+      const Pages: TPS2GSPages;
+      Memory: TPS2GSMemory;
+      Number: Int64;
+      Scale: Integer;
+      Word: Cardinal;
+      const High1, High2: TArray<Cardinal>;
+      WithWord: Boolean = True
+    );
     // Waits until the jobs handed over are done.
     procedure Finish;
   end;
@@ -74,6 +112,8 @@ type
     FFrame: TArray<Cardinal>;
     FFrameWidth, FFrameHeight: Integer;
     FNativeFrameWidth, FNativeFrameHeight: Integer;
+    FPresentedPAL: Boolean;
+    FScanBank: TPixelBank<Cardinal>;
     // Pictures asked for (BuildFrame) and built (Compose: on the GS worker's
     // thread with the raster Async, in order with the drawing).
     FFramesQueued, FFramesBuilt: Int64;
@@ -83,15 +123,35 @@ type
     // copied (the emulation thread copies them itself only when none is
     // outstanding, so that they stay in order).
     FWorkerFrames, FWorkerCopied: Int64;
+    FHighPosted, FHighDone: Int64;
+    FInternalSink, FWasAsync, FClosedDisplayScope: Boolean;
+    procedure SetPublicSink(const Handler: TPS2GSFrameEvent);
+    procedure PostHighCut(
+      const D: TPS2GSDisplay;
+      const Pages: TPS2GSPages;
+      Number: Int64;
+      Scale: Integer;
+      First: Boolean;
+      CSR: Cardinal
+    );
     procedure CheckInterrupt;
     class procedure CircuitSize(const D: TPS2GSDisplay; N: Integer; out W, H, DX, DY, MagH: Integer); static;
-    class procedure ReadCircuit(const D: TPS2GSDisplay; Memory: TPS2GSMemory; N, W, H: Integer;
-      out Pixels: TArray<Cardinal>); static;
+    class procedure ReadCircuit(
+      const D: TPS2GSDisplay;
+      Memory: TPS2GSMemory;
+      N, W, H: Integer;
+      out Pixels: TArray<Cardinal>
+    ); static;
     class procedure CircuitPages(const D: TPS2GSDisplay; N: Integer; var Pages: TPS2GSPages); static;
     class procedure CircuitsRead(const D: TPS2GSDisplay; out Read1, Read2: Boolean); static;
     procedure Compose(const D: TPS2GSDisplay; Memory: TPS2GSMemory; Number: Int64);
-    procedure ComposePixels(const D: TPS2GSDisplay; Memory: TPS2GSMemory; Number: Int64; Scale: Integer;
-      const High1, High2: TArray<Cardinal>);
+    procedure ComposePixels(
+      const D: TPS2GSDisplay;
+      Memory: TPS2GSMemory;
+      Number: Int64;
+      Scale: Integer;
+      const High1, High2: TArray<Cardinal>
+    );
     procedure SyncFrame;
     function GetFrame: TArray<Cardinal>;
     function GetFrameWidth: Integer;
@@ -99,8 +159,25 @@ type
   public
     // Privileged registers (index by (address shr 4) and $FF for 1200_0000h,
     // CSR etc. at 1200_1000h).
-    PMODE, SMODE1, SMODE2, SRFSH, SYNCH1, SYNCH2, SYNCV, DISPFB1, DISPLAY1, DISPFB2, DISPLAY2, EXTBUF, EXTDATA,
-      EXTWRITE, BGCOLOR, CSR, IMR, BUSDIR, SIGLBLID: UInt64;
+    PMODE,
+    SMODE1,
+    SMODE2,
+    SRFSH,
+    SYNCH1,
+    SYNCH2,
+    SYNCV,
+    DISPFB1,
+    DISPLAY1,
+    DISPFB2,
+    DISPLAY2,
+    EXTBUF,
+    EXTDATA,
+    EXTWRITE,
+    BGCOLOR,
+    CSR,
+    IMR,
+    BUSDIR,
+    SIGLBLID: UInt64;
     PAL, Interlaced: Boolean;
     OddField: Boolean;
     // SMODE2.INT sets Interlaced (BIOS boot; the high-level kernel keeps it
@@ -144,10 +221,15 @@ type
     // Metadata of the frame being delivered; safe inside OnFrame (no wait).
     property NativeFrameWidth: Integer read FNativeFrameWidth;
     property NativeFrameHeight: Integer read FNativeFrameHeight;
+    property PresentedPAL: Boolean read FPresentedPAL;
     // Each picture once built, on the thread that built it (the GS worker's
     // with the raster Async, else the emulation thread). Pixels are not to be
     // changed.
-    property OnFrame: TPS2GSFrameEvent read FOnFrame write FOnFrame;
+    property ClosedDisplayScope: Boolean read FClosedDisplayScope write FClosedDisplayScope;
+    procedure DrainHigh;
+    procedure FinishDisplay;
+    procedure SetInternalSink(const Handler: TPS2GSFrameEvent);
+    property OnFrame: TPS2GSFrameEvent read FOnFrame write SetPublicSink;
     property OnInterrupt: TPS2GSInterrupt read FOnInterrupt write FOnInterrupt;
     // Whether OnInterrupt would change nothing now (the interrupt is pending).
     property InterruptRaised: TPS2GSRaised read FInterruptRaised write FInterruptRaised;
@@ -162,6 +244,60 @@ type
 
 implementation
 
+{$IF DEFINED(MSWINDOWS) AND DEFINED(CPUX64)}
+const
+  OrderedDisplaySupported = True;
+{$ELSE}
+const
+  OrderedDisplaySupported = False;
+{$ENDIF}
+
+function DisplayControlWord: Cardinal; inline;
+begin
+{$IF DEFINED(MSWINDOWS) AND DEFINED(CPUX64)}
+  Result := System.GetMXCSR;
+{$ELSE}
+  // Only the Win64 ordered display path can request a hardware control word.
+  raise EInvalidOpException.Create('MXCSR display handoff is unavailable on this platform');
+{$ENDIF}
+end;
+
+procedure RestoreDisplayWord(Value: Cardinal);
+{$IF DEFINED(MSWINDOWS) AND DEFINED(CPUX64)}
+asm
+  .NOFRAME
+  mov [rsp+8],ecx
+  ldmxcsr [rsp+8]
+end;
+{$ELSE}
+begin
+end;
+{$ENDIF}
+
+procedure TPS2GS.DrainHigh;
+begin
+  if FHighPosted = TInterlocked.Read(FHighDone) then
+    Exit;
+  FRaster.FinishReads;
+  if FComposer <> nil then
+    FComposer.Finish;
+  if FHighPosted <> TInterlocked.Read(FHighDone) then
+    raise Exception.Create('Incomplete high-resolution field');
+end;
+
+procedure TPS2GS.SetPublicSink(const Handler: TPS2GSFrameEvent);
+begin
+  DrainHigh;
+  FInternalSink := False;
+  FOnFrame := Handler;
+end;
+
+procedure TPS2GS.SetInternalSink(const Handler: TPS2GSFrameEvent);
+begin
+  SetPublicSink(Handler);
+  FInternalSink := Assigned(Handler);
+end;
+
 constructor TPS2GS.Create;
 begin
   inherited Create;
@@ -172,6 +308,7 @@ end;
 
 destructor TPS2GS.Destroy;
 begin
+  DrainHigh;
   FRaster.Free;
   FComposer.Free;
   inherited;
@@ -179,6 +316,7 @@ end;
 
 procedure TPS2GS.Reset;
 begin
+  DrainHigh;
   if Assigned(FBeforeAccess) then
     FBeforeAccess;
   PMODE := 0;
@@ -478,6 +616,67 @@ begin
   Read2 := not OpaqueFront and not (En1 and (D.DISPFB1 = D.DISPFB2) and (W1 = W2) and (H1 = H2));
 end;
 
+procedure TPS2GS.PostHighCut(
+  const D: TPS2GSDisplay;
+  const Pages: TPS2GSPages;
+  Number: Int64;
+  Scale: Integer;
+  First: Boolean;
+  CSR: Cardinal
+);
+begin
+  var Display := D;
+  var Field := Number;
+  var S := Scale;
+  var Word := CSR;
+  var Circuit := 2 - Ord(First);
+  if FComposer = nil then
+    FComposer := TPS2GSComposer.Create(Self);
+  var Composer := FComposer;
+  Inc(FHighPosted);
+  FRaster.QueueHighCut(
+    Pages,
+    procedure(Owner: TPS2GSRaster; Memory: TPS2GSMemory; Certified: Boolean)
+    begin
+      var Prior := DisplayControlWord;
+      RestoreDisplayWord(Word);
+      try
+        var W, H, X, Y, M: Integer;
+        CircuitSize(Display, Circuit, W, H, X, Y, M);
+        var FB := Display.DISPFB1;
+        if Circuit = 2 then
+          FB := Display.DISPFB2;
+        var P, P1, P2: TArray<Cardinal>;
+        Owner.HighCutPixels(
+          Circuit,
+          Cardinal(FB and $1FF) * 32,
+          Cardinal((FB shr 9) and $3F),
+          Cardinal((FB shr 15) and $1F),
+          Integer((FB shr 32) and $7FF),
+          Integer((FB shr 43) and $7FF),
+          W,
+          H,
+          P,
+          Certified
+        );
+        if Circuit = 1 then
+          P1 := P
+        else
+          P2 := P;
+        // The internal sink receives the real status left by the circuit
+        // read. No predicted precision bit is installed on either worker.
+        var NativePages := Default(TPS2GSPages);
+        if Length(P) <> W * H * S * S then
+          CircuitPages(Display, Circuit, NativePages);
+        Composer.PostPixels(Display, NativePages, Memory, Field, S, DisplayControlWord, P1, P2);
+      finally
+        RestoreDisplayWord(Prior);
+
+      end;
+    end
+  );
+end;
+
 procedure TPS2GS.BuildFrame;
 begin
   if Assigned(FBeforeAccess) then
@@ -491,6 +690,7 @@ begin
   D.DISPLAY2 := DISPLAY2;
   D.BGCOLOR := BGCOLOR;
   D.Interlaced := Interlaced;
+  D.PAL := PAL;
   // The pages of the circuits read.
   var Pages: TPS2GSPages;
   FillChar(Pages, SizeOf(Pages), 0);
@@ -501,19 +701,48 @@ begin
   if Read2 then
     CircuitPages(D, 2, Pages);
   var Scale := FRaster.FrameScale;
-  if Scale > 1 then
+  var AsyncHigh :=
+    OrderedDisplaySupported
+      and ClosedDisplayScope
+      and FInternalSink
+      and FRaster.Async
+      and (Scale > 1)
+      and (Read1 xor Read2)
+      and ((DisplayControlWord and $1F80) = $1F80);
+  if FWasAsync and not AsyncHigh then
+    DrainHigh;
+  if AsyncHigh and (not FWasAsync or (FHighPosted - TInterlocked.Read(FHighDone) >= 2)) then
   begin
     SyncFrame;
     if FComposer <> nil then
       FComposer.Finish;
   end;
+  FWasAsync := AsyncHigh;
+  if (Scale > 1) and not AsyncHigh then
+  begin
+    SyncFrame;
+    if FComposer <> nil then
+      FComposer.Finish;
+  end;
+  var NativeContext := (Scale = 1) and OrderedDisplaySupported and FInternalSink;
+  var NativeWord: Cardinal := 0;
+  if NativeContext then
+    NativeWord := DisplayControlWord;
+  var NativeHere := NativeContext and ((NativeWord and $1F80) <> $1F80);
+  if NativeHere then
+    FinishDisplay;
   Inc(FFramesQueued);
   var Number := FrameNumber;
+  if AsyncHigh then
+  begin
+    PostHighCut(D, Pages, Number, Scale, Read1, DisplayControlWord);
+    Exit;
+  end;
   if Scale > 1 then
   begin
     // Native memory remains coherent for guest reads; display pixels come
     // from the retained high-resolution targets, not that native resolve.
-    var Memory := FRaster.MemoryFor(Pages);
+    var Memory := FRaster.MemoryFor(Pages, True);
     var P1, P2: TArray<Cardinal>;
     for var N := 1 to 2 do
       if ((N = 1) and Read1) or ((N = 2) and Read2) then
@@ -524,9 +753,17 @@ begin
         if N = 2 then
           FB := D.DISPFB2;
         var Pixels: TArray<Cardinal>;
-        FRaster.ReadHLECircuit(N, Cardinal(FB and $1FF) * 32, Cardinal((FB shr 9) and $3F),
-          Cardinal((FB shr 15) and $1F), Integer((FB shr 32) and $7FF), Integer((FB shr 43) and $7FF),
-          W, H, Pixels);
+        FRaster.ReadHLECircuit(
+          N,
+          Cardinal(FB and $1FF) * 32,
+          Cardinal((FB shr 9) and $3F),
+          Cardinal((FB shr 15) and $1F),
+          Integer((FB shr 32) and $7FF),
+          Integer((FB shr 43) and $7FF),
+          W,
+          H,
+          Pixels
+        );
         if N = 1 then
           P1 := Pixels
         else
@@ -537,7 +774,7 @@ begin
   end;
   // No GS worker: the picture now, here. (After pictures still being built
   // from snapshots.)
-  if not FRaster.Async then
+  if not FRaster.Async or NativeHere then
   begin
     if FComposer <> nil then
       FComposer.Finish;
@@ -551,16 +788,18 @@ begin
   // goes on); else by the worker once it has drawn them.
   if (TInterlocked.Read(FWorkerCopied) = FWorkerFrames) and FRaster.PagesDrawn(Pages) then
   begin
-    Composer.Post(D, Pages, FRaster.MemoryFor(Pages), Number);
+    Composer.Post(D, Pages, FRaster.MemoryFor(Pages), Number, NativeWord, NativeContext);
     Exit;
   end;
   Inc(FWorkerFrames);
-  FRaster.QueueRead(Pages,
+  FRaster.QueueRead(
+    Pages,
     procedure(Memory: TPS2GSMemory)
     begin
-      Composer.Post(D, Pages, Memory, Number);
+      Composer.Post(D, Pages, Memory, Number, NativeWord, NativeContext);
       TInterlocked.Increment(FWorkerCopied);
-    end);
+    end
+  );
 end;
 
 procedure TPS2GS.Compose(const D: TPS2GSDisplay; Memory: TPS2GSMemory; Number: Int64);
@@ -568,8 +807,13 @@ begin
   ComposePixels(D, Memory, Number, 1, nil, nil);
 end;
 
-procedure TPS2GS.ComposePixels(const D: TPS2GSDisplay; Memory: TPS2GSMemory; Number: Int64; Scale: Integer;
-  const High1, High2: TArray<Cardinal>);
+procedure TPS2GS.ComposePixels(
+  const D: TPS2GSDisplay;
+  Memory: TPS2GSMemory;
+  Number: Int64;
+  Scale: Integer;
+  const High1, High2: TArray<Cardinal>
+);
 var
   Pixels: TArray<Cardinal>;
 
@@ -589,6 +833,22 @@ var
     end;
     // CPU-written or reinterpreted surfaces have only native detail.
     SetLength(Result, W * H * Scale * Scale);
+    if DisplayRows and (W > 0) then
+    begin
+      for var Y := 0 to H - 1 do
+      begin
+        var Row := @Result[Y * Scale * W * Scale];
+        for var X := 0 to W - 1 do
+        begin
+          var C := Native[Y * W + X];
+          for var SX := 0 to Scale - 1 do
+            PCardinal(Row)[X * Scale + SX] := C;
+        end;
+        for var SY := 1 to Scale - 1 do
+          Move(Row^, Result[(Y * Scale + SY) * W * Scale], W * Scale * 4);
+      end;
+      Exit;
+    end;
     for var Y := 0 to H * Scale - 1 do
       for var X := 0 to W * Scale - 1 do
         Result[Y * W * Scale + X] := Native[(Y div Scale) * W + X div Scale];
@@ -649,8 +909,13 @@ begin
     // 2 or the background. 32/24-bit ReadPixel always returns opaque alpha;
     // 16-bit and unknown formats still require the fixed-alpha proof.
     var FrontPSM := Integer((D.DISPFB1 shr 15) and $1F);
-    var OpaqueFront := En1 and (OX1 = 0) and (OY1 = 0) and (W1 = W) and (H1 = H) and
-      ((AlphaFixed and (ALP >= 128)) or (not AlphaFixed and (FrontPSM in [PSMCT32, PSMCT24])));
+    var OpaqueFront :=
+      En1
+        and (OX1 = 0)
+        and (OY1 = 0)
+        and (W1 = W)
+        and (H1 = H)
+        and ((AlphaFixed and (ALP >= 128)) or (not AlphaFixed and (FrontPSM in [PSMCT32, PSMCT24])));
     if En1 then
       Circuit(1, W1, H1, High1, P1);
     if En2 and not OpaqueFront then
@@ -670,8 +935,13 @@ begin
     OY1 := OY1 * Scale;
     OX2 := OX2 * Scale;
     OY2 := OY2 * Scale;
-    SetLength(Pixels, W * H);
-    if OpaqueFront then
+    if DisplayRows and (Scale > 1) then
+      Pixels := FScanBank.Acquire(W * H)
+    else
+      SetLength(Pixels, W * H);
+    if DisplayRows and (Scale > 1) and OpaqueFront and (Length(Pixels) > 0) then
+      DisplayRGB(@P1[0], @Pixels[0], Length(Pixels))
+    else if OpaqueFront then
       for var I := 0 to Length(Pixels) - 1 do
       begin
         var Color := P1[I];
@@ -724,14 +994,27 @@ begin
   FFrameHeight := H;
   FNativeFrameWidth := W div Scale;
   FNativeFrameHeight := H div Scale;
+  FPresentedPAL := D.PAL;
   // (After the picture: the emulation thread reads it once it sees this.)
   TInterlocked.Exchange(FFramesBuilt, FFramesBuilt + 1);
   if Assigned(FOnFrame) then
     FOnFrame(Pixels, W, H, Number);
 end;
 
+procedure TPS2GS.FinishDisplay;
+begin
+  // FFramesBuilt is published before the sink returns. A timeline change
+  // must also finish queued VRAM copies and the sink itself.
+  DrainHigh;
+  if TInterlocked.Read(FWorkerCopied) <> FWorkerFrames then
+    FRaster.FinishReads;
+  if FComposer <> nil then
+    FComposer.Finish;
+end;
+
 procedure TPS2GS.SyncFrame;
 begin
+  DrainHigh;
   if TInterlocked.Read(FFramesBuilt) = FFramesQueued then
     Exit;
   if TInterlocked.Read(FWorkerCopied) <> FWorkerFrames then
@@ -767,8 +1050,28 @@ begin
   FSnapshots[1].Free;
 end;
 
-procedure TPS2GSComposer.Post(const Display: TPS2GSDisplay; const Pages: TPS2GSPages; Memory: TPS2GSMemory;
-  Number: Int64);
+procedure TPS2GSComposer.Post(
+  const Display: TPS2GSDisplay;
+  const Pages: TPS2GSPages;
+  Memory: TPS2GSMemory;
+  Number: Int64;
+  Word: Cardinal;
+  WithWord: Boolean
+);
+begin
+  PostPixels(Display, Pages, Memory, Number, 1, Word, nil, nil, WithWord);
+end;
+
+procedure TPS2GSComposer.PostPixels(
+  const Display: TPS2GSDisplay;
+  const Pages: TPS2GSPages;
+  Memory: TPS2GSMemory;
+  Number: Int64;
+  Scale: Integer;
+  Word: Cardinal;
+  const High1, High2: TArray<Cardinal>;
+  WithWord: Boolean
+);
 begin
   // (The snapshot this one takes was the one before last's: done by now,
   // nearly always.)
@@ -783,6 +1086,11 @@ begin
       Move(Source[P * 8192], Target[P * 8192], 8192);
   FJobs[K].Display := Display;
   FJobs[K].Number := Number;
+  FJobs[K].WithWord := WithWord;
+  FJobs[K].Scale := Scale;
+  FJobs[K].Word := Word;
+  FJobs[K].High1 := High1;
+  FJobs[K].High2 := High2;
   TInterlocked.Increment(FPosted);
   FWork.SetEvent;
 end;
@@ -810,7 +1118,28 @@ begin
       Break;
     var K := Integer(FDone and 1);
     try
-      FGS.Compose(FJobs[K].Display, FSnapshots[K], FJobs[K].Number);
+      if not FJobs[K].WithWord then
+        FGS.Compose(FJobs[K].Display, FSnapshots[K], FJobs[K].Number)
+      else
+      begin
+        var Previous := DisplayControlWord;
+        RestoreDisplayWord(FJobs[K].Word);
+        try
+          if FJobs[K].Scale <= 1 then
+            FGS.Compose(FJobs[K].Display, FSnapshots[K], FJobs[K].Number)
+          else
+            FGS.ComposePixels(
+              FJobs[K].Display,
+              FSnapshots[K],
+              FJobs[K].Number,
+              FJobs[K].Scale,
+              FJobs[K].High1,
+              FJobs[K].High2
+            );
+        finally
+          RestoreDisplayWord(Previous);
+        end;
+      end;
     except
       on E: Exception do
         if TInterlocked.CompareExchange(FFailed, 2, 0) = 0 then
@@ -819,6 +1148,10 @@ begin
           TInterlocked.Exchange(FFailed, 1);
         end;
     end;
+    FJobs[K].High1 := nil;
+    FJobs[K].High2 := nil;
+    if FJobs[K].Scale > 1 then
+      TInterlocked.Increment(FGS.FHighDone);
     TInterlocked.Increment(FDone);
     FFinished.SetEvent;
   end;
@@ -844,6 +1177,7 @@ end;
 
 procedure TPS2GS.SerializeState(State: TStateArchive);
 begin
+  DrainHigh;
   if Assigned(FBeforeAccess) then
     FBeforeAccess;
   State.Field(PMODE, SizeOf(PMODE));

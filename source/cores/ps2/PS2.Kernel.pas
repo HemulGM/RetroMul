@@ -10,13 +10,30 @@
 // skip to the next event.
 // References: ps2tek (BIOS EE syscalls and patches), ps2sdk kernel.h,
 // syscallnr.h and deci2.c (interfaces, structures); ps2autotests.
-{$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
+{$IFDEF PS2_CHECKED}
+  {$Q+}
+  {$R+}
+{$ELSE}
+  {$O+}
+  {$Q-}
+  {$R-}
+{$ENDIF}
 
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Math, System.Generics.Collections, Core.Snapshots, PS2.Types,
-  PS2.Scheduler, PS2.EE.CPU, PS2.EE.Bus, PS2.DMAC, PS2.SIF;
+  System.SysUtils,
+  System.Classes,
+  System.Math,
+  System.Generics.Collections,
+  Core.Snapshots,
+  PS2.Types,
+  PS2.Scheduler,
+  PS2.EE.CPU,
+  PS2.EE.Bus,
+  PS2.DMAC,
+  PS2.SIF,
+  PS2.VU1Domain;
 
 const
   KernelTrapInterrupt = 1;
@@ -148,6 +165,7 @@ type
     procedure Reschedule;
     procedure WakeThread(Id: Integer; Value: Integer);
     procedure StartNextCall;
+    procedure DispatchDmac;
     procedure FinishInterrupt;
     procedure Interrupt;
     procedure Exception;
@@ -188,6 +206,7 @@ type
     property Exited: Boolean read FExited;
     property ExitCode: Integer read FExitCode;
     property CurrentThread: Integer read FCurrent;
+    property PendingVSyncWrite: Cardinal read FVSyncFlag1;
     property GsIMR: UInt64 read FGsIMR;
     property CrtMode: Cardinal read FCrtMode;
     property CrtInterlace: Cardinal read FCrtInterlace;
@@ -234,7 +253,8 @@ const
     ($00000000, $1000E000, $00400397, $004003D7),
     ($0001E000, $11000000, $00440017, $00440415),
     ($0001E000, $12000000, $00480017, $00480415),
-    ($01FFE000, $1E000000, $00780017, $007C0017));
+    ($01FFE000, $1E000000, $00780017, $007C0017)
+  );
   DefaultTLB: array[0..17, 0..3] of Cardinal = (
     ($0007E000, $00080000, $0000201F, $0000301F),
     ($0007E000, $00100000, $0000401F, $0000501F),
@@ -253,7 +273,8 @@ const
     ($001FE000, $20600000, $00018017, $0001C017),
     ($007FE000, $20800000, $00020017, $00030017),
     ($007FE000, $21000000, $00040017, $00050017),
-    ($007FE000, $21800000, $00060017, $00070017));
+    ($007FE000, $21800000, $00060017, $00070017)
+  );
   ExtendedTLB: array[0..7, 0..3] of Cardinal = (
     ($0007E000, $30100000, $0000403F, $0000503F),
     ($0007E000, $30180000, $0000603F, $0000703F),
@@ -262,7 +283,8 @@ const
     ($001FE000, $30600000, $0001803F, $0001C03F),
     ($007FE000, $30800000, $0002003F, $0003003F),
     ($007FE000, $31000000, $0004003F, $0005003F),
-    ($007FE000, $31800000, $0006003F, $0007003F));
+    ($007FE000, $31800000, $0006003F, $0007003F)
+  );
 
   // Thread status codes (ReferThreadStatus).
   THSRun = $01;
@@ -594,13 +616,52 @@ end;
 
 { Interrupts }
 
+// INT1: the DMAC handlers of the channels whose interrupt is pending (their
+// status bits cleared), stall and error interrupts acknowledged. The DMAC
+// belongs to the VU1 domain.
+procedure TPS2Kernel.DispatchDmac;
+begin
+  var Entered := FBus.VU1Domain.EnterKind(deLocal);
+  try
+    var Stat := FBus.DMAC.STAT;
+    var Pending := Stat and (Stat shr 16) and $3FF;
+    for var Ch := 0 to 9 do
+      if (Pending and (Cardinal(1) shl Ch)) <> 0 then
+      begin
+        FBus.DMAC.Write($1000E010, Cardinal(1) shl Ch);
+        for var Id in FDmacOrder do
+          if FDmac[Id].Used and FDmac[Id].Enabled and (FDmac[Id].Cause = Cardinal(Ch)) then
+          begin
+            var C: TPS2GuestCall;
+            C.Address := FDmac[Id].Address;
+            C.A0 := Cardinal(Ch);
+            C.A1 := FDmac[Id].Arg;
+            C.A2 := 0;
+            C.GP := FDmac[Id].GP;
+            C.Kind := 1;
+            FCalls.Add(C);
+          end;
+      end;
+    // Stall and error interrupts: acknowledge.
+    if (Stat and $E000 and (Stat shr 16)) <> 0 then
+      FBus.DMAC.Write($1000E010, Stat and $E000);
+  finally
+    if Entered then
+      FBus.VU1Domain.Leave;
+  end;
+end;
+
 procedure TPS2Kernel.Interrupt;
 begin
   // Entered at the interrupt vector: EPC holds the interrupted PC.
   FCPU.S.PC := FCPU.S.COP0[C0EPC];
   if Trace <> nil then
-    Trace.Add(Format('%d interrupt epc=%.8x cause=%x thread=%d ra=%.8x', [FScheduler.Now, FCPU.S.PC, FCPU.S.COP0[C0Cause],
-      FCurrent, Cardinal(FCPU.S.GPR[31].Lo)]));
+    Trace.Add(
+      Format(
+        '%d interrupt epc=%.8x cause=%x thread=%d ra=%.8x',
+        [FScheduler.Now, FCPU.S.PC, FCPU.S.COP0[C0Cause], FCurrent, Cardinal(FCPU.S.GPR[31].Lo)]
+      )
+    );
   SaveContext(FIntContext);
   FIntStatus := FCPU.S.COP0[C0Status];
   FInInterrupt := True;
@@ -651,30 +712,7 @@ begin
       end;
   end;
   if (Cause and EECauseIP3) <> 0 then
-  begin
-    var Stat := FBus.DMAC.STAT;
-    var Pending := Stat and (Stat shr 16) and $3FF;
-    for var Ch := 0 to 9 do
-      if (Pending and (Cardinal(1) shl Ch)) <> 0 then
-      begin
-        FBus.DMAC.Write($1000E010, Cardinal(1) shl Ch);
-        for var Id in FDmacOrder do
-          if FDmac[Id].Used and FDmac[Id].Enabled and (FDmac[Id].Cause = Cardinal(Ch)) then
-          begin
-            var C: TPS2GuestCall;
-            C.Address := FDmac[Id].Address;
-            C.A0 := Cardinal(Ch);
-            C.A1 := FDmac[Id].Arg;
-            C.A2 := 0;
-            C.GP := FDmac[Id].GP;
-            C.Kind := 1;
-            FCalls.Add(C);
-          end;
-      end;
-    // Stall and error interrupts: acknowledge.
-    if (Stat and $E000 and (Stat shr 16)) <> 0 then
-      FBus.DMAC.Write($1000E010, Stat and $E000);
-  end;
+    DispatchDmac;
   if (Cause and EECauseIP7) <> 0 then
     FCPU.S.COP0[C0Cause] := FCPU.S.COP0[C0Cause] and not Cardinal(EECauseIP7);
   FSkipCause := -1;
@@ -940,9 +978,16 @@ begin
     Exit;
   end;
   var Bit := Cardinal(1) shl (Channel + 16);
-  var Was := (FBus.DMAC.STAT and Bit) <> 0;
-  if Was <> Enable then
-    FBus.DMAC.Write($1000E010, Bit);
+  var Was: Boolean;
+  var Entered := FBus.VU1Domain.EnterKind(deLocal);
+  try
+    Was := (FBus.DMAC.STAT and Bit) <> 0;
+    if Was <> Enable then
+      FBus.DMAC.Write($1000E010, Bit);
+  finally
+    if Entered then
+      FBus.VU1Domain.Leave;
+  end;
   Ret(Ord(Was <> Enable));
 end;
 
@@ -1322,23 +1367,23 @@ begin
     $01: // ResetEE
       Ret(0);
     $02: // SetGsCrt(interlace, mode, ffmd)
-      begin
-        FCrtInterlace := Arg(0);
-        FCrtMode := Arg(1);
-        FCrtField := Arg(2);
-        if Assigned(FOnCrtChange) then
-          FOnCrtChange();
-        Ret(0);
-      end;
+    begin
+      FCrtInterlace := Arg(0);
+      FCrtMode := Arg(1);
+      FCrtField := Arg(2);
+      if Assigned(FOnCrtChange) then
+        FOnCrtChange();
+      Ret(0);
+    end;
     $04: // Exit
-      begin
-        FExited := True;
-        FExitCode := Integer(Arg(0));
-        if FCurrent > 0 then
-          FThreads[FCurrent].State := TPS2ThreadState.Dormant;
-        EnterIdle;
-        FCurrent := -1;
-      end;
+    begin
+      FExited := True;
+      FExitCode := Integer(Arg(0));
+      if FCurrent > 0 then
+        FThreads[FCurrent].State := TPS2ThreadState.Dormant;
+      EnterIdle;
+      FCurrent := -1;
+    end;
     $06: // LoadExecPS2(filename, argc, argv)
       SyscallLoadExec;
     $07: // ExecPS2(entry, gp, argc, argv)
@@ -1355,296 +1400,305 @@ begin
     $17: EnableDmac(Arg(0), False);
     $18, $FC: SetAlarm;
     $19, $FE:
+    begin
+      var Id := Integer(Arg(0));
+      if (Id >= 0) and (Id <= High(FAlarms)) and FAlarms[Id].Used then
       begin
-        var Id := Integer(Arg(0));
-        if (Id >= 0) and (Id <= High(FAlarms)) and FAlarms[Id].Used then
-        begin
-          FAlarms[Id].Used := False;
-          UpdateAlarmEvent;
-          Ret(Id);
-        end
-        else
-          Ret(-1);
-      end;
+        FAlarms[Id].Used := False;
+        UpdateAlarmEvent;
+        Ret(Id);
+      end
+      else
+        Ret(-1);
+    end;
     $1A: EnableIntc(Arg(0), True);
     $1B: EnableIntc(Arg(0), False);
     $1C: EnableDmac(Arg(0), True);
     $1D: EnableDmac(Arg(0), False);
     $1E, $FD: SetAlarm;
     $1F, $FF:
+    begin
+      var Id := Integer(Arg(0));
+      if (Id >= 0) and (Id <= High(FAlarms)) and FAlarms[Id].Used then
       begin
-        var Id := Integer(Arg(0));
-        if (Id >= 0) and (Id <= High(FAlarms)) and FAlarms[Id].Used then
-        begin
-          FAlarms[Id].Used := False;
-          UpdateAlarmEvent;
-          Ret(Id);
-        end
-        else
-          Ret(-1);
-      end;
+        FAlarms[Id].Used := False;
+        UpdateAlarmEvent;
+        Ret(Id);
+      end
+      else
+        Ret(-1);
+    end;
     $20: CreateThread;
     $21: // DeleteThread
+    begin
+      var Id := Integer(Arg(0));
+      if (Id <= 0)
+        or (Id >= KernelMaxThreads)
+        or (Id = FCurrent)
+        or (FThreads[Id].State <> TPS2ThreadState.Dormant) then
+        Ret(-1)
+      else
       begin
-        var Id := Integer(Arg(0));
-        if (Id <= 0) or (Id >= KernelMaxThreads) or (Id = FCurrent) or
-          (FThreads[Id].State <> TPS2ThreadState.Dormant) then
-          Ret(-1)
-        else
-        begin
-          FThreads[Id].State := TPS2ThreadState.Free;
-          Ret(Id);
-        end;
+        FThreads[Id].State := TPS2ThreadState.Free;
+        Ret(Id);
       end;
+    end;
     $22: StartThread;
     $23, $24: // ExitThread, ExitDeleteThread
+    begin
+      if FCurrent > 0 then
       begin
-        if FCurrent > 0 then
-        begin
-          if Abs(Code) = $24 then
-            FThreads[FCurrent].State := TPS2ThreadState.Free
-          else
-            FThreads[FCurrent].State := TPS2ThreadState.Dormant;
-          FThreads[FCurrent].Priority := FThreads[FCurrent].InitPriority;
-          FCurrent := -1;
-        end;
-        Reschedule;
-        if FCurrent < 0 then
-          FCPU.S.PC := KernelIdle;
-      end;
-    $25, $26: // TerminateThread
-      begin
-        var Id := Integer(Arg(0));
-        if (Id <= 0) or (Id >= KernelMaxThreads) or (Id = FCurrent) or
-          (FThreads[Id].State in [TPS2ThreadState.Free, TPS2ThreadState.Dormant]) then
-          Ret(-1)
+        if Abs(Code) = $24 then
+          FThreads[FCurrent].State := TPS2ThreadState.Free
         else
-        begin
-          FThreads[Id].State := TPS2ThreadState.Dormant;
-          FThreads[Id].Priority := FThreads[Id].InitPriority;
-          FThreads[Id].WaitKind := 0;
-          Ret(Id);
-        end;
+          FThreads[FCurrent].State := TPS2ThreadState.Dormant;
+        FThreads[FCurrent].Priority := FThreads[FCurrent].InitPriority;
+        FCurrent := -1;
       end;
+      Reschedule;
+      if FCurrent < 0 then
+        FCPU.S.PC := KernelIdle;
+    end;
+    $25, $26: // TerminateThread
+    begin
+      var Id := Integer(Arg(0));
+      if (Id <= 0)
+        or (Id >= KernelMaxThreads)
+        or (Id = FCurrent)
+        or (FThreads[Id].State in [TPS2ThreadState.Free, TPS2ThreadState.Dormant]) then
+        Ret(-1)
+      else
+      begin
+        FThreads[Id].State := TPS2ThreadState.Dormant;
+        FThreads[Id].Priority := FThreads[Id].InitPriority;
+        FThreads[Id].WaitKind := 0;
+        Ret(Id);
+      end;
+    end;
     $27, $28: Ret(0); // Disable/EnableDispatchThread
     $29, $2A: // ChangeThreadPriority
+    begin
+      var Id := Integer(Arg(0));
+      if Id = 0 then
+        Id := FCurrent;
+      if (Id <= 0) or (Id >= KernelMaxThreads) or (FThreads[Id].State = TPS2ThreadState.Free) or (Arg(1) > 127) then
+        Ret(-1)
+      else
       begin
-        var Id := Integer(Arg(0));
-        if Id = 0 then
-          Id := FCurrent;
-        if (Id <= 0) or (Id >= KernelMaxThreads) or (FThreads[Id].State = TPS2ThreadState.Free) or
-          (Arg(1) > 127) then
-          Ret(-1)
-        else
+        var Old := FThreads[Id].Priority;
+        FThreads[Id].Priority := Arg(1);
+        if FThreads[Id].State = TPS2ThreadState.Ready then
+          MakeReady(Id);
+        Ret(Integer(Old));
+        if Code > 0 then
         begin
-          var Old := FThreads[Id].Priority;
-          FThreads[Id].Priority := Arg(1);
-          if FThreads[Id].State = TPS2ThreadState.Ready then
-            MakeReady(Id);
-          Ret(Integer(Old));
-          if Code > 0 then
+          // The current thread may now lose to an equal or better one.
+          if (Id = FCurrent) and not FInInterrupt then
           begin
-            // The current thread may now lose to an equal or better one.
-            if (Id = FCurrent) and not FInInterrupt then
-            begin
-              var Best := NextReady;
-              if (Best > 0) and (Best <> FCurrent) and (FThreads[Best].Priority <= FThreads[FCurrent].Priority) and
-                (FThreads[Best].Priority < Old) then
-                SwitchTo(Best)
-              else
-                Schedule;
-            end
+            var Best := NextReady;
+            if (Best > 0)
+              and (Best <> FCurrent)
+              and (FThreads[Best].Priority <= FThreads[FCurrent].Priority)
+              and (FThreads[Best].Priority < Old) then
+              SwitchTo(Best)
             else
               Schedule;
           end
           else
             Schedule;
-        end;
-      end;
-    $2B, $2C: // RotateThreadReadyQueue(prio)
-      begin
-        var Prio := Arg(0);
-        var First := -1;
-        for var K := 1 to FThreadTop do
-          if (FThreads[K].State = TPS2ThreadState.Ready) and (FThreads[K].Priority = Prio) then
-            if (First < 0) or (FThreads[K].Seq < FThreads[First].Seq) then
-              First := K;
-        if First > 0 then
-          MakeReady(First);
-        Ret(Integer(Prio));
-        if FInInterrupt then
-          FNeedSchedule := True
+        end
         else
-        begin
-          var Best := NextReady;
-          if (Best > 0) and (Best <> FCurrent) then
-            SwitchTo(Best);
-        end;
-      end;
-    $2D, $2E: // ReleaseWaitThread
-      begin
-        var Id := Integer(Arg(0));
-        if (Id <= 0) or (Id >= KernelMaxThreads) or
-          not (FThreads[Id].State in [TPS2ThreadState.Waiting, TPS2ThreadState.WaitSuspended]) then
-          Ret(-1)
-        else
-        begin
-          WakeThread(Id, -418);
-          Ret(Id);
           Schedule;
-        end;
       end;
+    end;
+    $2B, $2C: // RotateThreadReadyQueue(prio)
+    begin
+      var Prio := Arg(0);
+      var First := -1;
+      for var K := 1 to FThreadTop do
+        if (FThreads[K].State = TPS2ThreadState.Ready) and (FThreads[K].Priority = Prio) then
+          if (First < 0) or (FThreads[K].Seq < FThreads[First].Seq) then
+            First := K;
+      if First > 0 then
+        MakeReady(First);
+      Ret(Integer(Prio));
+      if FInInterrupt then
+        FNeedSchedule := True
+      else
+      begin
+        var Best := NextReady;
+        if (Best > 0) and (Best <> FCurrent) then
+          SwitchTo(Best);
+      end;
+    end;
+    $2D, $2E: // ReleaseWaitThread
+    begin
+      var Id := Integer(Arg(0));
+      if (Id <= 0)
+        or (Id >= KernelMaxThreads)
+        or not (FThreads[Id].State in [TPS2ThreadState.Waiting, TPS2ThreadState.WaitSuspended]) then
+        Ret(-1)
+      else
+      begin
+        WakeThread(Id, -418);
+        Ret(Id);
+        Schedule;
+      end;
+    end;
     $2F: Ret(FCurrent);
     $30, $31: ReferThreadStatus;
     $32: // SleepThread
+    begin
+      if FCurrent <= 0 then
+        Ret(-1)
+      else if FThreads[FCurrent].WakeupCount > 0 then
       begin
-        if FCurrent <= 0 then
-          Ret(-1)
-        else if FThreads[FCurrent].WakeupCount > 0 then
+        Dec(FThreads[FCurrent].WakeupCount);
+        Ret(FCurrent);
+      end
+      else
+      begin
+        Ret(FCurrent);
+        FThreads[FCurrent].State := TPS2ThreadState.Waiting;
+        FThreads[FCurrent].WaitKind := 1;
+        Reschedule;
+      end;
+    end;
+    $33, $34: // WakeupThread
+    begin
+      var Id := Integer(Arg(0));
+      if (Id <= 0)
+        or (Id >= KernelMaxThreads)
+        or (Id = FCurrent)
+        or (FThreads[Id].State in [TPS2ThreadState.Free, TPS2ThreadState.Dormant]) then
+        Ret(-1)
+      else
+      begin
+        Ret(Id);
+        if (FThreads[Id].State in [TPS2ThreadState.Waiting, TPS2ThreadState.WaitSuspended])
+          and (FThreads[Id].WaitKind = 1) then
         begin
-          Dec(FThreads[FCurrent].WakeupCount);
-          Ret(FCurrent);
+          WakeThread(Id, Id);
+          Schedule;
         end
         else
-        begin
-          Ret(FCurrent);
-          FThreads[FCurrent].State := TPS2ThreadState.Waiting;
-          FThreads[FCurrent].WaitKind := 1;
-          Reschedule;
-        end;
+          Inc(FThreads[Id].WakeupCount);
       end;
-    $33, $34: // WakeupThread
-      begin
-        var Id := Integer(Arg(0));
-        if (Id <= 0) or (Id >= KernelMaxThreads) or (Id = FCurrent) or
-          (FThreads[Id].State in [TPS2ThreadState.Free, TPS2ThreadState.Dormant]) then
-          Ret(-1)
-        else
-        begin
-          Ret(Id);
-          if (FThreads[Id].State in [TPS2ThreadState.Waiting, TPS2ThreadState.WaitSuspended]) and
-            (FThreads[Id].WaitKind = 1) then
-          begin
-            WakeThread(Id, Id);
-            Schedule;
-          end
-          else
-            Inc(FThreads[Id].WakeupCount);
-        end;
-      end;
+    end;
     $35, $36: // CancelWakeupThread
+    begin
+      var Id := Integer(Arg(0));
+      if Id = 0 then
+        Id := FCurrent;
+      if (Id <= 0) or (Id >= KernelMaxThreads) or (FThreads[Id].State = TPS2ThreadState.Free) then
+        Ret(-1)
+      else
       begin
-        var Id := Integer(Arg(0));
-        if Id = 0 then
-          Id := FCurrent;
-        if (Id <= 0) or (Id >= KernelMaxThreads) or (FThreads[Id].State = TPS2ThreadState.Free) then
-          Ret(-1)
-        else
-        begin
-          Ret(FThreads[Id].WakeupCount);
-          FThreads[Id].WakeupCount := 0;
-        end;
+        Ret(FThreads[Id].WakeupCount);
+        FThreads[Id].WakeupCount := 0;
       end;
+    end;
     $37, $38: // SuspendThread
-      begin
-        var Id := Integer(Arg(0));
-        if (Id = 0) and not FInInterrupt then
-          Id := FCurrent;
-        if (Id <= 0) or (Id >= KernelMaxThreads) then
-          Ret(-1)
-        else
-          case FThreads[Id].State of
-            TPS2ThreadState.Ready:
-              begin
-                // The current thread keeps running until it next waits.
-                FThreads[Id].State := TPS2ThreadState.Suspended;
-                Ret(Id);
-              end;
-            TPS2ThreadState.Waiting:
-              begin
-                FThreads[Id].State := TPS2ThreadState.WaitSuspended;
-                Ret(Id);
-              end;
-          else
-            Ret(-1);
+    begin
+      var Id := Integer(Arg(0));
+      if (Id = 0) and not FInInterrupt then
+        Id := FCurrent;
+      if (Id <= 0) or (Id >= KernelMaxThreads) then
+        Ret(-1)
+      else
+        case FThreads[Id].State of
+          TPS2ThreadState.Ready:
+          begin
+            // The current thread keeps running until it next waits.
+            FThreads[Id].State := TPS2ThreadState.Suspended;
+            Ret(Id);
           end;
-      end;
+          TPS2ThreadState.Waiting:
+          begin
+            FThreads[Id].State := TPS2ThreadState.WaitSuspended;
+            Ret(Id);
+          end;
+        else
+          Ret(-1);
+        end;
+    end;
     $39, $3A: // ResumeThread
-      begin
-        var Id := Integer(Arg(0));
-        if (Id <= 0) or (Id >= KernelMaxThreads) then
-          Ret(-1)
-        else
-          case FThreads[Id].State of
-            TPS2ThreadState.Suspended:
-              begin
-                MakeReady(Id);
-                Ret(Id);
-                Schedule;
-              end;
-            TPS2ThreadState.WaitSuspended:
-              begin
-                FThreads[Id].State := TPS2ThreadState.Waiting;
-                Ret(Id);
-              end;
-          else
-            Ret(-1);
+    begin
+      var Id := Integer(Arg(0));
+      if (Id <= 0) or (Id >= KernelMaxThreads) then
+        Ret(-1)
+      else
+        case FThreads[Id].State of
+          TPS2ThreadState.Suspended:
+          begin
+            MakeReady(Id);
+            Ret(Id);
+            Schedule;
           end;
-      end;
+          TPS2ThreadState.WaitSuspended:
+          begin
+            FThreads[Id].State := TPS2ThreadState.Waiting;
+            Ret(Id);
+          end;
+        else
+          Ret(-1);
+        end;
+    end;
     $3C: SetupThread;
     $3D: // SetupHeap(start, size)
-      begin
-        var Start := Arg(0);
-        var Size := Arg(1);
-        var Top := Add32(Start, Size);
-        if (Size = $FFFFFFFF) and (FCurrent > 0) then
-          Top := FThreads[FCurrent].Stack;
-        FHeapEnd := Top;
-        Ret(Integer(Top));
-      end;
+    begin
+      var Start := Arg(0);
+      var Size := Arg(1);
+      var Top := Add32(Start, Size);
+      if (Size = $FFFFFFFF) and (FCurrent > 0) then
+        Top := FThreads[FCurrent].Stack;
+      FHeapEnd := Top;
+      Ret(Integer(Top));
+    end;
     $3E: // EndOfHeap
       Ret(Integer(FHeapEnd));
     $40: CreateSema;
     $41, $49: // DeleteSema
+    begin
+      var Id := Integer(Arg(0));
+      if (Id <= 0) or (Id >= KernelMaxSemas) or not FSemas[Id].Used then
+        Ret(-1)
+      else
       begin
-        var Id := Integer(Arg(0));
-        if (Id <= 0) or (Id >= KernelMaxSemas) or not FSemas[Id].Used then
-          Ret(-1)
-        else
-        begin
-          FSemas[Id].Used := False;
-          for var K := 1 to FThreadTop do
-            if (FThreads[K].State in [TPS2ThreadState.Waiting, TPS2ThreadState.WaitSuspended]) and
-              (FThreads[K].WaitKind = 2) and (FThreads[K].WaitId = Id) then
-              WakeThread(K, -1);
-          Ret(Id);
-          Schedule;
-        end;
+        FSemas[Id].Used := False;
+        for var K := 1 to FThreadTop do
+          if (FThreads[K].State in [TPS2ThreadState.Waiting, TPS2ThreadState.WaitSuspended])
+            and (FThreads[K].WaitKind = 2)
+            and (FThreads[K].WaitId = Id) then
+            WakeThread(K, -1);
+        Ret(Id);
+        Schedule;
       end;
+    end;
     $42, $43: SignalSema;
     $44: WaitSema(False);
     $45, $46: WaitSema(True);
     $47, $48: ReferSemaStatus;
     $4A: // SetOsdConfigParam
-      begin
-        FOsdConfig := ReadU32(Arg(0));
-        Ret(0);
-      end;
+    begin
+      FOsdConfig := ReadU32(Arg(0));
+      Ret(0);
+    end;
     $4B: // GetOsdConfigParam
-      begin
-        WriteU32(Arg(0), FOsdConfig);
-        Ret(0);
-      end;
+    begin
+      WriteU32(Arg(0), FOsdConfig);
+      Ret(0);
+    end;
     $4C, $4D, $4E, $4F: Ret(0);
     $5A: // Copy (kCopy): dest, src, size
-      begin
-        var D := Arg(0);
-        var Src := Arg(1);
-        var N := Integer(Arg(2));
-        for var K := 0 to (N div 4) - 1 do
-          WriteU32(D + Cardinal(K) * 4, ReadU32(Src + Cardinal(K) * 4));
-        Ret(0);
-      end;
+    begin
+      var D := Arg(0);
+      var Src := Arg(1);
+      var N := Integer(Arg(2));
+      for var K := 0 to (N div 4) - 1 do
+        WriteU32(D + Cardinal(K) * 4, ReadU32(Src + Cardinal(K) * 4));
+      Ret(0);
+    end;
     $5B: Ret(0); // GetEntryAddress
     $5C, $5D: EnableHandler(0, Abs(Code) = $5C);
     $5E, $5F: EnableHandler(1, Abs(Code) = $5E);
@@ -1652,101 +1706,107 @@ begin
     $61, $62: Ret(0);
     $63, $67: Ret(Integer(FCPU.S.COP0[Arg(0) and 31])); // GetCop0
     $64, $68: // FlushCache
-      begin
-        if Arg(0) = 2 then
-          FCPU.InvalidateBlocks;
-        Ret(0);
-      end;
+    begin
+      if Arg(0) = 2 then
+        FCPU.InvalidateBlocks;
+      Ret(0);
+    end;
     $66, $6A: Ret(Integer(FCPU.S.COP0[C0Config]));
     $6B: // SifStopDma
-      begin
-        FBus.DMAC.Write($1000C000, FBus.DMAC.Ch[DMASIF0].CHCR and not Cardinal(CHCRSTR));
-        Ret(0);
-      end;
+    begin
+      FBus.DMAC.Write($1000C000, FBus.DMAC.Ch[DMASIF0].CHCR and not Cardinal(CHCRSTR));
+      Ret(0);
+    end;
     $6E, $6F: // SetOsdConfigParam2, GetOsdConfigParam2 (buffer, size, offset)
+    begin
+      // Only the part inside the 128-byte area moves.
+      var Offset := Integer(Arg(2));
+      var First := Integer(EnsureRange(Int64(Offset), 0, Length(FOsdConfig2)));
+      var Last := Integer(EnsureRange(Int64(Offset) + Integer(Arg(1)), 0, Length(FOsdConfig2)));
+      for var K := First to Last - 1 do
       begin
-        // Only the part inside the 128-byte area moves.
-        var Offset := Integer(Arg(2));
-        var First := Integer(EnsureRange(Int64(Offset), 0, Length(FOsdConfig2)));
-        var Last := Integer(EnsureRange(Int64(Offset) + Integer(Arg(1)), 0, Length(FOsdConfig2)));
-        for var K := First to Last - 1 do
+        var At := Add32(Arg(0), Cardinal((Int64(K) - Offset) and $FFFFFFFF));
+        if Abs(Code) = $6E then
         begin
-          var At := Add32(Arg(0), Cardinal((Int64(K) - Offset) and $FFFFFFFF));
-          if Abs(Code) = $6E then
-          begin
-            var V: UInt64 := 0;
-            FCPU.ReadVirtual(At, 1, V);
-            FOsdConfig2[K] := Byte(V);
-          end
-          else
-            FCPU.WriteVirtual(At, 1, FOsdConfig2[K]);
-        end;
-        Ret(0);
+          var V: UInt64 := 0;
+          FCPU.ReadVirtual(At, 1, V);
+          FOsdConfig2[K] := Byte(V);
+        end
+        else
+          FCPU.WriteVirtual(At, 1, FOsdConfig2[K]);
       end;
+      Ret(0);
+    end;
     $70: Ret(Integer(Cardinal(FGsIMR))); // GsGetIMR
     $71: // GsPutIMR
-      begin
-        FGsIMR := Arg(0);
+    begin
+      FGsIMR := Arg(0);
+      var Entered := FBus.VU1Domain.EnterKind(deGS);
+      try
         FBus.GS.Write($12001010, FGsIMR, 8);
-        Ret(0);
+      finally
+        if Entered then
+          FBus.VU1Domain.Leave;
       end;
+      Ret(0);
+    end;
     $73: // SetVSyncFlag
-      begin
-        FVSyncFlag1 := Arg(0);
-        FVSyncFlag2 := Arg(1);
-        Ret(0);
-      end;
+    begin
+      FVSyncFlag1 := Arg(0);
+      FVSyncFlag2 := Arg(1);
+      Ret(0);
+    end;
     $74: // SetSyscall(index, address)
+    begin
+      var N := Arg(0);
+      if N < $100 then
+        PCardinal(FBus.RAM + KernelSyscallTable + N * 4)^ := Arg(1)
+      else if N = $12C then
       begin
-        var N := Arg(0);
-        if N < $100 then
-          PCardinal(FBus.RAM + KernelSyscallTable + N * 4)^ := Arg(1)
-        else if N = $12C then
-        begin
-          // Out of range: lands on the INTC handler of timer 3.
-          var Saved := FCPU.S.GPR[4].Lo;
-          FCPU.S.GPR[4].Lo := 12;
-          FCPU.S.GPR[6].Lo := 0;
-          FCPU.S.GPR[7].Lo := 0;
-          AddHandler(0);
-          FCPU.S.GPR[4].Lo := Saved;
-          EnableIntc(12, True);
-        end;
-        Ret(0);
+        // Out of range: lands on the INTC handler of timer 3.
+        var Saved := FCPU.S.GPR[4].Lo;
+        FCPU.S.GPR[4].Lo := 12;
+        FCPU.S.GPR[6].Lo := 0;
+        FCPU.S.GPR[7].Lo := 0;
+        AddHandler(0);
+        FCPU.S.GPR[4].Lo := Saved;
+        EnableIntc(12, True);
       end;
+      Ret(0);
+    end;
     $75: // _print
-      begin
-        if Assigned(FOnTTY) then
-          SendTTY(Arg(0));
-        Ret(0);
-      end;
+    begin
+      if Assigned(FOnTTY) then
+        SendTTY(Arg(0));
+      Ret(0);
+    end;
     $76: Ret(-1); // SifDmaStat: transfers complete at once
     $77: SifSetDma;
     $78: // SifSetDChain: arm SIF0
-      begin
-        FBus.DMAC.Ch[DMASIF0].QWC := 0;
-        if (FBus.DMAC.Ch[DMASIF0].CHCR and CHCRSTR) = 0 then
-          FBus.DMAC.Write($1000C000, $184);
-        FScheduler.Schedule(TPS2Event.SIF, FScheduler.Now + 64);
-        Ret(0);
-      end;
+    begin
+      FBus.DMAC.Ch[DMASIF0].QWC := 0;
+      if (FBus.DMAC.Ch[DMASIF0].CHCR and CHCRSTR) = 0 then
+        FBus.DMAC.Write($1000C000, $184);
+      FScheduler.Schedule(TPS2Event.SIF, FScheduler.Now + 64);
+      Ret(0);
+    end;
     $79: // SifSetReg
-      begin
-        var Reg := Arg(0);
-        if (Reg and $80000000) <> 0 then
-          FSysRegs[Reg and 31] := Arg(1)
-        else
-          FBus.SIF.WriteRegister(Reg, Arg(1));
-        Ret(0);
-      end;
+    begin
+      var Reg := Arg(0);
+      if (Reg and $80000000) <> 0 then
+        FSysRegs[Reg and 31] := Arg(1)
+      else
+        FBus.SIF.WriteRegister(Reg, Arg(1));
+      Ret(0);
+    end;
     $7A: // SifGetReg
-      begin
-        var Reg := Arg(0);
-        if (Reg and $80000000) <> 0 then
-          Ret(Integer(FSysRegs[Reg and 31]))
-        else
-          Ret(Integer(FBus.SIF.ReadRegister(Reg)));
-      end;
+    begin
+      var Reg := Arg(0);
+      if (Reg and $80000000) <> 0 then
+        Ret(Integer(FSysRegs[Reg and 31]))
+      else
+        Ret(Integer(FBus.SIF.ReadRegister(Reg)));
+    end;
     $7C:
       // Deci2Call(function, args) (ps2sdk deci2.c): open, close, request
       // send, poll, kputs. There is no DECI2 host: for a TTY client (area
@@ -1758,67 +1818,67 @@ begin
         var P := Arg(1);
         case Arg(0) of
           1: // Open {device, buffer}
-            begin
-              var Id := -1;
-              for var K := 0 to High(FDeci2) do
-                if FDeci2[K] = 0 then
-                begin
-                  Id := K;
-                  Break;
-                end;
-              if Id >= 0 then
-                FDeci2[Id] := ReadU32(P + 4);
-              Ret(Id);
-            end;
-          2: // Close
-            begin
-              var Id := Integer(ReadU32(P));
-              if (Id >= 0) and (Id <= High(FDeci2)) then
-                FDeci2[Id] := 0;
-              Ret(1);
-            end;
-          3: // ReqSend: the data block {size, ?, ?, bytes}
-            begin
-              var Id := Integer(ReadU32(P));
-              if (Id >= 0) and (Id <= High(FDeci2)) and (FDeci2[Id] <> 0) then
+          begin
+            var Id := -1;
+            for var K := 0 to High(FDeci2) do
+              if FDeci2[K] = 0 then
               begin
-                var Buffer := FDeci2[Id];
-                var Data := ReadU32(Buffer + 16);
-                if Data <> 0 then
-                begin
-                  var Size := Integer(ReadU32(Data) and $FFFF);
-                  if (Size >= 12) and (Size < 65536) and Assigned(FOnTTY) then
-                  begin
-                    var B: TBytes;
-                    SetLength(B, Size - 12);
-                    for var K := 0 to Size - 13 do
-                    begin
-                      var V: UInt64;
-                      FCPU.ReadVirtual(Data + 12 + Cardinal(K), 1, V);
-                      B[K] := Byte(V);
-                    end;
-                    FOnTTY(TEncoding.ANSI.GetString(B));
-                  end;
-                  WriteU32(Buffer + 4, 0);
-                end
-                else
-                  WriteU32(Buffer + 4, Cardinal(-1));
+                Id := K;
+                Break;
               end;
-              Ret(1);
+            if Id >= 0 then
+              FDeci2[Id] := ReadU32(P + 4);
+            Ret(Id);
+          end;
+          2: // Close
+          begin
+            var Id := Integer(ReadU32(P));
+            if (Id >= 0) and (Id <= High(FDeci2)) then
+              FDeci2[Id] := 0;
+            Ret(1);
+          end;
+          3: // ReqSend: the data block {size, ?, ?, bytes}
+          begin
+            var Id := Integer(ReadU32(P));
+            if (Id >= 0) and (Id <= High(FDeci2)) and (FDeci2[Id] <> 0) then
+            begin
+              var Buffer := FDeci2[Id];
+              var Data := ReadU32(Buffer + 16);
+              if Data <> 0 then
+              begin
+                var Size := Integer(ReadU32(Data) and $FFFF);
+                if (Size >= 12) and (Size < 65536) and Assigned(FOnTTY) then
+                begin
+                  var B: TBytes;
+                  SetLength(B, Size - 12);
+                  for var K := 0 to Size - 13 do
+                  begin
+                    var V: UInt64;
+                    FCPU.ReadVirtual(Data + 12 + Cardinal(K), 1, V);
+                    B[K] := Byte(V);
+                  end;
+                  FOnTTY(TEncoding.ANSI.GetString(B));
+                end;
+                WriteU32(Buffer + 4, 0);
+              end
+              else
+                WriteU32(Buffer + 4, Cardinal(-1));
             end;
+            Ret(1);
+          end;
           4: // Poll
-            begin
-              var Id := Integer(ReadU32(P));
-              if (Id >= 0) and (Id <= High(FDeci2)) and (FDeci2[Id] <> 0) then
-                WriteU32(FDeci2[Id] + 12, 0);
-              Ret(1);
-            end;
+          begin
+            var Id := Integer(ReadU32(P));
+            if (Id >= 0) and (Id <= High(FDeci2)) and (FDeci2[Id] <> 0) then
+              WriteU32(FDeci2[Id] + 12, 0);
+            Ret(1);
+          end;
           $10: // kputs
-            begin
-              if Assigned(FOnTTY) then
-                SendTTY(ReadU32(P));
-              Ret(0);
-            end;
+          begin
+            if Assigned(FOnTTY) then
+              SendTTY(ReadU32(P));
+            Ret(0);
+          end;
         else
           Ret(0);
         end;

@@ -8,8 +8,22 @@
 interface
 
 uses
-  Core.InputConfig, System.SysUtils, System.Classes, System.IniFiles, System.SyncObjs, Core.Storage, Core.Emulation,
-  Core.Snapshots, Core.CD.Disc, Core.DVD.Image, PS2.Types, PS2.Console, PS2.IOP.CDVD, Core.Platforms.PS2.Playback,
+  System.UITypes,
+  PS2.Display.Pixels,
+  Core.InputConfig,
+  System.SysUtils,
+  System.Classes,
+  System.IniFiles,
+  System.SyncObjs,
+  Core.Storage,
+  Core.Emulation,
+  Core.Snapshots,
+  Core.CD.Disc,
+  Core.DVD.Image,
+  PS2.Types,
+  PS2.Console,
+  PS2.IOP.CDVD,
+  Core.Platforms.PS2.Playback,
   RM.Vulkan.TexScale;
 
 {$SCOPEDENUMS ON}
@@ -19,8 +33,7 @@ type
 
   // Controller inputs beyond the logical pad; frontends number their actions
   // in this order.
-  TPS2Extra = (L2, L3, R3, Analog, LeftUp, LeftDown, LeftLeft, LeftRight, RightUp, RightDown, RightLeft,
-    RightRight);
+  TPS2Extra = (L2, L3, R3, Analog, LeftUp, LeftDown, LeftLeft, LeftRight, RightUp, RightDown, RightLeft, RightRight);
 
   TPS2ExtraKeyMap = array[0..1, TPS2Extra] of UInt32;
 
@@ -95,6 +108,12 @@ type
 
   TPS2Worker = class(TThread)
   private
+    type
+      TQueuedField = record
+        Frame: TEmulatorFrame;
+        Earliest: Int64;
+      end;
+  private
     FLock: TCriticalSection;
     FWake: TEvent;
     FSnapshots: TSnapshotQueue;
@@ -119,10 +138,21 @@ type
     FAudioFailed: Boolean;
     FAudioError: string;
     FFrame: TEmulatorFrame;
+    FDisplayAttached, FResetScreen: Boolean;
+    FQueuedFrames: TArray<TQueuedField>;
+    FLastReady, FLastPeriod, FLastField, FPeriodNTSC, FPeriodPAL: Int64;
+    FQueueFirst, FQueueCount: Integer;
+    FDisplayWaitStart, FDisplayWaitTicks: Int64;
+    FDisplayService: Boolean;
+    FDisplayExtra: Integer;
     FConsole: TPS2Console;
     FRate: TEmulationFrameRate;
     FDeadline: Double;
     FClockGuest: Int64;
+    procedure CloseDisplayInterval(NextWork: Int64; KeepDelay: Boolean);
+    procedure ClearFramesLocked;
+    procedure QueueFrameLocked(const Frame: TEmulatorFrame; Period: Int64);
+    function ReaderHasRoom: Boolean;
     procedure ReportError(const Text: string);
     procedure AudioFailure(E: Exception);
     procedure ClearAudio;
@@ -130,6 +160,8 @@ type
     procedure Boot;
     procedure TransferSnapshot(const Name: string; Loading: Boolean);
     procedure Publish(Console: TPS2Console);
+    var
+      FPublishBank: TPixelBank<TAlphaColor>;
     procedure PublishPixels(const Source: TArray<Cardinal>; Width, Height: Integer; Number: Int64);
     procedure LoadCards;
     procedure SaveCards;
@@ -139,21 +171,40 @@ type
   public
     // Where the console's EEPROM is saved (BIOS boot).
     NVMFile: string;
-    constructor Create(const ProgramData, Identity: TBytes; const ProgramName: string; const Base: TPS2ConsoleConfig;
-      const Storage: IStorage; const SnapshotDirectory, CardFile1, CardFile2: string;
-      Resolution: Integer = 1; TextureScale: Integer = 0; TextureFilter: TTexScaleFilter = tfXBRZ);
+    constructor Create(
+      const ProgramData, Identity: TBytes;
+      const ProgramName: string;
+      const Base: TPS2ConsoleConfig;
+      const Storage: IStorage;
+      const SnapshotDirectory, CardFile1, CardFile2: string;
+      Resolution: Integer = 1;
+      TextureScale: Integer = 0;
+      TextureFilter: TTexScaleFilter = tfXBRZ
+    );
     destructor Destroy; override;
-    procedure Configure(const Inputs: TPS2PadInputs; Paused, AudioEnabled: Boolean; Volume: Single; GSThreads: Integer;
-      GSAsync, Recompiler, Vulkan, HLE: Boolean);
+    procedure Configure(
+      const Inputs: TPS2PadInputs;
+      Paused, AudioEnabled: Boolean;
+      Volume: Single;
+      GSThreads: Integer;
+      GSAsync, Recompiler, Vulkan, HLE: Boolean
+    );
     procedure RequestReset;
     procedure StopAndSave;
+    procedure SetDisplayAttached(Value: Boolean);
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
     function TakeError(Audio: Boolean = False): string;
     procedure Snapshot(const Name: string; Loading: Boolean);
   end;
 
-  TPS2CoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationSnapshotLocation, IPS2ControllerInput,
-    IEmulationAudioDiagnostics)
+  TPS2CoreAdapter =
+    class(
+      TInterfacedObject,
+      IEmulationCore,
+      IEmulationSnapshotLocation,
+      IPS2ControllerInput,
+      IEmulationAudioDiagnostics
+    )
   private
     FStorage: IStorage;
     FConfig: IEmulatorConfig;
@@ -168,6 +219,7 @@ type
     FKeyboardExtra: array[0..1, TPS2Extra] of Boolean;
     FControllers: array[0..1] of TPS2Pad;
     FPaused: Boolean;
+    FDisplayAttached: Boolean;
     FSnapshotDirectory, FError: string;
     FCardFiles: array[0..1] of string;
     // BIOS boot: the image, its console's MECHACON version and EEPROM, and
@@ -191,7 +243,11 @@ type
     // For the emulator factory, before CD detection: PS2 ELF programs, ISO,
     // MDS and DVD CHD images of PS2 discs (any size). nil otherwise; Stream
     // stays the caller's and is rewound.
-    class function TryCreate(Stream: TStream; const Storage: IStorage; const RomName, SourceName: string): IEmulationCore; static;
+    class function TryCreate(
+      Stream: TStream;
+      const Storage: IStorage;
+      const RomName, SourceName: string
+    ): IEmulationCore; static;
     function GetSystemId: string;
     function GetName: string;
     function GetSupportsSnapshots: Boolean;
@@ -199,6 +255,7 @@ type
     function GetHasCoinAcceptor: Boolean;
     procedure InsertCoin1;
     procedure InsertCoin2;
+    procedure SetDisplayAttached(Value: Boolean);
     procedure Start;
     procedure Stop;
     procedure Pause;
@@ -241,20 +298,56 @@ const
 implementation
 
 uses
-  {$IFDEF MSWINDOWS}Winapi.MMSystem,{$ENDIF}
-  System.Math, System.Diagnostics, System.UITypes, System.Hash, System.IOUtils, RM.Platforms.PS2, Core.SavePaths,
-  System.Generics.Collections, PS2.ELF, PS2.IOP.MemoryCard, PS2.BIOS;
+{$IFDEF MSWINDOWS}
+  Winapi.MMSystem,
+{$ENDIF}
+  System.Math,
+  System.Diagnostics,
+  System.Hash,
+  System.IOUtils,
+  RM.Platforms.PS2,
+  Core.SavePaths,
+  System.Generics.Collections,
+  PS2.ELF,
+  PS2.IOP.MemoryCard,
+  PS2.BIOS;
 
 const
   KeyNames: array[TEmulatorButton] of string =
     ('Up', 'Down', 'Left', 'Right', 'Cross', 'Circle', 'Select', 'Start', 'L1', 'Square', 'Triangle', 'R1', 'R2');
   DefaultKeys: array[0..1, TEmulatorButton] of UInt32 = (
     (vkUp, vkDown, vkLeft, vkRight, vkX, vkC, vkSpace, vkReturn, vkQ, vkZ, vkS, vkE, vkR),
-    (vkNumpad8, vkNumpad5, vkNumpad4, vkNumpad6, vkNumpad2, vkNumpad3, 0, vkNumpad0, 0, vkNumpad1, vkNumpad7, 0, 0));
-  ButtonBits: array[TEmulatorButton] of Word = (PS2PadUp, PS2PadDown, PS2PadLeft, PS2PadRight, PS2PadCross,
-    PS2PadCircle, PS2PadSelect, PS2PadStart, PS2PadL1, PS2PadSquare, PS2PadTriangle, PS2PadR1, PS2PadR2);
-  ExtraKeyNames: array[TPS2Extra] of string = ('L2', 'L3', 'R3', 'Analog', 'LeftStickUp', 'LeftStickDown',
-    'LeftStickLeft', 'LeftStickRight', 'RightStickUp', 'RightStickDown', 'RightStickLeft', 'RightStickRight');
+    (vkNumpad8, vkNumpad5, vkNumpad4, vkNumpad6, vkNumpad2, vkNumpad3, 0, vkNumpad0, 0, vkNumpad1, vkNumpad7, 0, 0)
+  );
+  ButtonBits: array[TEmulatorButton] of Word = (
+    PS2PadUp,
+    PS2PadDown,
+    PS2PadLeft,
+    PS2PadRight,
+    PS2PadCross,
+    PS2PadCircle,
+    PS2PadSelect,
+    PS2PadStart,
+    PS2PadL1,
+    PS2PadSquare,
+    PS2PadTriangle,
+    PS2PadR1,
+    PS2PadR2
+  );
+  ExtraKeyNames: array[TPS2Extra] of string = (
+    'L2',
+    'L3',
+    'R3',
+    'Analog',
+    'LeftStickUp',
+    'LeftStickDown',
+    'LeftStickLeft',
+    'LeftStickRight',
+    'RightStickUp',
+    'RightStickDown',
+    'RightStickLeft',
+    'RightStickRight'
+  );
   DefaultExtraKeys: array[TPS2Extra] of UInt32 = (vkW, 0, 0, vkA, vkT, vkG, vkF, vkH, vkI, vkK, vkJ, vkL);
 
 function PadBits(const Buttons: TEmulatorButtons): Word;
@@ -387,9 +480,15 @@ end;
 
 { TPS2Worker }
 
-constructor TPS2Worker.Create(const ProgramData, Identity: TBytes; const ProgramName: string;
-  const Base: TPS2ConsoleConfig; const Storage: IStorage; const SnapshotDirectory, CardFile1, CardFile2: string;
-  Resolution, TextureScale: Integer; TextureFilter: TTexScaleFilter);
+constructor TPS2Worker.Create(
+  const ProgramData, Identity: TBytes;
+  const ProgramName: string;
+  const Base: TPS2ConsoleConfig;
+  const Storage: IStorage;
+  const SnapshotDirectory, CardFile1, CardFile2: string;
+  Resolution, TextureScale: Integer;
+  TextureFilter: TTexScaleFilter
+);
 begin
   inherited Create(True);
   FreeOnTerminate := False;
@@ -398,6 +497,9 @@ begin
   FProgramName := ProgramName;
   FBase := Base;
   FResolution := Resolution;
+  var Hz := TStopwatch.Frequency;
+  FPeriodNTSC := (Hz div 2997) * 50 + ((Hz mod 2997) * 50 + 1498) div 2997;
+  FPeriodPAL := (Hz div 50) + ((Hz mod 50) + 25) div 50;
   FTextureScale := TextureScale;
   FTextureFilter := TextureFilter;
   FStorage := Storage;
@@ -448,6 +550,7 @@ begin
   FLock.Acquire;
   try
     FReset := True;
+    FResetScreen := True;
     FAvailable := False;
   finally
     FLock.Release;
@@ -464,10 +567,108 @@ begin
   WaitFor;
 end;
 
+procedure TPS2Worker.ClearFramesLocked;
+begin
+  while FQueueCount > 0 do
+  begin
+    FQueuedFrames[FQueueFirst] := Default(TQueuedField);
+    FQueueFirst := (FQueueFirst + 1) mod Length(FQueuedFrames);
+    Dec(FQueueCount);
+  end;
+  FLastPeriod := 0;
+  FFrame := Default(TEmulatorFrame);
+  FAvailable := False;
+end;
+
+procedure TPS2Worker.SetDisplayAttached(Value: Boolean);
+begin
+  FLock.Acquire;
+  try
+    if FDisplayAttached = Value then
+      Exit;
+    FDisplayAttached := Value;
+    FLastPeriod := 0;
+    if Value then
+      SetLength(FQueuedFrames, 8)
+    else
+    begin
+      if FQueueCount > 0 then
+      begin
+        // A disconnected display no longer consumes its backlog. Keep the
+        // newest field available through the ordinary one-shot core API.
+        var Last := FQueuedFrames[(FQueueFirst + FQueueCount - 1) mod Length(FQueuedFrames)].Frame;
+        ClearFramesLocked;
+        FFrame := Last;
+        FAvailable := True;
+      end;
+      FQueuedFrames := nil;
+      FQueueFirst := 0;
+    end;
+  finally
+    FLock.Release;
+  end;
+  FWake.SetEvent;
+end;
+
+procedure TPS2Worker.QueueFrameLocked(const Frame: TEmulatorFrame; Period: Int64);
+begin
+  if FQueueCount = Length(FQueuedFrames) then
+  begin
+    var Old := FQueuedFrames;
+    FQueuedFrames := nil;
+    SetLength(FQueuedFrames, Max(8, Length(Old) * 2));
+    for var I := 0 to FQueueCount - 1 do
+      FQueuedFrames[I] := Old[(FQueueFirst + I) mod Length(Old)];
+    FQueueFirst := 0;
+  end;
+  var Index := (FQueueFirst + FQueueCount) mod Length(FQueuedFrames);
+  FQueuedFrames[Index].Frame := Frame;
+  var Due: Int64 := 0;
+  if Period > 0 then
+  begin
+    var Now := TStopwatch.GetTimeStamp;
+    Due := Now;
+    if (FLastPeriod = Period) and (FLastField < High(Int64)) and (Frame.FrameNumber = FLastField + 1) then
+      // Only spread an early completed picture. A genuinely late field is
+      // ready immediately, and this clock can never add more than one field.
+      Due := Min(Now + Period, Max(Now, FLastReady + Period));
+  end;
+  FQueuedFrames[Index].Earliest := Due;
+  FLastReady := Due;
+  FLastPeriod := Period;
+  FLastField := Frame.FrameNumber;
+  Inc(FQueueCount);
+end;
+
+function TPS2Worker.ReaderHasRoom: Boolean;
+begin
+  FLock.Acquire;
+  try
+    Result := FQueueCount < 4;
+  finally
+    FLock.Release;
+  end;
+end;
+
 function TPS2Worker.TryGetFrame(out Frame: TEmulatorFrame): Boolean;
 begin
   FLock.Acquire;
   try
+    if FResetScreen then
+      Exit(False);
+    if FQueueCount > 0 then
+    begin
+      var Due := FQueuedFrames[FQueueFirst].Earliest;
+      if (Due <> 0) and not FPause and not Terminated and (TStopwatch.GetTimeStamp < Due) then
+        Exit(False);
+      Frame := FQueuedFrames[FQueueFirst].Frame;
+      FQueuedFrames[FQueueFirst] := Default(TQueuedField);
+      FQueueFirst := (FQueueFirst + 1) mod Length(FQueuedFrames);
+      Dec(FQueueCount);
+      if FQueueCount = 3 then
+        FWake.SetEvent;
+      Exit(True);
+    end;
     Result := FAvailable;
     if Result then
     begin
@@ -506,13 +707,38 @@ begin
   finally
     FLock.Release;
   end;
+  CloseDisplayInterval(0, False);
   FAudioFailed := True;
   FreeAndNil(FAudio);
   Restart;
 end;
 
+procedure TPS2Worker.CloseDisplayInterval(NextWork: Int64; KeepDelay: Boolean);
+begin
+  var Extra := 0;
+  if FDisplayService and (FAudio <> nil) then
+    Extra := FAudio.EndDisplayInterval(KeepDelay);
+  FDisplayService := False;
+  if KeepDelay and (FDisplayWaitStart <> 0) then
+  begin
+    // The winning iteration's work starts at NextWork. Deliberate audio
+    // pacing happens only after this handoff, outside both intervals.
+    var Gap := Max(Int64(0), NextWork - FDisplayWaitStart);
+    var Covered := Int64(Extra) * TStopwatch.Frequency div TPS2AudioPlayback.SampleRate;
+    Inc(FDisplayWaitTicks, Max(Int64(0), Gap - Covered));
+    Inc(FDisplayExtra, Extra);
+  end
+  else if not KeepDelay then
+  begin
+    FDisplayWaitTicks := 0;
+    FDisplayExtra := 0;
+  end;
+  FDisplayWaitStart := 0;
+end;
+
 procedure TPS2Worker.ClearAudio;
 begin
+  CloseDisplayInterval(0, False);
   if FAudio = nil then
     Exit;
   try
@@ -544,6 +770,9 @@ end;
 
 procedure TPS2Worker.Restart;
 begin
+  CloseDisplayInterval(0, False);
+  if FConsole <> nil then
+    FConsole.GS.DrainHigh;
   FDeadline := TStopwatch.GetTimeStamp;
   FClockGuest := FConsole.Scheduler.Now;
   FLock.Acquire;
@@ -573,7 +802,18 @@ begin
   var Frame: TEmulatorFrame;
   Frame.Width := Width;
   Frame.Height := Height * Lines;
-  SetLength(Frame.Pixels, Width * Height * Lines);
+  var Scaled := FConsole.GS.Raster.FrameScale > 1;
+  if DisplayRows and Scaled then
+  begin
+    FLock.Acquire;
+    try
+      Frame.Pixels := FPublishBank.Acquire(Width * Height * Lines);
+    finally
+      FLock.Release;
+    end;
+  end
+  else
+    SetLength(Frame.Pixels, Width * Height * Lines);
   if Lines = 1 then
     Move(Source[0], Frame.Pixels[0], Width * Height * 4)
   else
@@ -588,8 +828,28 @@ begin
   FLock.Acquire;
   try
     Frame.FramesPerSecond := FRate.Update(Frame.FrameNumber, TStopwatch.GetTimeStamp, TStopwatch.Frequency);
-    FFrame := Frame;
-    FAvailable := True;
+    if FDisplayAttached and (Scaled or (FQueueCount > 0)) then
+    begin
+      if FAvailable then
+      begin
+        QueueFrameLocked(FFrame, 0);
+        FFrame := Default(TEmulatorFrame);
+        FAvailable := False;
+      end;
+      var Period: Int64 := 0;
+      if Scaled then
+        if FConsole.GS.PresentedPAL then
+          Period := FPeriodPAL
+        else
+          Period := FPeriodNTSC;
+      QueueFrameLocked(Frame, Period);
+    end
+    else
+    begin
+      FLastPeriod := 0;
+      FFrame := Frame;
+      FAvailable := True;
+    end;
   finally
     FLock.Release;
   end;
@@ -653,14 +913,17 @@ procedure TPS2Worker.TransferSnapshot(const Name: string; Loading: Boolean);
 begin
   var Path := ResolveSnapshotPath(FSnapshotDirectory, Name);
   var Console := FConsole;
-  var Transfer: TStateTransfer :=
-    procedure(State: TStateArchive)
-    begin
-      Console.SerializeState(State);
-    end;
+  var Transfer: TStateTransfer := procedure(State: TStateArchive) begin Console.SerializeState(State); end;
   if Loading then
   begin
+    FConsole.GS.FinishDisplay;
     LoadCoreSnapshot(Path, ROM_CORE_ID_PS2, FIdentity, Transfer, FStorage);
+    FLock.Acquire;
+    try
+      ClearFramesLocked;
+    finally
+      FLock.Release;
+    end;
     Console.IOP.Hardware.SPU2.TakeSamples;
     ClearAudio;
     Publish(Console);
@@ -670,8 +933,14 @@ begin
     SaveCoreSnapshot(Path, ROM_CORE_ID_PS2, FIdentity, Transfer, FStorage);
     var Pixels := Console.GS.Frame;
     if Length(Pixels) > 0 then
-      SaveSnapshotPreview(Path, Console.GS.FrameWidth, Console.GS.FrameHeight, Console.GS.FrameWidth, @Pixels[0],
-        FStorage);
+      SaveSnapshotPreview(
+        Path,
+        Console.GS.FrameWidth,
+        Console.GS.FrameHeight,
+        Console.GS.FrameWidth,
+        @Pixels[0],
+        FStorage
+      );
   end;
   Restart;
 end;
@@ -683,9 +952,13 @@ begin
   FAudioFailed := False;
   var WasPaused := False;
   var WasEnabled := False;
-  {$IFDEF MSWINDOWS}
+  var PreviousHLE := False;
+  var PreviousAsync := False;
+  var PreviousVulkan := False;
+  var PreviousBands := -1;
+{$IFDEF MSWINDOWS}
   var TimerSet := timeBeginPeriod(1) = TIMERR_NOERROR;
-  {$ENDIF}
+{$ENDIF}
   try
     try
       var Config := FBase;
@@ -693,22 +966,19 @@ begin
         Config.HostDirectory := ExtractFilePath(FProgramName);
       FConsole := TPS2Console.Create(Config);
       FConsole.GS.Raster.ConfigureHLE(FResolution, FTextureScale, FTextureFilter);
-      FConsole.GS.OnFrame :=
+      FConsole.GS.SetInternalSink(
         procedure(const Pixels: TArray<Cardinal>; Width, Height: Integer; Number: Int64)
         begin
           PublishPixels(Pixels, Width, Height, Number);
-        end;
+        end
+      );
       LoadCards;
       Boot;
       Restart;
       while not Terminated do
       begin
-        FSnapshots.Process(
-          procedure(const Name: string; Loading: Boolean)
-          begin
-            TransferSnapshot(Name, Loading);
-          end);
-        var Paused, ResetRequested, Enabled: Boolean;
+        FSnapshots.Process(procedure(const Name: string; Loading: Boolean) begin TransferSnapshot(Name, Loading); end);
+        var Paused, ResetRequested, Enabled, ScreenConsumer: Boolean;
         var Volume: Single;
         var Inputs: TPS2PadInputs;
         var GSThreads: Integer;
@@ -716,6 +986,7 @@ begin
         FLock.Acquire;
         try
           Paused := FPause;
+          ScreenConsumer := FDisplayAttached;
           ResetRequested := FReset;
           FReset := False;
           Inputs := FInputs;
@@ -728,6 +999,20 @@ begin
           HLE := FHLE;
         finally
           FLock.Release;
+        end;
+        var BeginWork := TStopwatch.GetTimeStamp;
+        if (HLE <> PreviousHLE)
+          or (GSAsync <> PreviousAsync)
+          or (Vulkan <> PreviousVulkan)
+          or (GSThreads <> PreviousBands) then
+        begin
+          FConsole.GS.DrainHigh;
+          if HLE <> PreviousHLE then
+            ClearAudio;
+          PreviousHLE := HLE;
+          PreviousAsync := GSAsync;
+          PreviousVulkan := Vulkan;
+          PreviousBands := GSThreads;
         end;
         // (The GS as the kick thread left it.)
         FConsole.GIF.Join;
@@ -753,6 +1038,14 @@ begin
         if ResetRequested then
         begin
           SaveCards;
+          FConsole.GS.FinishDisplay;
+          FLock.Acquire;
+          try
+            ClearFramesLocked;
+            FResetScreen := FReset;
+          finally
+            FLock.Release;
+          end;
           FConsole.Reset;
           Boot;
           FConsole.IOP.Hardware.SPU2.TakeSamples;
@@ -781,33 +1074,74 @@ begin
           Restart;
         end;
         WasEnabled := Enabled;
+        // The GS composer never waits on the UI. Apply backpressure before
+        // the next guest field, after servicing snapshots, reset and pause.
+        if not ReaderHasRoom then
+        begin
+          FWake.WaitFor(2);
+          Continue;
+        end;
+        CloseDisplayInterval(BeginWork, True);
         // With sound on, the audio queue is the real-time clock: a field runs
         // only when the device has room for its samples.
         if Enabled and not FAudioFailed and (FAudio <> nil) then
-        try
-          if not FAudio.CanAdvance then
-          begin
-            FWake.WaitFor(1);
-            Continue;
+          try
+            if not FAudio.CanAdvance then
+            begin
+              FWake.WaitFor(1);
+              Continue;
+            end;
+          except
+            on E: Exception do
+              AudioFailure(E);
           end;
-        except
-          on E: Exception do
-            AudioFailure(E);
+        if HLE and Enabled and not FAudioFailed and (FAudio <> nil) then
+          FAudio.BeginWork(FDisplayExtra);
+        try
+          FConsole.RunFrame;
+        finally
+          if FAudio <> nil then
+            FAudio.EndWork;
         end;
-        FConsole.RunFrame;
         FConsole.TakeTTY;
         SaveNVM;
         if Terminated then
           Break;
         var Samples := FConsole.IOP.Hardware.SPU2.TakeSamples;
         if Enabled and not FAudioFailed then
-        try
-          if FAudio = nil then
-            FAudio := TPS2AudioPlayback.Create;
-          FAudio.Enqueue(Samples, Volume);
-        except
-          on E: Exception do
-            AudioFailure(E);
+          try
+            if FAudio = nil then
+              FAudio := TPS2AudioPlayback.Create;
+            if HLE then
+              FAudio.EnqueueTimed(
+                Samples,
+                Volume,
+                TStopwatch.GetTimeStamp - BeginWork + FDisplayWaitTicks,
+                TStopwatch.Frequency
+              )
+            else
+              FAudio.Enqueue(Samples, Volume);
+          except
+            on E: Exception do
+              AudioFailure(E);
+          end;
+        FDisplayWaitTicks := 0;
+        FDisplayExtra := 0;
+        if ScreenConsumer
+          and HLE
+          and (FResolution > 1)
+          and Enabled
+          and not FAudioFailed
+          and not Terminated
+          and (FAudio <> nil) then
+        begin
+          FDisplayWaitStart := TStopwatch.GetTimeStamp;
+          try
+            FDisplayService := FAudio.BeginDisplayInterval;
+          except
+            on E: Exception do
+              AudioFailure(E);
+          end;
         end;
         // (The picture was shown as the GS built it.)
         if not Enabled or FAudioFailed then
@@ -841,12 +1175,13 @@ begin
         ReportError('PS2 console EEPROM: ' + E.Message);
     end;
   finally
+    CloseDisplayInterval(0, False);
     FreeAndNil(FAudio);
     FreeAndNil(FConsole);
-    {$IFDEF MSWINDOWS}
+{$IFDEF MSWINDOWS}
     if TimerSet then
       timeEndPeriod(1);
-    {$ENDIF}
+{$ENDIF}
   end;
 end;
 
@@ -1132,6 +1467,13 @@ begin
     FConfigObject.Renderer = 'vulkan-hle');
 end;
 
+procedure TPS2CoreAdapter.SetDisplayAttached(Value: Boolean);
+begin
+  FDisplayAttached := Value;
+  if FWorker <> nil then
+    FWorker.SetDisplayAttached(Value);
+end;
+
 procedure TPS2CoreAdapter.Start;
 begin
   if FWorker <> nil then
@@ -1144,9 +1486,22 @@ begin
   Base.BIOS := FBIOS;
   Base.Mechacon := FMechacon;
   Base.NVM := FNVM;
-  FWorker := TPS2Worker.Create(FProgram, FIdentity, FProgramName, Base, FStorage, FSnapshotDirectory, FCardFiles[0],
-    FCardFiles[1], FConfigObject.Resolution, FConfigObject.TextureScale, FConfigObject.TextureFilter);
+  FWorker :=
+    TPS2Worker.Create(
+      FProgram,
+      FIdentity,
+      FProgramName,
+      Base,
+      FStorage,
+      FSnapshotDirectory,
+      FCardFiles[0],
+      FCardFiles[1],
+      FConfigObject.Resolution,
+      FConfigObject.TextureScale,
+      FConfigObject.TextureFilter
+    );
   FWorker.NVMFile := FNVMFile;
+  FWorker.SetDisplayAttached(FDisplayAttached);
   Configure;
   FWorker.Start;
 end;

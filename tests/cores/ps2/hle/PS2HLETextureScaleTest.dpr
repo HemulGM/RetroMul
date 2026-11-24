@@ -9,6 +9,52 @@ const
   Size = 8;
   TextureBase = $100;
 
+procedure CheckHybridCoefficients;
+const
+  FullCount = 256;
+  SmallCount = FullCount - 1;
+var
+  Palette: array[0..FullCount - 1] of Cardinal;
+  Subset: array[0..SmallCount - 1] of Cardinal;
+  Indices: array[0..SmallCount - 1] of Integer;
+begin
+  // Omitting each of three distinct entries covers every pair in at least
+  // one scalar table, including pairs at the SIMD lane and row boundaries.
+  var Full, Scalar: TArray<Cardinal>;
+  SetLength(Full, 5 * FullCount + FullCount * FullCount + 20);
+  SetLength(Scalar, 5 * SmallCount + SmallCount * SmallCount + 20);
+  for var Seed := 1 to 8 do
+  begin
+    var State := Cardinal(Seed);
+    for var I := 0 to High(Palette) do
+    begin
+      State := State xor (State shl 13);
+      State := State xor (State shr 17);
+      State := State xor (State shl 5);
+      Palette[I] := State;
+      if I mod 7 = 0 then
+        Palette[I] := State and $FFFFFF
+      else if I mod 5 = 0 then
+        Palette[I] := State or $FF000000;
+    end;
+    MakeHybridPalette(@Palette[0], FullCount, @Full[0]);
+    for var Omitted in [0, 127, 254] do
+    begin
+      for var I := 0 to High(Subset) do
+      begin
+        Indices[I] := I + Ord(I >= Omitted);
+        Subset[I] := Palette[Indices[I]];
+      end;
+      MakeHybridPalette(@Subset[0], SmallCount, @Scalar[0]);
+      for var I := 0 to High(Subset) do
+        for var J := 0 to High(Subset) do
+          if Full[5 * FullCount + Indices[I] * FullCount + Indices[J]] <>
+            Scalar[5 * SmallCount + I * SmallCount + J] then
+            raise Exception.CreateFmt('Hybrid palette distance differs at %d,%d', [Indices[I], Indices[J]]);
+    end;
+  end;
+end;
+
 procedure Vertex(GS: TPS2GS; X, Y: Integer);
 begin
   GS.WriteRegister(GSRegXYZ2, UInt64(Cardinal(X + $8000)) or (UInt64(Cardinal(Y + $8000)) shl 16));
@@ -63,8 +109,11 @@ begin
     for var Y := 0 to Size * Resolution - 1 do
       for var X := 0 to Size * Resolution - 1 do
       begin
-        var SX := ((2 * X + 1) * 8 + Resolution) * Factor div (16 * Resolution);
-        var SY := ((2 * Y + 1) * 8 + Resolution) * Factor div (16 * Resolution);
+        // The native texel centre is device sample Resolution div 2. The +1
+        // in the UV input above keeps these nearest reads away from ties.
+        var Phase := Ord(Odd(Resolution));
+        var SX := ((2 * X + Phase) * 8 + Resolution) * Factor div (16 * Resolution);
+        var SY := ((2 * Y + Phase) * 8 + Resolution) * Factor div (16 * Resolution);
         var C := Expected[SY * Size * Factor + SX];
         var Color := $FF000000 or ((C and $FF) shl 16) or (C and $FF00) or ((C shr 16) and $FF);
         var Actual := Pixels[Y * GS.FrameWidth + X];
@@ -92,6 +141,7 @@ end;
 begin
   try
     var Checks := 0;
+    CheckHybridCoefficients;
     for var Async := 0 to 1 do
       for var Filter := Low(TTexScaleFilter) to High(TTexScaleFilter) do
       begin

@@ -12,7 +12,7 @@ begin
   Raster.WriteRegister(GSRegXYZ2, UInt64(X) or (UInt64(Y) shl 16) or (UInt64($FFFFFFFF) shl 32));
 end;
 
-function Draw(GPU: Boolean; DepthFormat, Shape, AlphaMode, Async: Integer; UsedDepth, FastRows: Boolean;
+function Draw(GPU: Boolean; DepthFormat, Shape, AlphaMode, Async: Integer; UsedDepth, FastRows, AliasDepth: Boolean;
   out Accepted: Int64): TBytes;
 begin
   var SavedRows := SpriteRows;
@@ -37,6 +37,8 @@ begin
       raise Exception.Create(Raster.VulkanError);
     Raster.WriteRegister(GSRegFRAME_1, UInt64(2) shl 16);
     var ZBuffer := $100 or (UInt64(DepthFormat) shl 24);
+    if AliasDepth then
+      ZBuffer := UInt64(DepthFormat) shl 24;
     if not UsedDepth then
       ZBuffer := ZBuffer or (UInt64(1) shl 32);
     Raster.WriteRegister(GSRegZBUF_1, ZBuffer);
@@ -83,22 +85,27 @@ begin
   end;
 end;
 
-procedure Check(DepthFormat, Shape, AlphaMode, Async: Integer; UsedDepth: Boolean; var Checks: Integer);
+procedure Check(DepthFormat, Shape, AlphaMode, Async: Integer; UsedDepth: Boolean; var Checks: Integer;
+  AliasDepth: Boolean = False);
 begin
   var Ignore, Accepted: Int64;
-  var Reference := Draw(False, DepthFormat, Shape, AlphaMode, Async, UsedDepth, False, Ignore);
-  var RowResult := Draw(False, DepthFormat, Shape, AlphaMode, Async, UsedDepth, True, Ignore);
+  var Reference := Draw(False, DepthFormat, Shape, AlphaMode, Async, UsedDepth, False, AliasDepth, Ignore);
+  var RowResult := Draw(False, DepthFormat, Shape, AlphaMode, Async, UsedDepth, True, AliasDepth, Ignore);
   if not CompareMem(@Reference[0], @RowResult[0], Length(Reference)) then
     raise Exception.Create('Unused-depth sprite row/scalar mismatch');
-  var Actual := Draw(True, DepthFormat, Shape, AlphaMode, Async, UsedDepth, True, Accepted);
+  var Actual := Draw(True, DepthFormat, Shape, AlphaMode, Async, UsedDepth, True, AliasDepth, Accepted);
   if not CompareMem(@Reference[0], @Actual[0], Length(Reference)) then
     raise Exception.CreateFmt('VRAM mismatch depth=%x shape=%d alpha=%d async=%d used=%d',
       [DepthFormat, Shape, AlphaMode, Async, Ord(UsedDepth)]);
   if not UsedDepth and (Accepted = 0) then
     raise Exception.CreateFmt('Unused depth rejected depth=%x shape=%d alpha=%d async=%d',
       [DepthFormat, Shape, AlphaMode, Async]);
-  if UsedDepth and (DepthFormat in [2, 10]) and (Accepted <> 0) then
-    raise Exception.Create('Used 16-bit depth must retain the exact software path');
+  // Distinct 16-bit depth pixels share words, not bits. A colour/depth alias
+  // cannot use this ownership rule and must still take the software path.
+  if UsedDepth and (DepthFormat in [2, 10]) and (Shape = 0) and not AliasDepth and (Accepted = 0) then
+    raise Exception.Create('Nonaliasing 16-bit sprite depth failed to use the GPU');
+  if AliasDepth and (Accepted <> 0) then
+    raise Exception.Create('GPU accepted overlapping colour and depth pages');
   Inc(Checks);
 end;
 
@@ -112,7 +119,8 @@ begin
             Check(DepthFormat, Shape, AlphaMode, Async, False, Checks);
     for var DepthFormat in [2, 10] do
       for var Shape := 0 to 1 do
-        Check(DepthFormat, Shape, 0, 0, True, Checks);
+        for var AliasDepth in [False, True] do
+          Check(DepthFormat, Shape, 0, 0, True, Checks, AliasDepth);
     Writeln('Unused GS depth: ', Checks, ' full-VRAM software/GPU and used-depth guard cases: OK');
   except
     on E: Exception do

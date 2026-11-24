@@ -4,14 +4,32 @@
 // memories, and the register blocks (timers, IPU, GIF, VIF, FIFOs, DMAC,
 // INTC, SIO, SIF, GS privileged). Unknown registers keep written values.
 // RAM pages carry write generations for the CPU's decoded blocks.
-{$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
+{$IFDEF PS2_CHECKED}
+  {$Q+}
+  {$R+}
+{$ELSE}
+  {$O+}
+  {$Q-}
+  {$R-}
+{$ENDIF}
 {$POINTERMATH ON}
 
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Generics.Collections, Core.Snapshots, PS2.Types, PS2.Scheduler, PS2.EE.CPU, PS2.Timers, PS2.DMAC,
-  PS2.SIF, PS2.SIF.Bridge, PS2.CDVD.Drive;
+  System.SysUtils,
+  System.Classes,
+  System.Generics.Collections,
+  Core.Snapshots,
+  PS2.Types,
+  PS2.Scheduler,
+  PS2.EE.CPU,
+  PS2.Timers,
+  PS2.DMAC,
+  PS2.SIF,
+  PS2.SIF.Bridge,
+  PS2.CDVD.Drive,
+  PS2.VU1Domain;
 
 type
   // A register block outside the bus (GIF/GS, VIF, IPU): 32/64-bit
@@ -45,6 +63,9 @@ type
     procedure LogRegisterRead(Address: Cardinal);
     procedure LogUnmappedRead(Address: Cardinal; Size: Integer);
     procedure LogRegisterWrite(Address: Cardinal; Value: UInt64; Size: Integer);
+    function ReadHere(Address: Cardinal; Size: Integer): UInt64;
+    function ReadAhead(Address: Cardinal; Size: Integer; out Value: UInt64): Boolean;
+    procedure WriteHere(Address: Cardinal; Value: UInt64; Size: Integer);
   public
     RAM, BIOS, IOPRAM: PByte;
     VU0Code, VU0Data, VU1Code, VU1Data: PByte;
@@ -73,6 +94,9 @@ type
     // Diagnostics: INTC causes raised.
     IRQCounts: array[0..15] of Int64;
     GS, GIF, VIF0, VIF1, IPU: TPS2Device;
+    // Its registers, FIFOs, micro memory, the DMAC and the GS are reached
+    // inside it.
+    VU1Domain: TPS2VU1Domain;
     MMIOReads, MMIOWrites: Int64;
     // Diagnostics: accesses per address when assigned (reads; writes with bit 0 set).
     MMIOCounts: TDictionary<Cardinal, Int64>;
@@ -207,11 +231,10 @@ begin
     Exit(RAM + A);
   case A of
     // (Micro memory: not mapped at all, else the CPU takes the page for ROM;
-    // Read and Write.)
+    // Read and Write. VU1 data belongs to the VU1 domain.)
     $11000000: Exit(nil);
     $11004000: Exit(VU0Data);
-    $11008000..$1100B000: Exit(nil);
-    $1100C000..$1100F000: Exit(VU1Data + (A - $1100C000));
+    $11008000..$1100F000: Exit(nil);
     $1C000000..$1C1FF000: Exit(IOPRAM + (A - $1C000000));
     $1FC00000..$1FFFF000:
       if Writing then
@@ -234,7 +257,13 @@ end;
 
 function TPS2EEBus.CPCond0: Boolean;
 begin
-  Result := DMAC.CPCond0;
+  var Entered := VU1Domain.EnterKind(deLocal);
+  try
+    Result := DMAC.CPCond0;
+  finally
+    if Entered then
+      VU1Domain.Leave;
+  end;
 end;
 
 procedure TPS2EEBus.UpdateINT0;
@@ -325,13 +354,83 @@ begin
   RegisterLog.Add(Format('ee w %.8x = %.8x/%d pc %.8x', [Address, Value, Size, CPU.SlowPC]));
 end;
 
+// Whether Address is in the VU1 domain: GIF, VIF1, DMAC, D_ENABLE, VU1
+// micro memory, GS.
+function DomainAddress(Address: Cardinal): Boolean; inline;
+begin
+  case Address of
+    $10003000..$100037FF,
+    $10003C00..$10003FFF,
+    $10008000..$1000EFFF,
+    $1000F520,
+    $1000F590,
+    $11008000..$1100FFFF,
+    $12000000..$12001FFF: Result := True;
+  else
+    Result := False;
+  end;
+end;
+
+// The VU1 domain's part an access reaches (DomainAddress).
+function EntryKind(Address: Cardinal): TPS2DomainEntry; inline;
+begin
+  case Address of
+    $12000000..$12001FFF: Result := deGS;
+    // D_STAT, D_PCR, D_SQWC, D_RBSR, D_RBOR, D_STADR (channels 1 and 2 use
+    // the last three only with MFIFO or stall control, which D_CTRL turns
+    // on) and the other channels' registers.
+    $1000E010..$1000E06F, $10008000..$10008FFF, $1000B000..$1000DFFF: Result := deLocal;
+  else
+    Result := deDomain;
+  end;
+end;
+
 function TPS2EEBus.Read(Address: Cardinal; Size: Integer): UInt64;
 begin
+  if (VU1Domain = nil) or not DomainAddress(Address) then
+    Exit(ReadHere(Address, Size));
+  if VU1Domain.Ahead and ReadAhead(Address, Size, Result) then
+    Exit;
+  var Entered := VU1Domain.EnterKind(EntryKind(Address));
+  try
+    Result := ReadHere(Address, Size);
+  finally
+    if Entered then
+      VU1Domain.Leave;
+  end;
+end;
+
+// Running ahead: the domain's own registers as it had them at the EE time,
+// those it leaves alone (the DMAC's other channels and shared registers,
+// D_ENABLER) as they are. False: the domain is entered.
+function TPS2EEBus.ReadAhead(Address: Cardinal; Size: Integer; out Value: UInt64): Boolean;
+begin
+  case Address of
+    $10003000..$100037FF, $10003C00..$10003FFF, $10009000..$100090FF, $1000A000..$1000A0FF:
+    begin
+      Result := Assigned(VU1Domain.OnAheadRead) and VU1Domain.OnAheadRead(Address, Value);
+      if Result then
+        Inc(MMIOReads);
+    end;
+    $10008000..$10008FFF, $10009100..$10009FFF, $1000A100..$1000EFFF, $1000F520:
+    begin
+      Value := ReadHere(Address, Size);
+      Result := True;
+    end;
+  else
+    Result := False;
+  end;
+end;
+
+function TPS2EEBus.ReadHere(Address: Cardinal; Size: Integer): UInt64;
+begin
   // Micro memory, whose pages are not mapped (not counted as MMIO).
-  if ((Address >= $11000000) and (Address <= $11000FFF)) or ((Address >= $11008000) and (Address <= $1100BFFF)) then
+  if ((Address >= $11000000) and (Address <= $11000FFF)) or ((Address >= $11008000) and (Address <= $1100FFFF)) then
   begin
     var P := VU0Code + (Address and $FFF);
-    if Address >= $11008000 then
+    if Address >= $1100C000 then
+      P := VU1Data + (Address and $3FFF)
+    else if Address >= $11008000 then
       P := VU1Code + (Address and $3FFF);
     case Size of
       1: Exit(P^);
@@ -350,8 +449,7 @@ begin
     LastReadPC.AddOrSetValue(Address, CPU.SlowPC);
   end;
   case Address of
-    $10000000..$10001FFF:
-      Exit(Timers.Read(Address));
+    $10000000..$10001FFF: Exit(Timers.Read(Address));
     $10002000..$10002FFF:
       if IPU <> nil then
         Exit(IPU.Read(Address, Size));
@@ -364,30 +462,22 @@ begin
     $10003C00..$10003FFF:
       if VIF1 <> nil then
         Exit(VIF1.Read(Address, Size));
-    $10008000..$1000EFFF:
-      Exit(DMAC.Read(Address and not 3));
-    $1000F000:
-      Exit(FINTCStat);
-    $1000F010:
-      Exit(FINTCMask);
-    $1000F130:
-      Exit(0);
+    $10008000..$1000EFFF: Exit(DMAC.Read(Address and not 3));
+    $1000F000: Exit(FINTCStat);
+    $1000F010: Exit(FINTCMask);
+    $1000F130: Exit(0);
     $1000F200..$1000F2FF:
       if SIFBridge <> nil then
         Exit(SIFBridge.EERead(Address and $FF))
       else
         Exit(SIF.ReadRegister(((Address shr 4) and $F) + 1));
-    $1000F430:
-      Exit(0);
-    $1000F440:
-      Exit(MCHRead);
-    $1A000000..$1A00FFFF:
-      Exit(CmdRegs[(Address shr 1) and 15]);
+    $1000F430: Exit(0);
+    $1000F440: Exit(MCHRead);
+    $1A000000..$1A00FFFF: Exit(CmdRegs[(Address shr 1) and 15]);
     $1F402000..$1F4020FF:
       if CDVD <> nil then
         Exit(CDVD.Read(Address and $FF));
-    $1000F520:
-      Exit(DMAC.ENABLE);
+    $1000F520: Exit(DMAC.ENABLE);
     $12000000..$12001FFF:
       if GS <> nil then
         Exit(GS.Read(Address, Size));
@@ -416,12 +506,37 @@ end;
 
 procedure TPS2EEBus.Write(Address: Cardinal; Value: UInt64; Size: Integer);
 begin
-  // Micro memory (not counted as MMIO): compiled code looks at it again.
-  if ((Address >= $11000000) and (Address <= $11000FFF)) or ((Address >= $11008000) and (Address <= $1100BFFF)) then
+  if (VU1Domain = nil) or not DomainAddress(Address) then
+  begin
+    WriteHere(Address, Value, Size);
+    Exit;
+  end;
+  var Kind := EntryKind(Address);
+  // (With MFIFO on, the drain reads the ring D_RBSR and D_RBOR make.)
+  if ((Address = $1000E040) or (Address = $1000E050)) and ((DMAC.CTRL and $0C) <> 0) then
+    Kind := deDomain;
+  var Entered := VU1Domain.EnterKind(Kind);
+  try
+    WriteHere(Address, Value, Size);
+  finally
+    if Entered then
+      VU1Domain.Leave;
+  end;
+end;
+
+procedure TPS2EEBus.WriteHere(Address: Cardinal; Value: UInt64; Size: Integer);
+begin
+  // Micro memory (not counted as MMIO): compiled code looks at code again.
+  if ((Address >= $11000000) and (Address <= $11000FFF)) or ((Address >= $11008000) and (Address <= $1100FFFF)) then
   begin
     var Index := 0;
     var P := VU0Code + (Address and $FFF);
-    if Address >= $11008000 then
+    if Address >= $1100C000 then
+    begin
+      Index := -1;
+      P := VU1Data + (Address and $3FFF);
+    end
+    else if Address >= $11008000 then
     begin
       Index := 1;
       P := VU1Code + (Address and $3FFF);
@@ -433,7 +548,7 @@ begin
     else
       PUInt64(P)^ := Value;
     end;
-    if Assigned(OnCodeWritten) then
+    if (Index >= 0) and Assigned(OnCodeWritten) then
       OnCodeWritten(Index);
     Exit;
   end;
@@ -446,11 +561,11 @@ begin
   end;
   case Address of
     $10000000..$10001FFF:
-      begin
-        Timers.Write(Address, Cardinal(Value));
-        CPU.RequestExit;
-        Exit;
-      end;
+    begin
+      Timers.Write(Address, Cardinal(Value));
+      CPU.RequestExit;
+      Exit;
+    end;
     $10002000..$10002FFF:
       if IPU <> nil then
       begin
@@ -477,63 +592,63 @@ begin
         Exit;
       end;
     $10008000..$1000EFFF:
-      begin
-        DMAC.Write(Address and not 3, Cardinal(Value));
-        CPU.RequestExit;
-        Exit;
-      end;
+    begin
+      DMAC.Write(Address and not 3, Cardinal(Value));
+      CPU.RequestExit;
+      Exit;
+    end;
     $1000F000:
-      begin
-        FINTCStat := FINTCStat and not Cardinal(Value);
-        UpdateINT0;
-        Exit;
-      end;
+    begin
+      FINTCStat := FINTCStat and not Cardinal(Value);
+      UpdateINT0;
+      Exit;
+    end;
     $1000F010:
-      begin
-        FINTCMask := (FINTCMask xor Cardinal(Value)) and $7FFF;
-        UpdateINT0;
-        Exit;
-      end;
+    begin
+      FINTCMask := (FINTCMask xor Cardinal(Value)) and $7FFF;
+      UpdateINT0;
+      Exit;
+    end;
     $1000F180:
-      begin
-        SIOPut(Byte(Value));
-        Exit;
-      end;
+    begin
+      SIOPut(Byte(Value));
+      Exit;
+    end;
     $1000F200..$1000F2FF:
-      begin
-        if SIFBridge <> nil then
-          SIFBridge.EEWrite(Address and $FF, Cardinal(Value))
-        else
-          SIF.WriteRegister(((Address shr 4) and $F) + 1, Cardinal(Value));
-        Exit;
-      end;
+    begin
+      if SIFBridge <> nil then
+        SIFBridge.EEWrite(Address and $FF, Cardinal(Value))
+      else
+        SIF.WriteRegister(((Address shr 4) and $F) + 1, Cardinal(Value));
+      Exit;
+    end;
     $1000F430:
-      begin
-        // A command to the RDRAM devices; a broadcast device-ID reset (SA
-        // 21h, SBC 1) restarts the device count.
-        var SA := (Cardinal(Value) shr 16) and $FFF;
-        var SBC := (Cardinal(Value) shr 6) and $F;
-        if (SA = $21) and (SBC = 1) and (((MCHDrd shr 7) and 1) = 0) then
-          RDRAMDevice := 0;
-        MCHRicm := Cardinal(Value) and not Cardinal($80000000);
-        Exit;
-      end;
+    begin
+      // A command to the RDRAM devices; a broadcast device-ID reset (SA
+      // 21h, SBC 1) restarts the device count.
+      var SA := (Cardinal(Value) shr 16) and $FFF;
+      var SBC := (Cardinal(Value) shr 6) and $F;
+      if (SA = $21) and (SBC = 1) and (((MCHDrd shr 7) and 1) = 0) then
+        RDRAMDevice := 0;
+      MCHRicm := Cardinal(Value) and not Cardinal($80000000);
+      Exit;
+    end;
     $1000F440:
-      begin
-        MCHDrd := Cardinal(Value);
-        Exit;
-      end;
+    begin
+      MCHDrd := Cardinal(Value);
+      Exit;
+    end;
     $1A000000..$1A00FFFF:
-      begin
-        var R := (Address shr 1) and 15;
-        if R = 3 then
-          CmdRegs[3] := CmdRegs[3] and not Word(Value)
-        else
-          CmdRegs[R] := Word(Value);
-        if (R = 0) and ((Value and $80) <> 0) then
-          CmdRegs[3] := CmdRegs[3] or 2;
-        Exit;
-      end;
+    begin
+      var R := (Address shr 1) and 15;
+      if R = 3 then
+        CmdRegs[3] := CmdRegs[3] and not Word(Value)
+      else
+        CmdRegs[R] := Word(Value);
+      if (R = 0) and ((Value and $80) <> 0) then
+        CmdRegs[3] := CmdRegs[3] or 2;
+      Exit;
+    end;
     $1F402000..$1F4020FF:
       if CDVD <> nil then
       begin
@@ -541,17 +656,17 @@ begin
         Exit;
       end;
     $1000F410:
-      begin
-        // Memory controller command: bit 31 starts it and reads back clear
-        // (the command has completed).
-        FRegs[$F410 shr 2] := Cardinal(Value) and not Cardinal($80000000);
-        Exit;
-      end;
+    begin
+      // Memory controller command: bit 31 starts it and reads back clear
+      // (the command has completed).
+      FRegs[$F410 shr 2] := Cardinal(Value) and not Cardinal($80000000);
+      Exit;
+    end;
     $1000F590:
-      begin
-        DMAC.ENABLE := Cardinal(Value);
-        Exit;
-      end;
+    begin
+      DMAC.ENABLE := Cardinal(Value);
+      Exit;
+    end;
     $12000000..$12001FFF:
       if GS <> nil then
       begin
@@ -566,16 +681,16 @@ begin
     var Index := (Address and $FFFC) shr 2;
     case Size of
       1, 2:
-        begin
-          var Shift := (Address and 3) * 8;
-          var Mask := ((Cardinal(1) shl (Size * 8)) - 1) shl Shift;
-          FRegs[Index] := (FRegs[Index] and not Mask) or ((Cardinal(Value) shl Shift) and Mask);
-        end;
+      begin
+        var Shift := (Address and 3) * 8;
+        var Mask := ((Cardinal(1) shl (Size * 8)) - 1) shl Shift;
+        FRegs[Index] := (FRegs[Index] and not Mask) or ((Cardinal(Value) shl Shift) and Mask);
+      end;
       8:
-        begin
-          FRegs[Index] := Cardinal(Value);
-          FRegs[(Index + 1) and $3FFF] := Cardinal(Value shr 32);
-        end;
+      begin
+        FRegs[Index] := Cardinal(Value);
+        FRegs[(Index + 1) and $3FFF] := Cardinal(Value shr 32);
+      end;
     else
       FRegs[Index] := Cardinal(Value);
     end;
@@ -586,20 +701,29 @@ procedure TPS2EEBus.Read128(Address: Cardinal; out Value: TPS2Reg128);
 begin
   case Address and not Cardinal($F) of
     $10004000, $10005000, $10006000, $10007000, $10007010:
-      begin
-        var Dev: TPS2Device := nil;
-        case (Address shr 12) and $F of
-          4: Dev := VIF0;
-          5: Dev := VIF1;
-          6: Dev := GIF;
-          7: Dev := IPU;
-        end;
-        if Dev <> nil then
-          Dev.ReadFIFO(Address, Value)
-        else
-          Value := Default(TPS2Reg128);
-        Exit;
+    begin
+      var Dev: TPS2Device := nil;
+      case (Address shr 12) and $F of
+        4: Dev := VIF0;
+        5: Dev := VIF1;
+        6: Dev := GIF;
+        7: Dev := IPU;
       end;
+      if Dev = nil then
+        Value := Default(TPS2Reg128)
+      else if (Dev = VIF1) or (Dev = GIF) then
+      begin
+        VU1Domain.Enter;
+        try
+          Dev.ReadFIFO(Address, Value);
+        finally
+          VU1Domain.Leave;
+        end;
+      end
+      else
+        Dev.ReadFIFO(Address, Value);
+      Exit;
+    end;
   end;
   inherited Read128(Address, Value);
 end;
@@ -608,18 +732,27 @@ procedure TPS2EEBus.Write128(Address: Cardinal; const Value: TPS2Reg128);
 begin
   case Address and not Cardinal($F) of
     $10004000, $10005000, $10006000, $10007000, $10007010:
-      begin
-        var Dev: TPS2Device := nil;
-        case (Address shr 12) and $F of
-          4: Dev := VIF0;
-          5: Dev := VIF1;
-          6: Dev := GIF;
-          7: Dev := IPU;
-        end;
-        if Dev <> nil then
-          Dev.WriteFIFO(Address, Value);
-        Exit;
+    begin
+      var Dev: TPS2Device := nil;
+      case (Address shr 12) and $F of
+        4: Dev := VIF0;
+        5: Dev := VIF1;
+        6: Dev := GIF;
+        7: Dev := IPU;
       end;
+      if (Dev <> nil) and ((Dev = VIF1) or (Dev = GIF)) then
+      begin
+        VU1Domain.Enter;
+        try
+          Dev.WriteFIFO(Address, Value);
+        finally
+          VU1Domain.Leave;
+        end;
+      end
+      else if Dev <> nil then
+        Dev.WriteFIFO(Address, Value);
+      Exit;
+    end;
   end;
   inherited Write128(Address, Value);
 end;

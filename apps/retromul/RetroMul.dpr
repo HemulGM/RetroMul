@@ -312,6 +312,7 @@ uses
   RM.Platforms.ColecoVision.Input in '..\..\source\platforms\colecovision\RM.Platforms.ColecoVision.Input.pas',
   RM.Platforms.ColecoVision in '..\..\source\platforms\colecovision\RM.Platforms.ColecoVision.pas',
   RM.Platforms.ColecoVision.Settings in '..\..\source\platforms\colecovision\RM.Platforms.ColecoVision.Settings.pas',
+  PS2.GS.PascalShaders in '..\..\source\gpu\shaders\PS2.GS.PascalShaders.pas',
   RetroMul.Platforms in 'RetroMul.Platforms.pas',
   HW.ARM in '..\..\source\hardware\cpu\HW.ARM.pas',
   Audio.ATRAC3.Decoder in '..\..\source\media\audio\codecs\atrac3\Audio.ATRAC3.Decoder.pas',

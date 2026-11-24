@@ -992,6 +992,7 @@
         <DCCReference Include="..\..\source\cores\psp\PSP.Crypto.Keys.pas"/>
         <DCCReference Include="..\..\source\cores\psp\PSP.Crypto.Kirk.pas"/>
         <DCCReference Include="..\..\source\gpu\shaders\PSP.GE.PascalShaders.pas"/>
+        <DCCReference Include="..\..\source\gpu\shaders\PS2.GS.PascalShaders.pas"/>
         <DCCReference Include="..\..\source\cores\saturn\Saturn.Console.pas"/>
         <DCCReference Include="..\..\source\cores\saturn\Saturn.Emulation.pas"/>
         <DCCReference Include="..\..\source\cores\saturn\Saturn.Firmware.pas"/>
@@ -1097,6 +1098,37 @@
         <None Include="..\..\source\cores\cps\CPS.RomData.inc"/>
         <None Include="..\..\source\cores\sms\SMS.Region.inc"/>
         <RcCompile Include="..\..\source\gpu\shaders\PSPGE.Pascal.rc"/>
+        <RcCompile Include="..\..\source\gpu\shaders\PS2GS.Pascal.rc"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.AudioWait.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.Display.Pixels.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.GS.Scanout.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.HostTempo.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.VU.DiamondPlan.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.VU1Domain.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.VU1Thread.pas"/>
+        <DCCReference Include="..\..\source\gpu\vulkan\RM.Vulkan.PipelineState.pas"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSColorLoad2.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSDecodeImage.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSDepthPack.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSDirectBlend.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSDirectColor.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSHLEBlendFrag.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSHLEFrag.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSHLEFragment.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSHLEPush.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSHLEUpload.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSHLEVert.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLEPixel.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLESprite.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLETables.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLETriangleInputs.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLETriangleMath.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLETriangleResolve.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLETriangleShade.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSLLETypes.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSMirrorDecode.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSPackedPage.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PS2GSPaletteHybrid.pasm"/>
         <None Include="..\..\source\gpu\shaders\PSPGEHLEBlend.pasm"/>
         <None Include="..\..\source\gpu\shaders\PSPGEHLEBlendFrag.pasm"/>
         <None Include="..\..\source\gpu\shaders\PSPGEHLEClut.pasm"/>
@@ -4339,6 +4371,9 @@
         <AppDPIAwarenessMode>none</AppDPIAwarenessMode>
     </PropertyGroup>
     <ItemGroup/>
+    <PropertyGroup Condition="'$(Base)'!=''">
+        <DCC_UnitSearchPath>..\..\source\platforms\ps2;..\..\source\cores\ps2;..\..\source\media\dvd;..\..\source\hardware\jit;..\..\source\gpu\vulkan;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+    </PropertyGroup>
     <Import Project="$(BDS)\Bin\CodeGear.Delphi.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Delphi.Targets')"/>
     <Import Project="$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj" Condition="Exists('$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj')"/>
     <Import Project="$(MSBuildProjectName).deployproj" Condition="Exists('$(MSBuildProjectName).deployproj')"/>

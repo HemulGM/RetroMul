@@ -25,6 +25,7 @@ The table lists registered systems. Supported files and ROM sets can also be loa
 | Game & Watch | `.gw`, `.mgw`, catalogued MAME `.zip` sets with SVG screens |
 | Game Boy Advance | `.gba` |
 | Nintendo 64 (experimental) | `.z64`, `.n64`, `.v64` |
+| PlayStation 2 (experimental, no BIOS needed; see [PS2 core](source/cores/ps2/README.md)) | `.iso`, `.mds`/`.mdf`, DVD `.chd`, `.elf` (homebrew) |
 | Nintendo DS (experimental) | `.nds` |
 | Adobe Flash (experimental) | `.swf` with ActionScript 1/2 (AVM1) or limited ActionScript 3 (AVM2) support |
 | Java ME / J2ME (initial implementation) | `.jar`, optional adjacent `.jad`; |

@@ -16,9 +16,10 @@
 //   console's memory, keyed by address, format and stride: a colour image
 //   (RGBA8) and a depth/stencil image (32-bit float or 24-bit depth, 8-bit
 //   stencil), both Scale times the surface's size. FindTarget finds or makes
-//   one (growing it, dropping the least recently used). The subclass loads a
-//   surface into its images (LoadTarget) and stores them back (StoreTarget)
-//   in the console's formats.
+//   one (growing it, dropping the least recently used; a dropped target's
+//   images and framebuffer are kept for a new one of the size). The subclass
+//   loads a surface into its images (LoadTarget) and stores them back
+//   (StoreTarget) in the console's formats.
 // - Coherence. Console memory is the reference whenever the console itself
 //   looks at it. A target is either equal to memory (Loaded; Shadow holds
 //   the bytes it was loaded from and is compared before each use) or newer
@@ -56,9 +57,17 @@
 interface
 
 uses
-  System.SysUtils, System.Math, System.Diagnostics, System.Generics.Collections,
-  System.Generics.Defaults, System.UITypes, Core.Emulation.Types,
-  RM.Vulkan.Bindings, RM.Vulkan.Loader, RM.Vulkan.Compute, RM.Vulkan.TexScale;
+  System.SysUtils,
+  System.Math,
+  System.Diagnostics,
+  System.Generics.Collections,
+  System.Generics.Defaults,
+  System.UITypes,
+  Core.Emulation.Types,
+  RM.Vulkan.Bindings,
+  RM.Vulkan.Loader,
+  RM.Vulkan.Compute,
+  RM.Vulkan.TexScale;
 
 const
   // Vertices a slot's buffer holds.
@@ -74,8 +83,7 @@ type
     TextureUploads, TextureHits, TargetTextures, Pipelines, Presents, WatchFaults: Int64;
     // Uploads scaled (texture scaling), and the time scaling them.
     TextureScales: Int64;
-    TextureCheckBytes: Int64;
-    PresentBytes: Int64;
+    TextureCheckBytes, PresentBytes: Int64;
     ScaleSeconds: Double;
     // In flushes: waiting for the GPU, and everything (waiting and storing).
     WaitSeconds, FlushSeconds: Double;
@@ -83,10 +91,58 @@ type
     SetupSeconds, PresentSeconds: Double;
   end;
 
+  // Optimal sampled RGBA images only: no linear/buffer granularity alias.
+  TSampleSlab = class
+    Memory: VkDeviceMemory;
+    MemoryType, Slots: Cardinal;
+    Stride, Occupied: UInt64;
+  end;
+
+  THLEImageReqInfo = record
+    SType: VkStructureType;
+    Next: Pointer;
+    Image: VkImage;
+  end;
+  THLEImageRequirements = record
+    SType: VkStructureType;
+    Next: Pointer;
+    Req: VkMemoryRequirements;
+  end;
+  THLEDedicatedRequirements = record
+    SType: VkStructureType;
+    Next: Pointer;
+    Prefers, RequiresAllocation: VkBool32;
+  end;
+  THLEDedicatedImage = record
+    SType: VkStructureType;
+    Next: Pointer;
+    Image: VkImage;
+    Buffer: VkBuffer;
+  end;
+  TImageRequirementsProc =
+    procedure(Device: VkDevice; Info, Requirements: Pointer);
+{$IFDEF MSWINDOWS}
+    stdcall
+{$ELSE}
+    cdecl
+{$ENDIF}
+    ;
+
   TVulkanHLEImage = record
     Image: VkImage;
     Memory: VkDeviceMemory;
     View: VkImageView;
+    AllocationBytes: UInt64;
+    Usage: Cardinal;
+    Slab: TSampleSlab;
+    SlabIndex: Integer;
+  end;
+
+  // A target's images and framebuffer kept for reuse (FTargetPool).
+  TVulkanHLEPooledTarget = record
+    Color, Depth: TVulkanHLEImage;
+    Framebuffer: VkFramebuffer;
+    Width, Height: Integer;
   end;
 
   TVulkanHLETexture = class;
@@ -117,8 +173,6 @@ type
     // Changes whenever the colour image may change (made, loaded, drawn):
     // unique among the renderer's targets.
     Version: Int64;
-    // Colour modified since this target was last presented. Loads/growth
-    // invalidate partial reuse; drawing accumulates a native-pixel box.
     PresentPartial: Boolean;
     PresentX1, PresentY1, PresentX2, PresentY2: Integer;
     function Bytes: Cardinal;
@@ -145,10 +199,14 @@ type
     // A scaled texture's bytes changing in close succession (in frames shown,
     // the last at ChangedAt): it is made again unscaled.
     Changes: Integer;
+    CanRecycle: Boolean;
     ChangedAt: Int64;
     // A target's colour image used as the texture (not this object's).
     Target: TVulkanHLETarget;
     Image: TVulkanHLEImage;
+    NativeMips: TVulkanHLEImage;
+    NativePending: TArray<TArray<Cardinal>>;
+    NativeDirty: Boolean;
     Sets: TDictionary<Cardinal, VkDescriptorSet>;
     LastUse: Int64;
     constructor Create;
@@ -165,10 +223,10 @@ type
     Cmd: TVulkanCommands;
     Vertices: TVulkanBuffer;
     VertexCount: Integer;
+    RecordingNumber: Int64;
     Upload: TVulkanBuffer;
     UploadUsed: Int64;
   end;
-
   PVulkanHLESlot = ^TVulkanHLESlot;
 
   TVulkanHLERenderer = class
@@ -181,32 +239,72 @@ type
     // Textures replaced while the GPU may still read them: destroyed once it
     // has finished (DestroyRetired).
     FRetired: TList<TVulkanHLETexture>;
+    // The images of targets dropped (the GPU done with them), kept for new
+    // targets of the size: making images is slow, and a new target's pixels
+    // are loaded before any use.
+    FTargetPool: TList<TVulkanHLEPooledTarget>;
     FTextureScale: Integer;
     FTextureFilter: TTexScaleFilter;
     // The texels of a level being scaled, and the larger ones.
     FScaleIn, FScaleOut: TArray<Cardinal>;
-    FLevelOffset: Int64;
-    FSlots: array[0..1] of TVulkanHLESlot;
-    FSlot: Integer;
-    FSetCount: Integer;
-    FDrawFirst, FDrawCount: Integer;
-    FPassRenderPass: VkRenderPass;
-    // The shown frames' pixels (ReadFrame), reused once their reader let go.
-    FFrames: array[0..2] of TArray<TAlphaColor>;
-    // The last frame read, and the target and version it was read from.
-    FFrameTarget: TVulkanHLETarget;
-    FFrameVersion: Int64;
-    FFrameWidth, FFrameHeight: Integer;
-    FFramePixels: TArray<TAlphaColor>;
-    FFlushing: Boolean;
+    type
+      TScaleEntry = record
+        W, H, Factor: Integer;
+        Filter: TTexScaleFilter;
+        Source, Output: TArray<Cardinal>;
+        Used: Int64;
+        Fingerprint: UInt64;
+      end;
+    var
+      FScaleCache: array[0..127] of TScaleEntry;
+      FScaleClock: Int64;
+      FScaleCacheBytes: Integer;
+      FRecycle: array[0..255] of record
+        Width, Height, Levels: Integer;
+        Image: TVulkanHLEImage;
+        Stamp: Int64;
+      end;
+      FRecycleCount: Integer;
+      FRecycleBytes: UInt64;
+      FRecycleActive: Boolean;
+      FRecClock, FRecRented, FRecRetired, FRecEvicted, FRecAllocated: Int64;
+      FScaleReused: Int64;
+
+      FLevelOffset: Int64;
+      FSlots: array[0..1] of TVulkanHLESlot;
+      FSlot: Integer;
+      FSetCount: Integer;
+      FPassRenderPass: VkRenderPass;
+      // The shown frames' pixels (ReadFrame), reused once their reader let go.
+      FFrames: array[0..2] of TArray<TAlphaColor>;
+      // The last frame read, and the target and version it was read from.
+      FFrameTarget: TVulkanHLETarget;
+      FFrameVersion: Int64;
+      FFrameWidth, FFrameHeight: Integer;
+      FFramePixels: TArray<TAlphaColor>;
+      FFlushing: Boolean;
     procedure CreateRenderPass;
     procedure CreateLayout(PushSize: Integer);
+    function CachedScale(W, H, Factor: Integer): PCardinal;
     procedure SetTextureScale(Value: Integer);
+    function RentTexture(Width, Height, Levels: Integer; Store: Boolean = False): TVulkanHLEImage;
+    procedure ReturnTexture(var Image: TVulkanHLEImage; Width, Height, Levels: Integer; Reusable: Boolean);
     function AddTexture(Key: UInt64; Width, Height, Levels, Scale: Integer; Request: Pointer): TVulkanHLETexture;
     procedure Decode(T: TVulkanHLETexture; Request: Pointer);
     function Changing(T: TVulkanHLETexture): Boolean;
   protected
     FCompute: TVulkanCompute;
+    FNativeTextureView: Boolean;
+    FHostVertices: Boolean;
+    FTextureStore: Boolean;
+    FSlabs: TList<TSampleSlab>;
+    FGetImageRequirements: TImageRequirementsProc;
+    FSlabBytes, FSlabPeak, FSlabAllocated, FSlabBound, FSlabReleased: UInt64;
+    FNativeMipBytes: Int64;
+    FLastScaleSource: TArray<Cardinal>;
+    FNativeImages, FPendingMipBytes: Int64;
+    FLocalEdges, FNextLocal, FCurrentLocal, FLocalEnd: Boolean;
+    FLocalCuts, FFencedEnds: Int64;
     FAPI: TVulkanAPI;
     FDevice: VkDevice;
     FScale: Integer;
@@ -236,7 +334,10 @@ type
     // The texture of untextured draws: one opaque white texel.
     FBlank: TVulkanHLETexture;
     FStats: TVulkanHLEStats;
+    // The draw being built: its first vertex in the slot and its vertices.
+    FDrawFirst, FDrawCount: Integer;
 
+    procedure EnableTextureRecycling;
     // Images.
     function CreateImage(Format: VkFormat; Width, Height, Levels: Integer; Usage, Aspect: Cardinal): TVulkanHLEImage;
     procedure DestroyImage(var Image: TVulkanHLEImage);
@@ -262,7 +363,19 @@ type
     // Batches.
     procedure BeginPass(T: TVulkanHLETarget; Pass: VkRenderPass; Framebuffer: VkFramebuffer);
     procedure EndPass;
-    procedure FlushDraw;
+    // Draws the vertices added since the last one (a subclass may draw them
+    // again with other bindings).
+    procedure PixelDependency(var Dep: VkSubpassDependency);
+    procedure PixelBarrier;
+    function ReserveSample(
+      var Image: TVulkanHLEImage;
+      const Req: VkMemoryRequirements;
+      MemoryType: Cardinal;
+      out Offset: UInt64
+    ): Boolean;
+    procedure DropSample(var Image: TVulkanHLEImage);
+    procedure NeedNativeMips(T: TVulkanHLETexture);
+    procedure FlushDraw; virtual;
     // Room for Count more vertices in the slot (submitting it when full).
     procedure ReserveVertices(Count: Integer);
     // Count vertices after the draw being built.
@@ -282,7 +395,10 @@ type
     // Targets.
     // The target of Stride x NeedHeight pixels at Addr in Format: a new one
     // MinHeight tall at least (twice as tall when it grows), MaxHeight at most.
-    function FindTarget(Addr, Format, Stride, PixelBytes: Cardinal; NeedHeight, MinHeight, MaxHeight: Integer): TVulkanHLETarget;
+    function FindTarget(
+      Addr, Format, Stride, PixelBytes: Cardinal;
+      NeedHeight, MinHeight, MaxHeight: Integer
+    ): TVulkanHLETarget;
     function NewTarget: TVulkanHLETarget; virtual;
     // A new target has its images and framebuffer.
     procedure InitTarget(T: TVulkanHLETarget); virtual;
@@ -292,6 +408,8 @@ type
     procedure LoadTarget(T: TVulkanHLETarget); virtual; abstract;
     // The images' newer pixels (the box drawn) back into console memory. The
     // renderer clears Dirty and takes the shadow afterwards.
+    function BeginStoreBatch: Boolean; virtual;
+    procedure EndStoreBatch; virtual;
     procedure StoreTarget(T: TVulkanHLETarget); virtual; abstract;
     // The target has pixels console memory does not (FlushAll stores it).
     function TargetNewer(T: TVulkanHLETarget): Boolean; virtual;
@@ -304,7 +422,8 @@ type
     // Rows Y1..Y2 are drawn: the pages of those not yet held are held.
     procedure HoldNewRows(T: TVulkanHLETarget; Y1, Y2: Integer);
     procedure WatchTarget(T: TVulkanHLETarget);
-    function ShadowMatches(T: TVulkanHLETarget): Boolean;
+    function ShadowMatches(T: TVulkanHLETarget): Boolean; virtual;
+    function CaptureColor(T: TVulkanHLETarget; Whole: Boolean): Boolean; virtual;
     // The target's colour image as a texture of one level.
     function TargetAsTexture(T: TVulkanHLETarget): TVulkanHLETexture;
 
@@ -313,6 +432,8 @@ type
     // bytes (TextureMatches), or decoded (DecodeTexture). Request is the
     // subclass's, handed to those.
     function CachedTexture(Key: UInt64; Request: Pointer): TVulkanHLETexture;
+    // The texture of Key if there is one (nothing compared or decoded), else nil.
+    function FindTexture(Key: UInt64): TVulkanHLETexture;
     // A new texture's size, levels and scale (ScaleFor, or 1).
     procedure DescribeTexture(Request: Pointer; out Width, Height, Levels, Scale: Integer); virtual; abstract;
     // The texture's source bytes are still what console memory holds (SameSource).
@@ -378,12 +499,132 @@ type
     // Textures made larger by ScaleTexture (2 to TexScaleMax; 0 or 1 none)
     // with the filter when the scale is above 1: an option that is not the
     // console's. Applies to textures uploaded from then on.
+    property ScaleReused: Int64 read FScaleReused;
+    property RecycledImages: Int64 read FRecRented;
+    property CreatedTextureImages: Int64 read FRecAllocated;
+    property ReleasedTextureImages: Int64 read FRecRetired;
+    property DroppedImages: Int64 read FRecEvicted;
     property TextureScale: Integer read FTextureScale write SetTextureScale;
     property TextureFilter: TTexScaleFilter read FTextureFilter write FTextureFilter;
     property Stats: TVulkanHLEStats read FStats;
   end;
 
+// CompareMem's result, with AVX2 for large ranges where the host has it.
+function VulkanHLEEqualBytes(P1, P2: Pointer; Size: NativeInt): Boolean;
+
 implementation
+
+{$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+var
+  CompareAVX2: Boolean;
+
+function HostCompareAVX2: Boolean;
+asm
+  .NOFRAME
+  mov r10, rbx
+  xor eax, eax
+  cpuid
+  cmp eax, 7
+  jb @@No
+  mov eax, 1
+  cpuid
+  and ecx, $1C000000
+  cmp ecx, $1C000000
+  jne @@No
+  xor ecx, ecx
+  xgetbv
+  and eax, 6
+  cmp eax, 6
+  jne @@No
+  mov eax, 7
+  xor ecx, ecx
+  cpuid
+  shr ebx, 5
+  and ebx, 1
+  mov eax, ebx
+  jmp @@Done
+@@No:
+  xor eax, eax
+@@Done:
+  mov rbx, r10
+end;
+
+function EqualBytesAVX2(P1, P2: Pointer; Size: NativeInt): Boolean;
+asm
+  .NOFRAME
+  test r8, r8
+  jle @@Yes
+  cmp rcx, rdx
+  je @@Yes
+@@Blocks:
+  cmp r8, 128
+  jl @@Vectors
+  vmovdqu ymm0, [rcx]
+  vpxor ymm0, ymm0, [rdx]
+  vmovdqu ymm1, [rcx + 32]
+  vpxor ymm1, ymm1, [rdx + 32]
+  vpor ymm0, ymm0, ymm1
+  vmovdqu ymm2, [rcx + 64]
+  vpxor ymm2, ymm2, [rdx + 64]
+  vpor ymm0, ymm0, ymm2
+  vmovdqu ymm3, [rcx + 96]
+  vpxor ymm3, ymm3, [rdx + 96]
+  vpor ymm0, ymm0, ymm3
+  vptest ymm0, ymm0
+  jnz @@No
+  add rcx, 128
+  add rdx, 128
+  sub r8, 128
+  jmp @@Blocks
+@@Vectors:
+  cmp r8, 32
+  jl @@Words
+  vmovdqu ymm0, [rcx]
+  vpxor ymm0, ymm0, [rdx]
+  vptest ymm0, ymm0
+  jnz @@No
+  add rcx, 32
+  add rdx, 32
+  sub r8, 32
+  jmp @@Vectors
+@@Words:
+  cmp r8, 8
+  jl @@Bytes
+  mov r9, [rcx]
+  cmp r9, [rdx]
+  jne @@No
+  add rcx, 8
+  add rdx, 8
+  sub r8, 8
+  jmp @@Words
+@@Bytes:
+  test r8, r8
+  jz @@Yes
+  mov r9b, [rcx]
+  cmp r9b, [rdx]
+  jne @@No
+  inc rcx
+  inc rdx
+  dec r8
+  jmp @@Bytes
+@@Yes:
+  mov eax, 1
+  vzeroupper
+  ret
+@@No:
+  xor eax, eax
+  vzeroupper
+end;
+{$ENDIF}
+
+function VulkanHLEEqualBytes(P1, P2: Pointer; Size: NativeInt): Boolean;
+begin
+  {$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+  if CompareAVX2 and (Size >= 128) then
+    Exit(EqualBytesAVX2(P1, P2, Size));
+  {$ENDIF}
+  Result := CompareMem(P1, P2, Size);
+end;
 
 const
   // Release submits no fewer vertices.
@@ -415,7 +656,10 @@ end;
 
 { TVulkanHLERenderer }
 
-constructor TVulkanHLERenderer.Create(Compute: TVulkanCompute; Scale, VertexSize, PushSize, FrameWidth, FrameHeight: Integer);
+constructor TVulkanHLERenderer.Create(
+  Compute: TVulkanCompute;
+  Scale, VertexSize, PushSize, FrameWidth, FrameHeight: Integer
+);
 var
   Props: VkFormatProperties;
 begin
@@ -423,6 +667,9 @@ begin
   FCompute := Compute;
   FAPI := Compute.API;
   FDevice := Compute.Device;
+  FSlabs := TList<TSampleSlab>.Create;
+  if Compute.APIVersion >= VK_API_VERSION_1_1 then
+    FGetImageRequirements := TImageRequirementsProc(FAPI.vkGetDeviceProcAddr(FDevice, 'vkGetImageMemoryRequirements2'));
   FScale := EnsureRange(Scale, 1, 8);
   FVertexSize := VertexSize;
   FPipelines := TDictionary<UInt64, VkPipeline>.Create;
@@ -430,6 +677,7 @@ begin
   FTargets := TList<TVulkanHLETarget>.Create;
   FTextures := TObjectDictionary<UInt64, TVulkanHLETexture>.Create([]);
   FRetired := TList<TVulkanHLETexture>.Create;
+  FTargetPool := TList<TVulkanHLEPooledTarget>.Create;
   FAPI.vkGetPhysicalDeviceFormatProperties(Compute.PhysicalDevice, VK_FORMAT_D32_SFLOAT_S8_UINT, @Props);
   if (Props.optimalTilingFeatures and VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) <> 0 then
     FDepthFormat := VK_FORMAT_D32_SFLOAT_S8_UINT
@@ -441,28 +689,50 @@ begin
     FDepthFormat := VK_FORMAT_D24_UNORM_S8_UINT;
     FD24 := True;
   end;
-  FColorUsage := VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT or VK_IMAGE_USAGE_TRANSFER_SRC_BIT or
-    VK_IMAGE_USAGE_TRANSFER_DST_BIT or VK_IMAGE_USAGE_SAMPLED_BIT;
-  FDepthUsage := VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT or VK_IMAGE_USAGE_TRANSFER_SRC_BIT or
-    VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  FColorUsage :=
+    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+      or VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+      or VK_IMAGE_USAGE_TRANSFER_DST_BIT
+      or VK_IMAGE_USAGE_SAMPLED_BIT;
+  FDepthUsage :=
+    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT or VK_IMAGE_USAGE_TRANSFER_SRC_BIT or VK_IMAGE_USAGE_TRANSFER_DST_BIT;
   CreateRenderPass;
   CreateLayout(PushSize);
+  var VertexKind := vbkShared;
+  if FHostVertices then
+    VertexKind := vbkVertexStream;
   for var I := 0 to High(FSlots) do
   begin
     FSlots[I].Cmd := Compute.CreateCommands;
-    FSlots[I].Vertices := Compute.CreateBuffer(HLEVertexCapacity * Int64(VertexSize), vbkShared,
-        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-    FSlots[I].Upload := Compute.CreateBuffer(HLEUploadCapacity, vbkUpload, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+    FSlots[I].Vertices :=
+      Compute.CreateBuffer(HLEVertexCapacity * Int64(VertexSize), VertexKind, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    FSlots[I].Upload :=
+      Compute.CreateBuffer(
+        HLEUploadCapacity,
+        vbkUpload,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT or VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+      );
   end;
   // Also the frames shown at the scale.
-  FReadback := Compute.CreateBuffer(Max(HLEUploadCapacity, FrameWidth * FrameHeight * 4 * FScale * FScale), vbkReadback,
-    VK_BUFFER_USAGE_TRANSFER_DST_BIT or VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+  FReadback :=
+    Compute.CreateBuffer(
+      Max(HLEUploadCapacity, FrameWidth * FrameHeight * 4 * FScale * FScale),
+      vbkReadback,
+      VK_BUFFER_USAGE_TRANSFER_SRC_BIT or VK_BUFFER_USAGE_TRANSFER_DST_BIT or VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+    );
   FBlank := TVulkanHLETexture.Create;
   FBlank.Width := 1;
   FBlank.Height := 1;
   FBlank.Levels := 1;
-  FBlank.Image := CreateImage(VK_FORMAT_R8G8B8A8_UNORM, 1, 1, 1,
-    VK_IMAGE_USAGE_SAMPLED_BIT or VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+  FBlank.Image :=
+    CreateImage(
+      VK_FORMAT_R8G8B8A8_UNORM,
+      1,
+      1,
+      1,
+      VK_IMAGE_USAGE_SAMPLED_BIT or VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+      VK_IMAGE_ASPECT_COLOR_BIT
+    );
   var Offset: Int64;
   PCardinal(StageUpload(4, Offset))^ := $FFFFFFFF;
   CopyToImage(FBlank.Image.Image, VK_IMAGE_ASPECT_COLOR_BIT, Offset, 0, 0, 0, 1, 1);
@@ -477,6 +747,11 @@ begin
     except
     end;
     FCompute.WaitIdle;
+    FRecycleActive := False;
+    for var I := 0 to FRecycleCount - 1 do
+      DestroyImage(FRecycle[I].Image);
+    FRecycleCount := 0;
+    FRecycleBytes := 0;
     if FTargets <> nil then
       for var T in FTargets do
         DestroyTarget(T);
@@ -490,6 +765,15 @@ begin
     FRetired.Free;
     if FBlank <> nil then
       DestroyTexture(FBlank);
+    if FTargetPool <> nil then
+      for var I := 0 to FTargetPool.Count - 1 do
+      begin
+        var E := FTargetPool[I];
+        FAPI.vkDestroyFramebuffer(FDevice, E.Framebuffer, nil);
+        DestroyImage(E.Color);
+        DestroyImage(E.Depth);
+      end;
+    FTargetPool.Free;
     if FPipelines <> nil then
       for var P in FPipelines.Values do
         FAPI.vkDestroyPipeline(FDevice, P, nil);
@@ -498,6 +782,14 @@ begin
       for var S in FSamplers.Values do
         FAPI.vkDestroySampler(FDevice, S, nil);
     FSamplers.Free;
+    if FSlabs <> nil then
+      for var Slab in FSlabs do
+      begin
+        Assert(Slab.Occupied = 0);
+        FAPI.vkFreeMemory(FDevice, Slab.Memory, nil);
+        Slab.Free;
+      end;
+    FSlabs.Free;
     FreeDevice;
     FCompute.Free;
   end;
@@ -523,7 +815,104 @@ begin
     FAPI.vkDestroyRenderPass(FDevice, FRenderPass, nil);
 end;
 
-function TVulkanHLERenderer.CreateImage(Format: VkFormat; Width, Height, Levels: Integer; Usage, Aspect: Cardinal): TVulkanHLEImage;
+function TVulkanHLERenderer.ReserveSample(
+  var Image: TVulkanHLEImage;
+  const Req: VkMemoryRequirements;
+  MemoryType: Cardinal;
+  out Offset: UInt64
+): Boolean;
+const
+  Limit = 160 * 1024 * 1024;
+  Chunk = 4 * 1024 * 1024;
+  TooManyObjects = -10; // VK_ERROR_TOO_MANY_OBJECTS
+begin
+  Result := False;
+  Offset := 0;
+  if (Req.size = 0)
+    or (Req.alignment = 0)
+    or (Req.size > Chunk div 4)
+    or (Req.alignment > Chunk div 4)
+    or ((Req.alignment and (Req.alignment - 1)) <> 0) then
+    Exit;
+  var Stride := Req.alignment;
+  while Stride < Req.size do
+    Stride := Stride * 2;
+  var S: TSampleSlab := nil;
+  for var Entry in FSlabs do
+    if (Entry.MemoryType = MemoryType)
+      and (Entry.Stride = Stride)
+      and (Entry.Occupied <> (High(UInt64) shr (64 - Entry.Slots))) then
+    begin
+      S := Entry;
+      Break;
+    end;
+  if S = nil then
+  begin
+    var Slots := Min(UInt64(64), UInt64(Chunk) div Stride);
+    var Bytes := Slots * Stride;
+    if FSlabBytes + Bytes > Limit then
+      for var I := FSlabs.Count - 1 downto 0 do
+      begin
+        var Empty := FSlabs[I];
+        if Empty.Occupied <> 0 then
+          Continue;
+        Dec(FSlabBytes, Empty.Slots * Empty.Stride);
+        FAPI.vkFreeMemory(FDevice, Empty.Memory, nil);
+        FSlabs.Delete(I);
+        Empty.Free;
+        if FSlabBytes + Bytes <= Limit then
+          Break;
+      end;
+    if FSlabBytes + Bytes > Limit then
+      Exit;
+    var Allocate := Default(VkMemoryAllocateInfo);
+    Allocate.sType := VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    Allocate.memoryTypeIndex := MemoryType;
+    Allocate.allocationSize := Bytes;
+    var Memory: VkDeviceMemory;
+    var Code := FAPI.vkAllocateMemory(FDevice, @Allocate, nil, @Memory);
+    if (Code = VK_ERROR_OUT_OF_DEVICE_MEMORY) or (Code = VK_ERROR_OUT_OF_HOST_MEMORY) or (Code = TooManyObjects) then
+      Exit;
+    CheckVulkan(Code, 'vkAllocateMemory (sample slab)');
+    S := TSampleSlab.Create;
+    S.Memory := Memory;
+    S.MemoryType := MemoryType;
+    S.Stride := Stride;
+    S.Slots := Slots;
+    FSlabs.Add(S);
+    Inc(FSlabAllocated);
+    Inc(FSlabBytes, Bytes);
+    FSlabPeak := Max(FSlabPeak, FSlabBytes);
+  end;
+  var Id := 0;
+  while (S.Occupied and (UInt64(1) shl Id)) <> 0 do
+    Inc(Id);
+  Assert((Id < S.Slots) and (S.Stride >= Req.size));
+  S.Occupied := S.Occupied or (UInt64(1) shl Id);
+  Image.Slab := S;
+  Image.SlabIndex := Id;
+  Image.Memory := S.Memory;
+  Offset := UInt64(Id) * S.Stride;
+  Inc(FSlabBound);
+  Result := True;
+end;
+
+procedure TVulkanHLERenderer.DropSample(var Image: TVulkanHLEImage);
+begin
+  var S := Image.Slab;
+  var Bit := UInt64(1) shl Image.SlabIndex;
+  Assert((S.Memory = Image.Memory) and ((S.Occupied and Bit) <> 0));
+  S.Occupied := S.Occupied and not Bit;
+  Inc(FSlabReleased);
+  Image.Slab := nil;
+  Image.Memory := 0;
+end;
+
+function TVulkanHLERenderer.CreateImage(
+  Format: VkFormat;
+  Width, Height, Levels: Integer;
+  Usage, Aspect: Cardinal
+): TVulkanHLEImage;
 var
   Info: VkImageCreateInfo;
   Req: VkMemoryRequirements;
@@ -547,7 +936,30 @@ begin
   Info.sharingMode := VK_SHARING_MODE_EXCLUSIVE;
   Info.initialLayout := VK_IMAGE_LAYOUT_UNDEFINED;
   CheckVulkan(FAPI.vkCreateImage(FDevice, @Info, nil, @Result.Image), 'vkCreateImage');
-  FAPI.vkGetImageMemoryRequirements(FDevice, Result.Image, @Req);
+  Result.Usage := Usage;
+  var Pooled :=
+    Assigned(FGetImageRequirements)
+      and (Format = VK_FORMAT_R8G8B8A8_UNORM)
+      and ((Usage and not Cardinal(VK_IMAGE_USAGE_STORAGE_BIT))
+        = (VK_IMAGE_USAGE_SAMPLED_BIT or VK_IMAGE_USAGE_TRANSFER_DST_BIT))
+      and (Aspect = VK_IMAGE_ASPECT_COLOR_BIT);
+  var Dedicated := Default(THLEDedicatedRequirements);
+  if Pooled then
+  begin
+    var Query := Default(THLEImageReqInfo);
+    Query.SType := 1000146001; // VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2
+    Query.Image := Result.Image;
+    var Requirements := Default(THLEImageRequirements);
+    Requirements.SType := 1000146003; // VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2
+    Dedicated.SType := 1000127000; // VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS
+    Requirements.Next := @Dedicated;
+    FGetImageRequirements(FDevice, @Query, @Requirements);
+    Req := Requirements.Req;
+    Pooled := (Dedicated.RequiresAllocation = 0) and (Dedicated.Prefers = 0);
+  end
+  else
+    FAPI.vkGetImageMemoryRequirements(FDevice, Result.Image, @Req);
+  Result.AllocationBytes := Req.size;
   Alloc := Default(VkMemoryAllocateInfo);
   Alloc.sType := VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
   Alloc.allocationSize := Req.size;
@@ -555,8 +967,22 @@ begin
   if MemoryType < 0 then
     MemoryType := FCompute.FindMemory(Req.memoryTypeBits, 0, []);
   Alloc.memoryTypeIndex := MemoryType;
-  CheckVulkan(FAPI.vkAllocateMemory(FDevice, @Alloc, nil, @Result.Memory), 'vkAllocateMemory (image)');
-  CheckVulkan(FAPI.vkBindImageMemory(FDevice, Result.Image, Result.Memory, 0), 'vkBindImageMemory');
+  var Offset: UInt64 := 0;
+  var Solo := Default(THLEDedicatedImage);
+  if (Dedicated.RequiresAllocation <> 0) or (Dedicated.Prefers <> 0) then
+  begin
+    Solo.SType := 1000127001; // VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
+    Solo.Image := Result.Image;
+    Alloc.pNext := @Solo;
+  end;
+  try
+    if not Pooled or not ReserveSample(Result, Req, MemoryType, Offset) then
+      CheckVulkan(FAPI.vkAllocateMemory(FDevice, @Alloc, nil, @Result.Memory), 'vkAllocateMemory (image)');
+    CheckVulkan(FAPI.vkBindImageMemory(FDevice, Result.Image, Result.Memory, Offset), 'vkBindImageMemory');
+  except
+    DestroyImage(Result);
+    raise;
+  end;
   View := Default(VkImageViewCreateInfo);
   View.sType := VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
   View.image := Result.Image;
@@ -580,8 +1006,18 @@ begin
   B.subresourceRange.aspectMask := Aspect;
   B.subresourceRange.levelCount := Levels;
   B.subresourceRange.layerCount := 1;
-  FAPI.vkCmdPipelineBarrier(Slot.Cmd.Handle, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
-    0, nil, 0, nil, 1, @B);
+  FAPI.vkCmdPipelineBarrier(
+    Slot.Cmd.Handle,
+    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+    0,
+    0,
+    nil,
+    0,
+    nil,
+    1,
+    @B
+  );
 end;
 
 procedure TVulkanHLERenderer.DestroyImage(var Image: TVulkanHLEImage);
@@ -590,7 +1026,9 @@ begin
     FAPI.vkDestroyImageView(FDevice, Image.View, nil);
   if Image.Image <> 0 then
     FAPI.vkDestroyImage(FDevice, Image.Image, nil);
-  if Image.Memory <> 0 then
+  if Image.Slab <> nil then
+    DropSample(Image)
+  else if Image.Memory <> 0 then
     FAPI.vkFreeMemory(FDevice, Image.Memory, nil);
   Image := Default(TVulkanHLEImage);
 end;
@@ -620,7 +1058,7 @@ var
   Info: VkRenderPassCreateInfo;
 begin
   Attachments[0] := Default(VkAttachmentDescription);
-  Attachments[0].Format := VK_FORMAT_R8G8B8A8_UNORM;
+  Attachments[0].format := VK_FORMAT_R8G8B8A8_UNORM;
   Attachments[0].samples := VK_SAMPLE_COUNT_1_BIT;
   Attachments[0].loadOp := VK_ATTACHMENT_LOAD_OP_LOAD;
   Attachments[0].storeOp := VK_ATTACHMENT_STORE_OP_STORE;
@@ -629,7 +1067,7 @@ begin
   Attachments[0].initialLayout := VK_IMAGE_LAYOUT_GENERAL;
   Attachments[0].finalLayout := VK_IMAGE_LAYOUT_GENERAL;
   Attachments[1] := Attachments[0];
-  Attachments[1].Format := FDepthFormat;
+  Attachments[1].format := FDepthFormat;
   Attachments[1].stencilLoadOp := VK_ATTACHMENT_LOAD_OP_LOAD;
   Attachments[1].stencilStoreOp := VK_ATTACHMENT_STORE_OP_STORE;
   ColorRef.attachment := 0;
@@ -649,6 +1087,8 @@ begin
   Deps[0].dstStageMask := VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
   Deps[0].srcAccessMask := VK_ACCESS_MEMORY_WRITE_BIT;
   Deps[0].dstAccessMask := VK_ACCESS_MEMORY_READ_BIT or VK_ACCESS_MEMORY_WRITE_BIT;
+  if FLocalEdges then
+    PixelDependency(Deps[0]);
   Deps[1] := Deps[0];
   Deps[1].srcSubpass := 0;
   Deps[1].dstSubpass := VK_SUBPASS_EXTERNAL;
@@ -666,6 +1106,7 @@ end;
 procedure TVulkanHLERenderer.CreateLayout(PushSize: Integer);
 var
   Binding: VkDescriptorSetLayoutBinding;
+  Binds: array[0..1] of VkDescriptorSetLayoutBinding;
   SetInfo: VkDescriptorSetLayoutCreateInfo;
   Push: VkPushConstantRange;
   Info: VkPipelineLayoutCreateInfo;
@@ -681,6 +1122,14 @@ begin
   SetInfo.sType := VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
   SetInfo.bindingCount := 1;
   SetInfo.pBindings := @Binding;
+  if FNativeTextureView then
+  begin
+    Binds[0] := Binding;
+    Binds[1] := Binding;
+    Binds[1].binding := 1;
+    SetInfo.bindingCount := 2;
+    SetInfo.pBindings := @Binds[0];
+  end;
   CheckVulkan(FAPI.vkCreateDescriptorSetLayout(FDevice, @SetInfo, nil, @FSetLayout), 'vkCreateDescriptorSetLayout');
   Push.stageFlags := VK_SHADER_STAGE_VERTEX_BIT or VK_SHADER_STAGE_FRAGMENT_BIT;
   Push.offset := 0;
@@ -694,6 +1143,8 @@ begin
   CheckVulkan(FAPI.vkCreatePipelineLayout(FDevice, @Info, nil, @FLayout), 'vkCreatePipelineLayout');
   PoolSize.&type := VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
   PoolSize.descriptorCount := MaxSets;
+  if FNativeTextureView then
+    PoolSize.descriptorCount := MaxSets * 2;
   PoolInfo := Default(VkDescriptorPoolCreateInfo);
   PoolInfo.sType := VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
   PoolInfo.flags := VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
@@ -748,7 +1199,12 @@ var
   ImageInfo: VkDescriptorImageInfo;
   Write: VkWriteDescriptorSet;
 begin
-  if T.Sets.TryGetValue(SamplerKey, Result) then
+  // A previously recorded high-only draw may still use its set. Allocate a
+  // distinct set on first native use instead of rewriting that descriptor.
+  var SetKey := SamplerKey;
+  if T.NativeMips.View <> 0 then
+    SetKey := SetKey or $80000000;
+  if T.Sets.TryGetValue(SetKey, Result) then
     Exit;
   // The pool is full: once the GPU is done with them every set goes, and
   // each texture makes the ones it needs again.
@@ -780,7 +1236,14 @@ begin
   Write.descriptorType := VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
   Write.pImageInfo := @ImageInfo;
   FAPI.vkUpdateDescriptorSets(FDevice, 1, @Write, 0, nil);
-  T.Sets.Add(SamplerKey, Result);
+  if FNativeTextureView then
+  begin
+    Write.dstBinding := 1;
+    if T.NativeMips.View <> 0 then
+      ImageInfo.imageView := T.NativeMips.View;
+    FAPI.vkUpdateDescriptorSets(FDevice, 1, @Write, 0, nil);
+  end;
+  T.Sets.Add(SetKey, Result);
   Inc(FSetCount);
 end;
 
@@ -808,6 +1271,7 @@ begin
   if S.Cmd.Recording then
     Exit;
   S.Cmd.Start;
+  Inc(S.RecordingNumber);
   S.VertexCount := 0;
   S.UploadUsed := 0;
   FPass := nil;
@@ -823,6 +1287,35 @@ end;
 
 // Everything before is visible to everything after (transfers, attachments,
 // shader reads).
+procedure TVulkanHLERenderer.PixelDependency(var Dep: VkSubpassDependency);
+begin
+  Dep.srcStageMask :=
+    VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
+      or VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT
+      or VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+      or VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  Dep.dstStageMask := Dep.srcStageMask;
+  Dep.srcAccessMask :=
+    VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT or VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT or VK_ACCESS_SHADER_WRITE_BIT;
+  Dep.dstAccessMask :=
+    Dep.srcAccessMask
+      or VK_ACCESS_COLOR_ATTACHMENT_READ_BIT
+      or VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+      or VK_ACCESS_SHADER_READ_BIT;
+  Dep.dependencyFlags := VK_DEPENDENCY_BY_REGION_BIT;
+end;
+
+procedure TVulkanHLERenderer.PixelBarrier;
+begin
+  var D := Default(VkSubpassDependency);
+  PixelDependency(D);
+  var B := Default(VkMemoryBarrier);
+  B.sType := VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+  B.srcAccessMask := D.srcAccessMask;
+  B.dstAccessMask := D.dstAccessMask;
+  FAPI.vkCmdPipelineBarrier(Slot.Cmd.Handle, D.srcStageMask, D.dstStageMask, D.dependencyFlags, 1, @B, 0, nil, 0, nil);
+end;
+
 procedure TVulkanHLERenderer.ImageBarrier;
 var
   B: VkMemoryBarrier;
@@ -922,6 +1415,11 @@ begin
     Exit;
   FAPI.vkCmdEndRenderPass(Slot.Cmd.Handle);
   FPass := nil;
+  if FLocalEdges and not FLocalEnd then
+  begin
+    ImageBarrier;
+    Inc(FFencedEnds);
+  end;
 end;
 
 // The target's render pass Pass (FRenderPass with its framebuffer, or the
@@ -934,12 +1432,31 @@ var
 begin
   Record_;
   if (FPass = T) and (FPassRenderPass = Pass) then
+  begin
+    FCurrentLocal := FCurrentLocal and FNextLocal;
     Exit;
-  EndPass;
+  end;
+  var Local := FLocalEdges and (FPass = T) and FCurrentLocal and FNextLocal;
+  FLocalEnd := Local;
+  try
+    EndPass;
+  finally
+    FLocalEnd := False;
+  end;
   // Everything recorded before is visible to the pass: the render passes'
   // external dependencies alone proved not to be enough for a target drawn in
   // one pass and sampled in the next (Tekken 6's glow on the PSP).
-  ImageBarrier;
+  if Local then
+  begin
+    // Identical single-sample attachments, with storage accesses at FragCoord.
+    // No prior or subsequent arbitrary texture fetch aliases either image.
+    // Both passes declare the same external framebuffer-local dependency.
+    // The preceding writes and current accesses are to the same pixel.
+    Inc(FLocalCuts);
+  end
+  else
+    ImageBarrier;
+  FCurrentLocal := FNextLocal;
   Info := Default(VkRenderPassBeginInfo);
   Info.sType := VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
   Info.renderPass := Pass;
@@ -1031,21 +1548,35 @@ begin
   Result.Width := W;
   Result.Height := H;
   Result.MaxHeight := MaxHeight;
-  Result.Color := CreateImage(VK_FORMAT_R8G8B8A8_UNORM, W * FScale, H * FScale, 1, FColorUsage,
-    VK_IMAGE_ASPECT_COLOR_BIT);
-  Result.Depth := CreateImage(FDepthFormat, W * FScale, H * FScale, 1, FDepthUsage, VK_IMAGE_ASPECT_DEPTH_BIT or
-    VK_IMAGE_ASPECT_STENCIL_BIT);
-  Views[0] := Result.Color.View;
-  Views[1] := Result.Depth.View;
-  Info := Default(VkFramebufferCreateInfo);
-  Info.sType := VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-  Info.renderPass := FRenderPass;
-  Info.attachmentCount := 2;
-  Info.pAttachments := @Views[0];
-  Info.width := W * FScale;
-  Info.height := H * FScale;
-  Info.layers := 1;
-  CheckVulkan(FAPI.vkCreateFramebuffer(FDevice, @Info, nil, @Result.Framebuffer), 'vkCreateFramebuffer');
+  // (A dropped target's images of the size: its pixels are loaded before any
+  // use.)
+  for var I := FTargetPool.Count - 1 downto 0 do
+    if (FTargetPool[I].Width = W * FScale) and (FTargetPool[I].Height = H * FScale) then
+    begin
+      Result.Color := FTargetPool[I].Color;
+      Result.Depth := FTargetPool[I].Depth;
+      Result.Framebuffer := FTargetPool[I].Framebuffer;
+      FTargetPool.Delete(I);
+      Break;
+    end;
+  if Result.Framebuffer = 0 then
+  begin
+    Result.Color := CreateImage(VK_FORMAT_R8G8B8A8_UNORM, W * FScale, H * FScale, 1, FColorUsage,
+      VK_IMAGE_ASPECT_COLOR_BIT);
+    Result.Depth := CreateImage(FDepthFormat, W * FScale, H * FScale, 1, FDepthUsage, VK_IMAGE_ASPECT_DEPTH_BIT or
+      VK_IMAGE_ASPECT_STENCIL_BIT);
+    Views[0] := Result.Color.View;
+    Views[1] := Result.Depth.View;
+    Info := Default(VkFramebufferCreateInfo);
+    Info.sType := VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    Info.renderPass := FRenderPass;
+    Info.attachmentCount := 2;
+    Info.pAttachments := @Views[0];
+    Info.width := W * FScale;
+    Info.height := H * FScale;
+    Info.layers := 1;
+    CheckVulkan(FAPI.vkCreateFramebuffer(FDevice, @Info, nil, @Result.Framebuffer), 'vkCreateFramebuffer');
+  end;
   Changed(Result);
   InitTarget(Result);
   FTargets.Add(Result);
@@ -1064,13 +1595,26 @@ procedure TVulkanHLERenderer.DestroyTarget(T: TVulkanHLETarget);
 begin
   if FFrameTarget = T then
     FFrameTarget := nil;
-  if T.Framebuffer <> 0 then
-    FAPI.vkDestroyFramebuffer(FDevice, T.Framebuffer, nil);
   if T.AsTexture <> nil then
   begin
     FreeSets(T.AsTexture);
     T.AsTexture.Free;
   end;
+  // (Callers have the GPU done with it: kept for a new target of the size.)
+  if (FTargetPool <> nil) and (T.Framebuffer <> 0) and (FTargetPool.Count < 16) then
+  begin
+    var E: TVulkanHLEPooledTarget;
+    E.Color := T.Color;
+    E.Depth := T.Depth;
+    E.Framebuffer := T.Framebuffer;
+    E.Width := T.Width * FScale;
+    E.Height := T.Height * FScale;
+    FTargetPool.Add(E);
+    T.Free;
+    Exit;
+  end;
+  if T.Framebuffer <> 0 then
+    FAPI.vkDestroyFramebuffer(FDevice, T.Framebuffer, nil);
   DestroyImage(T.Color);
   DestroyImage(T.Depth);
   T.Free;
@@ -1092,9 +1636,12 @@ begin
     FlushAll;
   LoadTarget(T);
   Changed(T);
-  SetLength(T.Shadow, T.Bytes);
-  if Length(T.Shadow) > 0 then
-    ReadMemory(T.Addr, @T.Shadow[0], Length(T.Shadow));
+  if not CaptureColor(T, True) then
+  begin
+    SetLength(T.Shadow, T.Bytes);
+    if Length(T.Shadow) > 0 then
+      ReadMemory(T.Addr, @T.Shadow[0], Length(T.Shadow));
+  end;
   T.Loaded := True;
   Inc(FStats.TargetLoads);
 end;
@@ -1179,6 +1726,11 @@ begin
   WatchMemory(T.Addr, T.Bytes);
 end;
 
+function TVulkanHLERenderer.CaptureColor(T: TVulkanHLETarget; Whole: Boolean): Boolean;
+begin
+  Result := False;
+end;
+
 function TVulkanHLERenderer.ShadowMatches(T: TVulkanHLETarget): Boolean;
 begin
   Result := (Length(T.Shadow) > 0) and MemoryEquals(T.Addr, @T.Shadow[0], Length(T.Shadow));
@@ -1232,7 +1784,17 @@ begin
   Result.LastUse := FUseCounter;
 end;
 
-function TVulkanHLERenderer.AddTexture(Key: UInt64; Width, Height, Levels, Scale: Integer; Request: Pointer): TVulkanHLETexture;
+function TVulkanHLERenderer.FindTexture(Key: UInt64): TVulkanHLETexture;
+begin
+  if not FTextures.TryGetValue(Key, Result) then
+    Result := nil;
+end;
+
+function TVulkanHLERenderer.AddTexture(
+  Key: UInt64;
+  Width, Height, Levels, Scale: Integer;
+  Request: Pointer
+): TVulkanHLETexture;
 begin
   Result := TVulkanHLETexture.Create;
   Result.Key := Key;
@@ -1240,8 +1802,18 @@ begin
   Result.Width := Width;
   Result.Height := Height;
   Result.Scale := Scale;
-  Result.Image := CreateImage(VK_FORMAT_R8G8B8A8_UNORM, Width * Scale, Height * Scale, Levels,
-    VK_IMAGE_USAGE_SAMPLED_BIT or VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+  Result.Image :=
+    RentTexture(
+      Width * Scale,
+      Height * Scale,
+      Levels,
+      FTextureStore
+        and (Scale = 1)
+        and (Levels = 1)
+        and (Int64(Width) * Height >= 2048)
+        and (Int64(Width) * Height <= 1048576)
+    );
+  Result.CanRecycle := FRecycleActive;
   FTextures.Add(Key, Result);
   Decode(Result, Request);
 end;
@@ -1276,7 +1848,7 @@ begin
   begin
     Inc(FStats.TextureCheckBytes, B.Size);
     if (B.Data = nil) or (Off + B.Size > Length(T.Source)) or ((B.Size > 0) and
-      not CompareMem(B.Data, @T.Source[Off], B.Size)) then
+      not VulkanHLEEqualBytes(B.Data, @T.Source[Off], B.Size)) then
       Exit(False);
     Inc(Off, B.Size);
   end;
@@ -1331,16 +1903,122 @@ begin
     Result := PCardinal(StageUpload(Int64(W) * H * 4, FLevelOffset));
 end;
 
+function TVulkanHLERenderer.CachedScale(W, H, Factor: Integer): PCardinal;
+const
+  Limit = 64 * 1024 * 1024;
+begin
+  FLastScaleSource := nil;
+  var Size := W * H;
+  var N := Size * Factor * Factor;
+  var Sig := UInt64(Size);
+  for var K := 0 to 15 do
+  begin
+    Sig := (Sig shr 7) or (Sig shl 57);
+    Sig := Sig xor FScaleIn[(Size - 1) * K div 15];
+  end;
+  Inc(FScaleClock);
+  var Victim := 0;
+  for var K := 0 to High(FScaleCache) do
+  begin
+    var C: ^TScaleEntry := @FScaleCache[K];
+    if (C.Used <> 0)
+      and (C.W = W)
+      and (C.H = H)
+      and (C.Factor = Factor)
+      and (C.Filter = FTextureFilter)
+      and (C.Fingerprint = Sig)
+      and CompareMem(@FScaleIn[0], Pointer(C.Source), Size * 4) then
+    begin
+      C.Used := FScaleClock;
+      Inc(FScaleReused);
+      FLastScaleSource := C.Source;
+      Exit(Pointer(C.Output));
+    end;
+    if C.Used < FScaleCache[Victim].Used then
+      Victim := K;
+  end;
+  if Length(FScaleOut) < N then
+    SetLength(FScaleOut, N);
+  ScaleTexture(@FScaleIn[0], W, H, Factor, @FScaleOut[0], FTextureFilter);
+  var Needed := 4 * (N + Size);
+  if Needed <= Limit div 4 then
+  begin
+    repeat
+      Dec(FScaleCacheBytes, 4 * (Length(FScaleCache[Victim].Source) + Length(FScaleCache[Victim].Output)));
+      FScaleCache[Victim].Source := nil;
+      FScaleCache[Victim].Output := nil;
+      FScaleCache[Victim].Used := 0;
+      if FScaleCacheBytes + Needed <= Limit then
+        Break;
+      Victim := -1;
+      for var K := 0 to High(FScaleCache) do
+        if (FScaleCache[K].Used <> 0) and ((Victim < 0) or (FScaleCache[K].Used < FScaleCache[Victim].Used)) then
+          Victim := K;
+    until False;
+    var C: ^TScaleEntry := @FScaleCache[Victim];
+    C.W := W;
+    C.H := H;
+    C.Factor := Factor;
+    C.Filter := FTextureFilter;
+    C.Fingerprint := Sig;
+    C.Used := FScaleClock;
+    C.Source := Copy(FScaleIn, 0, Size);
+    C.Output := Copy(FScaleOut, 0, N);
+    FLastScaleSource := C.Source;
+    Inc(FScaleCacheBytes, Needed);
+  end;
+  Result := @FScaleOut[0];
+end;
+
+procedure TVulkanHLERenderer.NeedNativeMips(T: TVulkanHLETexture);
+begin
+  if not T.NativeDirty then
+    Exit;
+  if T.NativeMips.Image = 0 then
+  begin
+    T.NativeMips := RentTexture(T.Width, T.Height, T.Levels);
+    Inc(FNativeImages);
+  end;
+  // Sampling of the preceding decode has already been recorded. The normal
+  // upload barriers order that read before replacing these image levels.
+  for var Level := 0 to High(T.NativePending) do
+  begin
+    var W := Max(1, T.Width shr Level);
+    var H := Max(1, T.Height shr Level);
+    if Length(T.NativePending[Level]) <> W * H then
+      raise Exception.Create('Incomplete native texture decode');
+    var NativeOffset: Int64;
+    var Bytes := Int64(W) * H * 4;
+    Move(T.NativePending[Level][0], StageUpload(Bytes, NativeOffset)^, Bytes);
+    CopyToImage(T.NativeMips.Image, VK_IMAGE_ASPECT_COLOR_BIT, NativeOffset, Level, 0, 0, W, H);
+    T.NativePending[Level] := nil;
+    Inc(FNativeMipBytes, Bytes);
+  end;
+  T.NativeDirty := False;
+end;
+
 procedure TVulkanHLERenderer.UploadLevel(T: TVulkanHLETexture; Level, W, H: Integer);
 begin
   if T.Scale > 1 then
   begin
     var Watch := TStopwatch.StartNew;
     var N := W * H * T.Scale * T.Scale;
-    if Length(FScaleOut) < N then
-      SetLength(FScaleOut, N);
-    ScaleTexture(@FScaleIn[0], W, H, T.Scale, @FScaleOut[0], FTextureFilter);
-    Move(FScaleOut[0], StageUpload(Int64(N) * 4, FLevelOffset)^, N * 4);
+    var Pixels := CachedScale(W, H, T.Scale);
+    if FNativeTextureView and (T.Scale = 2) then
+    begin
+      // Cache entries own immutable decoded bytes. Retain the exact version
+      // until a native-lattice draw consumes it, even after cache eviction.
+      if Length(T.NativePending) <> T.Levels then
+        SetLength(T.NativePending, T.Levels);
+      if FLastScaleSource = nil then
+        T.NativePending[Level] := Copy(FScaleIn, 0, W * H)
+      else
+        T.NativePending[Level] := FLastScaleSource;
+      FLastScaleSource := nil;
+      T.NativeDirty := True;
+      Inc(FPendingMipBytes, Int64(W) * H * 4);
+    end;
+    Move(Pixels^, StageUpload(Int64(N) * 4, FLevelOffset)^, N * 4);
     Inc(FStats.TextureScales);
     FStats.ScaleSeconds := FStats.ScaleSeconds + Watch.Elapsed.TotalSeconds;
   end;
@@ -1366,9 +2044,87 @@ begin
   FTextureScale := Min(Value, TexScaleMax);
 end;
 
+procedure TVulkanHLERenderer.EnableTextureRecycling;
+begin
+  FRecycleActive := True;
+end;
+
+function TVulkanHLERenderer.RentTexture(Width, Height, Levels: Integer; Store: Boolean): TVulkanHLEImage;
+begin
+  var Usage: Cardinal := VK_IMAGE_USAGE_SAMPLED_BIT or VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  if Store then
+    Usage := Usage or VK_IMAGE_USAGE_STORAGE_BIT;
+  if FRecycleActive then
+    for var I := FRecycleCount - 1 downto 0 do
+      if (FRecycle[I].Width = Width)
+        and (FRecycle[I].Height = Height)
+        and (FRecycle[I].Levels = Levels)
+        and (FRecycle[I].Image.Usage = Usage) then
+      begin
+        Result := FRecycle[I].Image;
+        Dec(FRecycleBytes, Result.AllocationBytes);
+        Dec(FRecycleCount);
+        FRecycle[I] := FRecycle[FRecycleCount];
+        // Same RGBA8 sampled/transfer-destination recipe, retired after a
+        // completed submission. Decode writes every level before first use.
+        Record_;
+        EndPass;
+        ImageBarrier;
+        Inc(FRecRented);
+        Exit;
+      end;
+  Result := CreateImage(VK_FORMAT_R8G8B8A8_UNORM, Width, Height, Levels, Usage, VK_IMAGE_ASPECT_COLOR_BIT);
+  Inc(FRecAllocated);
+end;
+
+procedure TVulkanHLERenderer.ReturnTexture(
+  var Image: TVulkanHLEImage;
+  Width, Height, Levels: Integer;
+  Reusable: Boolean
+);
+const
+  Budget = 96 * 1024 * 1024;
+begin
+  if not FRecycleActive
+    or not Reusable
+    or (Image.Image = 0)
+    or (Image.AllocationBytes = 0)
+    or (Image.AllocationBytes > Budget div 8) then
+    Exit;
+  while (FRecycleCount = Length(FRecycle)) or (FRecycleBytes + Image.AllocationBytes > Budget) do
+  begin
+    var Old := 0;
+    for var I := 1 to FRecycleCount - 1 do
+      if FRecycle[I].Stamp < FRecycle[Old].Stamp then
+        Old := I;
+    Dec(FRecycleBytes, FRecycle[Old].Image.AllocationBytes);
+    DestroyImage(FRecycle[Old].Image);
+    Dec(FRecycleCount);
+    FRecycle[Old] := FRecycle[FRecycleCount];
+    Inc(FRecEvicted);
+  end;
+  var N := FRecycleCount;
+  FRecycle[N].Width := Width;
+  FRecycle[N].Height := Height;
+  FRecycle[N].Levels := Levels;
+  FRecycle[N].Image := Image;
+  Inc(FRecClock);
+  FRecycle[N].Stamp := FRecClock;
+  Inc(FRecycleCount);
+  Inc(FRecycleBytes, Image.AllocationBytes);
+  Inc(FRecRetired);
+  Image := Default(TVulkanHLEImage);
+end;
+
 procedure TVulkanHLERenderer.DestroyTexture(T: TVulkanHLETexture);
 begin
   FreeSets(T);
+  if T.NativeMips.Image <> 0 then
+  begin
+    ReturnTexture(T.NativeMips, T.Width, T.Height, T.Levels, T.CanRecycle);
+    DestroyImage(T.NativeMips);
+  end;
+  ReturnTexture(T.Image, T.Width * T.Scale, T.Height * T.Scale, T.Levels, T.CanRecycle);
   DestroyImage(T.Image);
   T.Free;
 end;
@@ -1383,6 +2139,15 @@ end;
 
 { Coherence }
 
+function TVulkanHLERenderer.BeginStoreBatch: Boolean;
+begin
+  Result := False;
+end;
+
+procedure TVulkanHLERenderer.EndStoreBatch;
+begin
+end;
+
 procedure TVulkanHLERenderer.FlushAll;
 begin
   if FFlushing then
@@ -1390,7 +2155,8 @@ begin
   FFlushing := True;
   var Watch := TStopwatch.StartNew;
   try
-    WaitAll;
+    if not BeginStoreBatch then
+      WaitAll;
     DestroyRetired;
     FStats.WaitSeconds := FStats.WaitSeconds + Watch.Elapsed.TotalSeconds;
     for var T in FTargets do
@@ -1404,18 +2170,19 @@ begin
           // drawn, and outside them what it was when loaded (the console may
           // have written there since: the next use compares and loads the
           // target again).
-          if (Cardinal(Length(T.Shadow)) <> T.Bytes) or (T.HeldY1 > T.HeldY2) then
-          begin
-            SetLength(T.Shadow, T.Bytes);
-            if Length(T.Shadow) > 0 then
-              ReadMemory(T.Addr, @T.Shadow[0], Length(T.Shadow));
-          end
-          else
-          begin
-            var RowBytes := T.Stride * T.PixelBytes;
-            for var Y := T.HeldY1 to T.HeldY2 do
-              ReadMemory(T.Addr + Cardinal(Y) * RowBytes, @T.Shadow[Cardinal(Y) * RowBytes], RowBytes);
-          end;
+          if not CaptureColor(T, False) then
+            if (Cardinal(Length(T.Shadow)) <> T.Bytes) or (T.HeldY1 > T.HeldY2) then
+            begin
+              SetLength(T.Shadow, T.Bytes);
+              if Length(T.Shadow) > 0 then
+                ReadMemory(T.Addr, @T.Shadow[0], Length(T.Shadow));
+            end
+            else
+            begin
+              var RowBytes := T.Stride * T.PixelBytes;
+              for var Y := T.HeldY1 to T.HeldY2 do
+                ReadMemory(T.Addr + Cardinal(Y) * RowBytes, @T.Shadow[Cardinal(Y) * RowBytes], RowBytes);
+            end;
           T.Stale := False;
         end;
         Inc(FStats.Readbacks);
@@ -1430,11 +2197,12 @@ begin
     if FTextures.Count > MaxTextures then
     begin
       var List := FTextures.Values.ToArray;
-      TArray.Sort<TVulkanHLETexture>(List, TComparer<TVulkanHLETexture>.Construct(
-        function(const A, B: TVulkanHLETexture): Integer
-        begin
-          Result := CompareValue(A.LastUse, B.LastUse);
-        end));
+      TArray.Sort<TVulkanHLETexture>(
+        List,
+        TComparer<TVulkanHLETexture>.Construct(
+          function(const A, B: TVulkanHLETexture): Integer begin Result := CompareValue(A.LastUse, B.LastUse); end
+        )
+      );
       for var I := 0 to Length(List) - MaxTextures * 3 div 4 - 1 do
       begin
         FTextures.Remove(List[I].Key);
@@ -1442,6 +2210,7 @@ begin
       end;
     end;
   finally
+    EndStoreBatch;
     FFlushing := False;
   end;
 end;
@@ -1619,5 +2388,9 @@ begin
   FStats.PresentSeconds := FStats.PresentSeconds + Watch.Elapsed.TotalSeconds;
 end;
 
-end.
+{$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+initialization
+  CompareAVX2 := HostCompareAVX2;
+{$ENDIF}
 
+end.

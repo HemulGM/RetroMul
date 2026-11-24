@@ -8,7 +8,11 @@
 interface
 
 uses
-  System.SysUtils, System.Diagnostics, RM.Vulkan.Bindings, RM.Vulkan.Loader;
+  System.SysUtils,
+  System.Diagnostics,
+  RM.Vulkan.PipelineState,
+  RM.Vulkan.Bindings,
+  RM.Vulkan.Loader;
 
 type
   TVulkanComputeFeatures = record
@@ -24,12 +28,13 @@ type
     // With a graphics queue: fragment shaders that write storage images in
     // primitive order (VK_EXT_fragment_shader_interlock, pixel interlock).
     PixelInterlock: Boolean;
+    DynamicDepth, DynamicColor: Boolean;
   end;
 
   // Device: device-local, not mapped. Upload: host-visible for CPU writes.
   // Readback: host-visible and cached for CPU reads. Shared: device-local and
   // host-visible when the device has such memory (resizable BAR), else host memory.
-  TVulkanBufferKind = (vbkDevice, vbkUpload, vbkReadback, vbkShared);
+  TVulkanBufferKind = (vbkDevice, vbkUpload, vbkReadback, vbkShared, vbkVertexStream);
 
   TVulkanCompute = class;
 
@@ -72,16 +77,32 @@ type
     FPool: VkDescriptorPool;
     FSets: TArray<VkDescriptorSet>;
     FActive: Integer;
-    FBuffers: Integer;
+    FBuffers, FImages: Integer;
+    FSampled: Boolean;
     FPushSize: Cardinal;
   public
-    constructor Create(Owner: TVulkanCompute; const Code: array of Cardinal; Buffers: Integer; PushSize: Cardinal;
-      const Spec: array of Cardinal; Sets: Integer = 1; const EntryPoint: AnsiString = 'main');
+    constructor Create(
+      Owner: TVulkanCompute;
+      const Code: array of Cardinal;
+      Buffers: Integer;
+      PushSize: Cardinal;
+      const Spec: array of Cardinal;
+      Sets: Integer = 1;
+      const EntryPoint: AnsiString = 'main';
+      Images: Integer = 0;
+      Sampled: Boolean = False
+    );
     destructor Destroy; override;
     // Not while a command buffer using the set is pending.
     procedure Bind(Binding: Integer; Buffer: TVulkanBuffer; Offset: UInt64 = 0; Size: UInt64 = VK_WHOLE_SIZE); overload;
-    procedure Bind(SetIndex, Binding: Integer; Buffer: TVulkanBuffer; Offset: UInt64 = 0;
-      Size: UInt64 = VK_WHOLE_SIZE); overload;
+    procedure Bind(
+      SetIndex, Binding: Integer;
+      Buffer: TVulkanBuffer;
+      Offset: UInt64 = 0;
+      Size: UInt64 = VK_WHOLE_SIZE
+    ); overload;
+    procedure BindImage(SetIndex, Index: Integer; View: VkImageView);
+    procedure BindSampled(SetIndex, Index: Integer; View: VkImageView; Sampler: VkSampler);
     property Pipeline: VkPipeline read FPipeline;
     property Layout: VkPipelineLayout read FLayout;
     property PushSize: Cardinal read FPushSize;
@@ -151,20 +172,36 @@ type
     function HasExtension(const Name: AnsiString): Boolean;
   public
     // Graphics: the queue also renders (a family with graphics and compute).
-    constructor Create(const DeviceName: string = ''; Validation: Boolean = False; Graphics: Boolean = False;
-      MaxAPIVersion: Cardinal = VK_API_VERSION_1_2);
+    constructor Create(
+      const DeviceName: string = '';
+      Validation: Boolean = False;
+      Graphics: Boolean = False;
+      MaxAPIVersion: Cardinal = VK_API_VERSION_1_2
+    );
     destructor Destroy; override;
     // A memory type index with all Required flags, trying each preference in order; -1 if none.
     function FindMemory(TypeBits, Required: Cardinal; const Preferred: array of Cardinal): Integer;
-    function CreateBuffer(Size: UInt64;
+    function CreateBuffer(
+      Size: UInt64;
       Kind: TVulkanBufferKind;
-      Usage: Cardinal = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT or VK_BUFFER_USAGE_TRANSFER_SRC_BIT or
-        VK_BUFFER_USAGE_TRANSFER_DST_BIT): TVulkanBuffer;
+      Usage: Cardinal =
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT or VK_BUFFER_USAGE_TRANSFER_SRC_BIT or VK_BUFFER_USAGE_TRANSFER_DST_BIT
+    ): TVulkanBuffer;
     function CreateShaderModule(const Code: array of Cardinal): VkShaderModule;
-    function CreateKernel(const Code: array of Cardinal; Buffers: Integer;
-      PushSize: Cardinal = 0; const EntryPoint: AnsiString = 'main'): TVulkanKernel; overload;
-    function CreateKernel(const Code: array of Cardinal; Buffers: Integer; PushSize: Cardinal;
-      const Spec: array of Cardinal; Sets: Integer = 1; const EntryPoint: AnsiString = 'main'): TVulkanKernel; overload;
+    function CreateKernel(
+      const Code: array of Cardinal;
+      Buffers: Integer;
+      PushSize: Cardinal = 0;
+      const EntryPoint: AnsiString = 'main'
+    ): TVulkanKernel; overload;
+    function CreateKernel(
+      const Code: array of Cardinal;
+      Buffers: Integer;
+      PushSize: Cardinal;
+      const Spec: array of Cardinal;
+      Sets: Integer = 1;
+      const EntryPoint: AnsiString = 'main'
+    ): TVulkanKernel; overload;
     function CreateCommands(Timestamps: Cardinal = 0): TVulkanCommands;
     function CreateTimeline(Initial: UInt64 = 0): VkSemaphore;
     procedure DestroyTimeline(Semaphore: VkSemaphore);
@@ -392,7 +429,7 @@ var
   DeviceInfo: VkDeviceCreateInfo;
   PoolInfo: VkCommandPoolCreateInfo;
   Core12, HasStorage8, HasInt8, HasTimeline, HasControls: Boolean;
-  Extensions: array[0..4] of PAnsiChar;
+  Extensions: array[0..6] of PAnsiChar;
   ExtensionCount: Cardinal;
 
   procedure EnableExtension(Name: PAnsiChar);
@@ -464,8 +501,8 @@ begin
   FFeatures.Float64 := Features.features.shaderFloat64 <> 0;
   FFeatures.Int8 := Int8.shaderInt8 <> 0;
   FFeatures.Storage8 := (Storage8.storageBuffer8BitAccess <> 0) and (Storage8.uniformAndStorageBuffer8BitAccess <> 0);
-  FFeatures.Storage16 := (Storage16.storageBuffer16BitAccess <> 0) and
-    (Storage16.uniformAndStorageBuffer16BitAccess <> 0);
+  FFeatures.Storage16 :=
+    (Storage16.storageBuffer16BitAccess <> 0) and (Storage16.uniformAndStorageBuffer16BitAccess <> 0);
   FFeatures.Timeline := Timeline.timelineSemaphore <> 0;
   FFeatures.DenormPreserve32 := Controls.shaderDenormPreserveFloat32 <> 0;
   FFeatures.DenormPreserve64 := Controls.shaderDenormPreserveFloat64 <> 0;
@@ -487,8 +524,9 @@ begin
     FFeatures.DepthClamp := Core.depthClamp <> 0;
     FFeatures.LogicOp := Core.logicOp <> 0;
     FFeatures.DualSrcBlend := Core.dualSrcBlend <> 0;
-    if HasInterlock and (Interlock.fragmentShaderPixelInterlock <> 0) and
-      (Features.features.fragmentStoresAndAtomics <> 0) then
+    if HasInterlock
+      and (Interlock.fragmentShaderPixelInterlock <> 0)
+      and (Features.features.fragmentStoresAndAtomics <> 0) then
     begin
       Core.fragmentStoresAndAtomics := 1;
       Interlock.fragmentShaderSampleInterlock := 0;
@@ -499,6 +537,43 @@ begin
   // The interlock features go to the device only with their extension.
   if HasInterlock and not FFeatures.PixelInterlock then
     Features.pNext := Interlock.pNext;
+  var Dyn1 := Default(TVkDynamicDepth);
+  var Dyn3 := Default(TVkDynamicColor);
+  var Q := Default(VkPhysicalDeviceFeatures2);
+  Q.sType := VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+  if FGraphics and HasExtension('VK_EXT_extended_dynamic_state') then
+  begin
+    Dyn1.sType := VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT;
+    Q.pNext := @Dyn1;
+  end;
+  if FGraphics and HasExtension('VK_EXT_extended_dynamic_state3') then
+  begin
+    Dyn3.sType := VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT;
+    Dyn3.pNext := Q.pNext;
+    Q.pNext := @Dyn3;
+  end;
+  if Q.pNext <> nil then
+    FAPI.vkGetPhysicalDeviceFeatures2(FPhysicalDevice, @Q);
+  FFeatures.DynamicDepth := Dyn1.extendedDynamicState <> 0;
+  FFeatures.DynamicColor :=
+    (Dyn3.extendedDynamicState3ColorBlendEnable <> 0)
+      and (Dyn3.extendedDynamicState3ColorBlendEquation <> 0)
+      and (Dyn3.extendedDynamicState3ColorWriteMask <> 0);
+  if FFeatures.DynamicDepth then
+  begin
+    Dyn1.pNext := Features.pNext;
+    Features.pNext := @Dyn1;
+  end;
+  if FFeatures.DynamicColor then
+  begin
+    Dyn3 := Default(TVkDynamicColor);
+    Dyn3.sType := VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT;
+    Dyn3.extendedDynamicState3ColorBlendEnable := 1;
+    Dyn3.extendedDynamicState3ColorBlendEquation := 1;
+    Dyn3.extendedDynamicState3ColorWriteMask := 1;
+    Dyn3.pNext := Features.pNext;
+    Features.pNext := @Dyn3;
+  end;
   Features.features := Core;
   Storage16.storagePushConstant16 := 0;
   Storage16.storageInputOutput16 := 0;
@@ -532,14 +607,18 @@ begin
   end;
   if FFeatures.PixelInterlock then
     EnableExtension(VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME);
+  if FFeatures.DynamicDepth then
+    EnableExtension('VK_EXT_extended_dynamic_state');
+  if FFeatures.DynamicColor then
+    EnableExtension('VK_EXT_extended_dynamic_state3');
   DeviceInfo.enabledExtensionCount := ExtensionCount;
   if ExtensionCount > 0 then
     DeviceInfo.ppEnabledExtensionNames := @Extensions[0];
   CheckVulkan(FAPI.vkCreateDevice(FPhysicalDevice, @DeviceInfo, nil, @FDevice), 'vkCreateDevice');
   FAPI.LoadDevice(FDevice);
   FAPI.vkGetDeviceQueue(FDevice, FQueueFamily, 0, @FQueue);
-  FFeatures.Timeline := FFeatures.Timeline and Assigned(FAPI.vkWaitSemaphores) and
-    Assigned(FAPI.vkGetSemaphoreCounterValue);
+  FFeatures.Timeline :=
+    FFeatures.Timeline and Assigned(FAPI.vkWaitSemaphores) and Assigned(FAPI.vkGetSemaphoreCounterValue);
 
   PoolInfo := Default(VkCommandPoolCreateInfo);
   PoolInfo.sType := VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -668,12 +747,16 @@ begin
   API.vkGetBufferMemoryRequirements(Owner.Device, FHandle, @Requirements);
   var MemoryType: Integer;
   case Kind of
-    vbkDevice:
-      MemoryType := Owner.FindMemory(Requirements.memoryTypeBits, Local, []);
-    vbkUpload:
-      MemoryType := Owner.FindMemory(Requirements.memoryTypeBits, Visible, [Coherent]);
+    vbkDevice: MemoryType := Owner.FindMemory(Requirements.memoryTypeBits, Local, []);
+    vbkUpload: MemoryType := Owner.FindMemory(Requirements.memoryTypeBits, Visible, [Coherent]);
     vbkReadback:
       MemoryType := Owner.FindMemory(Requirements.memoryTypeBits, Visible, [Cached or Coherent, Cached, Coherent]);
+    vbkVertexStream:
+    begin
+      MemoryType := Owner.FindMemory(Requirements.memoryTypeBits, Visible or Cached, [Coherent]);
+      if MemoryType < 0 then
+        MemoryType := Owner.FindMemory(Requirements.memoryTypeBits, Visible, [Local or Coherent, Local, Coherent]);
+    end;
   else
     MemoryType := Owner.FindMemory(Requirements.memoryTypeBits, Visible, [Local or Coherent, Local, Coherent]);
   end;
@@ -774,8 +857,17 @@ end;
 
 { TVulkanKernel }
 
-constructor TVulkanKernel.Create(Owner: TVulkanCompute; const Code: array of Cardinal; Buffers: Integer;
-  PushSize: Cardinal; const Spec: array of Cardinal; Sets: Integer; const EntryPoint: AnsiString);
+constructor TVulkanKernel.Create(
+  Owner: TVulkanCompute;
+  const Code: array of Cardinal;
+  Buffers: Integer;
+  PushSize: Cardinal;
+  const Spec: array of Cardinal;
+  Sets: Integer;
+  const EntryPoint: AnsiString;
+  Images: Integer;
+  Sampled: Boolean
+);
 var
   Layouts: TArray<VkDescriptorSetLayout>;
   Bindings: TArray<VkDescriptorSetLayoutBinding>;
@@ -786,6 +878,7 @@ var
   SpecInfo: VkSpecializationInfo;
   PipelineInfo: VkComputePipelineCreateInfo;
   PoolSize: VkDescriptorPoolSize;
+  Pools: array[0..1] of VkDescriptorPoolSize;
   PoolInfo: VkDescriptorPoolCreateInfo;
   Allocate: VkDescriptorSetAllocateInfo;
 begin
@@ -794,22 +887,29 @@ begin
   if EntryPoint = '' then
     raise EVulkanError.Create('A compute entry point name is required.');
   FBuffers := Buffers;
+  FImages := Images;
+  FSampled := Sampled;
   FPushSize := PushSize;
   var API := Owner.API;
   var Device := Owner.Device;
-  SetLength(Bindings, Buffers);
-  for var I := 0 to Buffers - 1 do
+  SetLength(Bindings, Buffers + Images);
+  for var I := 0 to High(Bindings) do
   begin
     Bindings[I] := Default(VkDescriptorSetLayoutBinding);
     Bindings[I].binding := I;
-    Bindings[I].descriptorType := VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    if I < Buffers then
+      Bindings[I].descriptorType := VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
+    else if Sampled then
+      Bindings[I].descriptorType := VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+    else
+      Bindings[I].descriptorType := VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     Bindings[I].descriptorCount := 1;
     Bindings[I].stageFlags := VK_SHADER_STAGE_COMPUTE_BIT;
   end;
   SetInfo := Default(VkDescriptorSetLayoutCreateInfo);
   SetInfo.sType := VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-  SetInfo.bindingCount := Buffers;
-  if Buffers > 0 then
+  SetInfo.bindingCount := Buffers + Images;
+  if Buffers + Images > 0 then
     SetInfo.pBindings := @Bindings[0];
   CheckVulkan(API.vkCreateDescriptorSetLayout(Device, @SetInfo, nil, @FSetLayout), 'vkCreateDescriptorSetLayout');
   LayoutInfo := Default(VkPipelineLayoutCreateInfo);
@@ -859,7 +959,7 @@ begin
   if Sets < 1 then
     Sets := 1;
   SetLength(FSets, Sets);
-  if Buffers > 0 then
+  if Buffers + Images > 0 then
   begin
     PoolSize.&type := VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     PoolSize.descriptorCount := Buffers * Sets;
@@ -868,6 +968,21 @@ begin
     PoolInfo.maxSets := Sets;
     PoolInfo.poolSizeCount := 1;
     PoolInfo.pPoolSizes := @PoolSize;
+    if Images > 0 then
+    begin
+      Pools[0] := PoolSize;
+      Pools[1].&type := VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      Pools[1].descriptorCount := Images * Sets;
+      if Sampled then
+        Pools[1].&type := VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      if Buffers = 0 then
+        PoolInfo.pPoolSizes := @Pools[1]
+      else
+      begin
+        PoolInfo.pPoolSizes := @Pools[0];
+        PoolInfo.poolSizeCount := 2;
+      end;
+    end;
     CheckVulkan(API.vkCreateDescriptorPool(Device, @PoolInfo, nil, @FPool), 'vkCreateDescriptorPool');
     SetLength(Layouts, Sets);
     for var I := 0 to Sets - 1 do
@@ -897,6 +1012,41 @@ begin
       API.vkDestroyDescriptorSetLayout(Device, FSetLayout, nil);
   end;
   inherited;
+end;
+
+procedure TVulkanKernel.BindSampled(SetIndex, Index: Integer; View: VkImageView; Sampler: VkSampler);
+begin
+  if not FSampled or (SetIndex < 0) or (SetIndex > High(FSets)) or (Index < 0) or (Index >= FImages) then
+    raise ERangeError.Create('Sampled image binding');
+  var Info := Default(VkDescriptorImageInfo);
+  Info.sampler := Sampler;
+  Info.imageView := View;
+  Info.imageLayout := VK_IMAGE_LAYOUT_GENERAL;
+  var Write := Default(VkWriteDescriptorSet);
+  Write.sType := VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  Write.dstSet := FSets[SetIndex];
+  Write.dstBinding := FBuffers + Index;
+  Write.descriptorCount := 1;
+  Write.descriptorType := VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  Write.pImageInfo := @Info;
+  FOwner.API.vkUpdateDescriptorSets(FOwner.Device, 1, @Write, 0, nil);
+end;
+
+procedure TVulkanKernel.BindImage(SetIndex, Index: Integer; View: VkImageView);
+begin
+  if FSampled or (SetIndex < 0) or (SetIndex > High(FSets)) or (Index < 0) or (Index >= FImages) then
+    raise ERangeError.Create('Storage image binding');
+  var Info := Default(VkDescriptorImageInfo);
+  Info.imageView := View;
+  Info.imageLayout := VK_IMAGE_LAYOUT_GENERAL;
+  var W := Default(VkWriteDescriptorSet);
+  W.sType := VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  W.dstSet := FSets[SetIndex];
+  W.dstBinding := FBuffers + Index;
+  W.descriptorCount := 1;
+  W.descriptorType := VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+  W.pImageInfo := @Info;
+  FOwner.API.vkUpdateDescriptorSets(FOwner.Device, 1, @W, 0, nil);
 end;
 
 procedure TVulkanKernel.Bind(Binding: Integer; Buffer: TVulkanBuffer; Offset, Size: UInt64);

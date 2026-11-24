@@ -221,6 +221,8 @@ type
   TEmulationGameAction = record
     Id, Caption: string;
     Enabled: Boolean;
+    GroupCaption: string; // Optional translation key for a shared submenu.
+    Checked: Boolean;
   end;
 
   IEmulationGameActions = interface

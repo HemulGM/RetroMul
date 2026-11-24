@@ -293,6 +293,18 @@ procedure TBrowserController.PrepareGameActionsMenu(Sender: TObject);
     end;
   end;
 
+  function GameActionParent(Game: TMenuItem; const GroupCaption: string): TMenuItem;
+  begin
+    if GroupCaption = '' then
+      Exit(Game);
+    for var I := 0 to Game.ItemsCount - 1 do
+      if (Game.Items[I].ItemsCount > 0) and (Game.Items[I].TagString = GroupCaption) then
+        Exit(Game.Items[I]);
+    Result := Add(Game, GroupCaption, nil);
+    Result.Name := 'MenuItemCoreActionGroup' + IntToStr(Game.ItemsCount);
+    Result.TagString := GroupCaption;
+  end;
+
 begin
   var Menu := FView.GameActionsMenu;
   FMenuParent := nil;
@@ -315,11 +327,15 @@ begin
     Commands := Actions.GetGameActions;
   var Game := Add(Menu, 'Game', nil, Ready);
   Game.Name := 'MenuItemGame';
-  for var Command in Commands do
+  for var I := 0 to High(Commands) do
   begin
-    var Item := Add(Game, Command.Caption, CoreGameActionClick, Command.Enabled);
-    Item.Name := 'MenuItemCoreAction' + IntToStr(Game.ItemsCount);
+    var Command := Commands[I];
+    var Parent := GameActionParent(Game, Command.GroupCaption);
+    var Item := Add(Parent, Command.Caption, CoreGameActionClick, Command.Enabled);
+    Item.Name := 'MenuItemCoreAction' + IntToStr(I + 1);
     Item.TagString := Command.Id;
+    if Command.Checked then
+      Item.Text := '✓ ' + Item.Text;
   end;
   if Ready and FState.Session.Emulation.HasCoinAcceptor then
     Add(Game, 'Insert coin', FView.InsertCoinClick, Ready and not FState.Browser.ViewingLibrary
@@ -453,6 +469,7 @@ begin
   FState.Browser.View.OnPlay := FView.LibraryPlay;
   FState.Browser.View.OnSettings := FView.SettingsClick;
   FState.Browser.View.OnOpen := FView.ButtonOpenClick;
+  FState.Browser.View.OnOpenOpticalDisc := FView.ButtonOpenOpticalDiscClick;
   FView.LayoutClient.Visible := False;
   FState.Browser.ViewingLibrary := True;
   FView.ScreenTabs.ActiveTab := FView.LibraryScreen;

@@ -125,7 +125,8 @@ implementation
 uses
   Core.Platforms, System.Hash, System.IOUtils, System.Math, System.StrUtils,
   Core.Archive.Container, Core.MediaArchive, Core.ArchiveStorage,
-  System.Generics.Collections, System.Generics.Defaults, Core.CD.CHD
+  System.Generics.Collections, System.Generics.Defaults, Core.CD.CHD,
+  Core.CD.Physical
   {$IFDEF ANDROID}, Core.Storage.Android{$ENDIF};
 
 var
@@ -161,6 +162,8 @@ end;
 
 function IsCDMediaSource(const Name: string; Stream: TStream): Boolean;
 begin
+  if Stream is TPhysicalCDSource then
+    Exit(True);
   Result := False;
   var Format: TCDMediaFormat;
   if IsMediaArchive(Name) then
@@ -416,6 +419,39 @@ begin
   inherited Create;
   if (Stream = nil) or (Storage = nil) or (Location = '') then
     raise EArgumentException.Create('CD needs a source location and storage');
+
+  if Stream is TPhysicalCDSource then
+  begin
+    var Source := TPhysicalCDSource(Stream);
+    var Tracks := Source.Tracks;
+    for var Index := 0 to High(Tracks) do
+    begin
+      var Physical := Tracks[Index];
+      var Item := Default(TCDTrack);
+      Item.Number := Index + 1;
+      Item.StartLBA := Physical.StartLBA;
+      Item.EndLBA := Physical.EndLBA;
+      Item.PregapLBA := Item.StartLBA;
+      Item.Session := Physical.Session;
+      Item.Audio := Physical.Audio;
+      Item.SectorSize := Physical.SectorSize;
+      Item.DataOffset := Physical.DataOffset;
+      Item.SubRaw := Physical.HasSubchannel;
+      Item.SubchannelStored := Physical.HasSubchannel;
+      Item.SourceName := Source.Location;
+      Item.Stream := Source.OpenTrack(Index);
+      try
+        Item.ByteSize := Item.Stream.Size;
+        AddTrack(Item);
+      except
+        Item.Stream.Free;
+        raise;
+      end;
+    end;
+    FLeadOut := Tracks[High(Tracks)].EndLBA;
+    FIdentity := Source.Identity;
+    Exit;
+  end;
 
   var SourceName := ImageName;
   if SourceName = '' then

@@ -381,6 +381,10 @@ begin
   P.TwoVolume := (FPCW and $40) <> 0;
   P.First := FCurrent.VertexCount;
   P.ClipMode := FClipMode;
+  // Sprite headers carry their own User_Clip even with Group_En clear,
+  // as used by KallistiOS pvr_sprite_compile and retail games.
+  if Kind = PolySprite then
+    P.ClipMode := (FPCW shr 16) and 3;
   P.ClipX0 := FClip[0];
   P.ClipY0 := FClip[1];
   P.ClipX1 := FClip[2];
@@ -403,8 +407,7 @@ begin
   FTSP := P[2];
   FTCW := P[3];
   FStripOpen := False;
-  // Group control is latched only when Group_En is set; otherwise the
-  // previous user clip mode continues to apply to subsequent objects.
+  // Group_En latches the clip mode for polygons using group control.
   if (PCW and $00800000) <> 0 then
     FClipMode := (PCW shr 16) and 3;
   var Mod_ := (FList = TAListOpaqueMod) or (FList = TAListTranslucentMod);
@@ -904,9 +907,14 @@ begin
       Archive.Field(C.ListOrder[0], Lists * SizeOf(Integer));
     if Archive.Loading then
       for var I := 0 to C.PolyCount - 1 do
-        if (C.Polys[I].First < 0) or (C.Polys[I].Count < 0) or
-          (Int64(C.Polys[I].First) + C.Polys[I].Count > C.VertexCount) then
+      begin
+        var Poly: PPVRPoly := @C.Polys[I];
+        if (Poly.First < 0) or (Poly.Count < 0) or (Int64(Poly.First) + Poly.Count > C.VertexCount) then
           raise EReadError.Create('Dreamcast snapshot TA polygon');
+        // Older snapshots could store the group mode on decoded sprites.
+        if Poly.Kind = PolySprite then
+          Poly.ClipMode := (Poly.PCW shr 16) and 3;
+      end;
   end;
   var Current := -1;
   for var I := 0 to High(FContexts) do

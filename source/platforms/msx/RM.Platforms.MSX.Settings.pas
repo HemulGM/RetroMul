@@ -22,7 +22,7 @@ uses
 procedure TMSXSettings.Video(Context: TSettingsPageBuilder);
 begin
   Context.Heading('GroupMSXHardware', 'MSX hardware');
-  Context.AddBoolean('RowMSXOriginalBIOS', 'Original BIOS with BASIC', 'Use the built-in machine BIOS for cartridges too. Disk and tape images select it automatically.', 'Hardware', 'OriginalBIOS', False, True);
+  Context.AddBoolean('RowMSXOriginalBIOS', 'Original BIOS with BASIC', 'Use the built-in machine BIOS for cartridges. BASIC cartridges, disk and tape images select it automatically.', 'Hardware', 'OriginalBIOS', False, True);
   Context.AddPath('RowMSXBIOS', 'BIOS file', 'Optional 32 KiB BIOS override. Built-in firmware is used when empty. Reopen the game to apply.', 'Hardware', 'BIOS', '', False, True);
   Context.AddPath('RowMSXSubROM', 'Sub-ROM file', 'A matching 16 KiB sub-ROM is required with an external MSX2 or MSX2+ BIOS.', 'Hardware', 'SubROM', '', False, True);
   if SameText(CoreId, 'MSX1') then

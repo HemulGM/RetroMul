@@ -34,6 +34,8 @@ const
   HollyCh2DMA = 19;
   HollySortDMA = 20;
   HollyPunchThroughDone = 21;
+  HollyTAListMask = ( 1 shl HollyOpaqueDone) or (1 shl HollyOpaqueModDone) or
+    (1 shl HollyTransDone) or (1 shl HollyTransModDone) or (1 shl HollyPunchThroughDone);
   // SB_ISTEXT bits.
   HollyExtGDROM = 0;
   HollyExtAICA = 1;

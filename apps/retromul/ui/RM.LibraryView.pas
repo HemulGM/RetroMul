@@ -48,6 +48,8 @@ type
 
   TLibraryView = class(TFrame)
     PanelSidebar, PanelInspector: TPanel;
+    LayoutOpenOpticalDisc, LayoutCompactOpenOpticalDisc: TLayout;
+    ButtonOpenRom, ButtonCompactOpen, ButtonOpenOpticalDisc, ButtonCompactOpenOpticalDisc: TButton;
     LayoutCompactActions, LayoutPlatformCombo: TLayout;
     ComboBoxPlatform: TComboBox;
     VertScrollBoxScroll: TVertScrollBox;
@@ -204,6 +206,8 @@ type
     FCardWidth: Integer;
     FContinueCollapse, FContinueExtent: Single;
     FOnPlay, FOnSettings, FOnOpen, FOnPresentationChanged: TNotifyEvent;
+    FOnOpenOpticalDisc: TNotifyEvent;
+    procedure OpenOpticalDiscClick(Sender: TObject);
     procedure ClearCards;
     procedure SaveState;
     function FindGame(const Location: string): TLibraryGame;
@@ -273,6 +277,7 @@ type
     property OnPlay: TNotifyEvent read FOnPlay write FOnPlay;
     property OnSettings: TNotifyEvent read FOnSettings write FOnSettings;
     property OnOpen: TNotifyEvent read FOnOpen write FOnOpen;
+    property OnOpenOpticalDisc: TNotifyEvent read FOnOpenOpticalDisc write FOnOpenOpticalDisc;
   end;
 
 function LibrarySystemFullName(const Id: string): string;
@@ -284,11 +289,13 @@ implementation
 {$R *.fmx}
 
 uses
-  {$IFDEF ANDROID}      Core.Storage.Android, {$ENDIF}
+  {$IFDEF ANDROID}
+  Core.Storage.Android,
+  {$ENDIF}
   System.IOUtils, System.Math, System.Math.Vectors, System.Hash,
   System.Character, System.Generics.Defaults, FMX.Graphics, FMX.BehaviorManager,
-  Core.GameList, FMX.Image, Core.Platforms, Core.SavePaths, RM.Icons,
-  RM.SearchEdit, RM.Styles, RM.Controls.Lifetime;
+  Core.GameList, FMX.Image, Core.Platforms, Core.SavePaths, Core.CD.Physical,
+  RM.Icons, RM.SearchEdit, RM.Styles, RM.Controls.Lifetime;
 
 {$IFDEF ISMOBILE}
 type
@@ -457,7 +464,7 @@ begin
   var IsMobile := True;
   {$ELSE}
   var IsMobile := False;
-  {$ENDIF}                ;
+  {$ENDIF}
   FNavigation := TLibraryNavigation.Create(IsMobile);
   FPadGames := TList<TLibraryGame>.Create;
   FGames := TObjectList<TLibraryGame>.Create;
@@ -632,9 +639,20 @@ begin
   FSearch.TextPrompt := Translate('Search games');
   FSearch.OnChangeTracking := SearchChange;
 
-  (FindComponent('ButtonOpenRom') as TButton).OnClick := OpenClick;
+  ButtonOpenRom.OnClick := OpenClick;
+  if PhysicalCDSupported then
+  begin
+    LayoutOpenOpticalDisc.Visible := True;
+    LayoutCompactOpenOpticalDisc.Visible := True;
+    ButtonOpenOpticalDisc.OnClick := OpenOpticalDiscClick;
+    ButtonCompactOpenOpticalDisc.OnClick := OpenOpticalDiscClick;
+    ButtonOpenOpticalDisc.Hint := Translate('Open optical disc');
+    ButtonCompactOpenOpticalDisc.Hint := ButtonOpenOpticalDisc.Hint;
+    ButtonOpenRom.StylesData['text.Margins.Right'] := 50;
+    ButtonCompactOpen.StylesData['text.Margins.Right'] := 36;
+  end;
   (FindComponent('ButtonSettings') as TButton).OnClick := SettingsClick;
-  (FindComponent('ButtonCompactOpen') as TButton).OnClick := OpenClick;
+  ButtonCompactOpen.OnClick := OpenClick;
   (FindComponent('ButtonCompactSettings') as TButton).OnClick := SettingsClick;
   FormStyles.RelocalizeUI(Self, 'en');
   ButtonPlay.OnClick := PlayClick;
@@ -686,6 +704,7 @@ begin
   FOnPlay := nil;
   FOnSettings := nil;
   FOnOpen := nil;
+  FOnOpenOpticalDisc := nil;
   FOnPresentationChanged := nil;
   if FLoadThread <> nil then
   begin
@@ -1131,6 +1150,11 @@ end;
 procedure TLibraryView.ApplyLanguage(const PreviousLanguage: string);
 begin
   FormStyles.RelocalizeUI(Self, PreviousLanguage);
+  if PhysicalCDSupported then
+  begin
+    ButtonOpenOpticalDisc.Hint := Translate('Open optical disc');
+    ButtonCompactOpenOpticalDisc.Hint := ButtonOpenOpticalDisc.Hint;
+  end;
   for var Button in FPlatformButtons do
     Button.Text := LibrarySystemName(Button.TagString);
   for var platform in TPlatformRegistry.All do
@@ -1769,9 +1793,13 @@ begin
         var Button := LayoutCompactActions.Controls[I];
         ActionsWidth := ActionsWidth - Button.Margins.Left - Button.Margins.Right;
       end;
+      if PhysicalCDSupported then
+        ActionsWidth := ActionsWidth - LayoutCompactOpenOpticalDisc.Width;
       var ActionWidth := Min(136, Max(1, ActionsWidth / LayoutCompactActions.ControlsCount));
       for var I := 0 to LayoutCompactActions.ControlsCount - 1 do
         LayoutCompactActions.Controls[I].Width := ActionWidth;
+      if PhysicalCDSupported then
+        ButtonCompactOpen.Width := ActionWidth + LayoutCompactOpenOpticalDisc.Width;
     finally
       LayoutCompactActions.EndUpdate;
       LayoutHeader.EndUpdate;
@@ -2087,6 +2115,12 @@ procedure TLibraryView.OpenClick(Sender: TObject);
 begin
   if Assigned(FOnOpen) then
     FOnOpen(Self);
+end;
+
+procedure TLibraryView.OpenOpticalDiscClick(Sender: TObject);
+begin
+  if Assigned(FOnOpenOpticalDisc) then
+    FOnOpenOpticalDisc(Sender);
 end;
 
 procedure TLibraryView.SettingsClick(Sender: TObject);
@@ -3975,9 +4009,9 @@ end;
 procedure TLibraryView.MovePadPageFocus(Delta: Integer);
 begin
   FPadPageFocus := EnsureRange(FPadPageFocus + Delta, 0, FPadPageSaveCount + 1);
-  var Controls: TArray<TButton> := [
-    FindComponent('ButtonPadPagePlay') as TButton,
-    FindComponent('ButtonPadPageFavorite') as TButton] + FPadPageSaves;
+  var Controls: TArray<TButton> := FPadPageSaves + [
+      FindComponent('ButtonPadPagePlay') as TButton,
+      FindComponent('ButtonPadPageFavorite') as TButton];
   for var i := 0 to High(Controls) do
   begin
     if i = FPadPageFocus then

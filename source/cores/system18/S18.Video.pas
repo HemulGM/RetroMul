@@ -3,14 +3,14 @@
 interface
 
 uses
-  System.SysUtils, System.UITypes, S16.Video, MD.VDP, Core.Snapshots;
+  System.SysUtils, System.UITypes, SegaArcade.Video, MD.VDP, Core.Snapshots;
 
 type
-  TS18Video = class(TS16Video)
+  TS18Video = class(TSegaArcadeVideo)
   private
     FVDP: TVDP;
-    FOverlay: array[0..S16_WIDTH * S16_HEIGHT - 1] of Word;
-    FLineMix: array[0..S16_HEIGHT - 1] of Byte;
+    FOverlay: array[0..SEGA_ARCADE_WIDTH * SEGA_ARCADE_HEIGHT - 1] of Word;
+    FLineMix: array[0..SEGA_ARCADE_HEIGHT - 1] of Byte;
     FTileBanks: array[0..7] of Byte;
     FTileBankCount, FSpriteBankCount: Integer;
     FOverlayBehindBackground: Boolean;
@@ -58,7 +58,7 @@ begin
   begin
     var Pixel := Pixels[PixelOffset + X] and $3F;
     if Pixel and $F <> 0 then
-      Video.FOverlay[Integer(Scanline) * S16_WIDTH + X] := VisiblePixel or Video.FVDP.State.Cram[Pixel];
+      Video.FOverlay[Integer(Scanline) * SEGA_ARCADE_WIDTH + X] := VisiblePixel or Video.FVDP.State.Cram[Pixel];
   end;
 end;
 
@@ -120,13 +120,13 @@ procedure TS18Video.BeginScanline(Line: Integer);
 begin
   if Line = 0 then
     FOverlayBehindBackground := False;
-  FVDP.State.CurrentlyInVblank := Ord(Line >= S16_HEIGHT);
+  FVDP.State.CurrentlyInVblank := Ord(Line >= SEGA_ARCADE_HEIGHT);
   VDPBeginScanline(FVDP);
 end;
 
 procedure TS18Video.EndScanline(Line: Integer);
 begin
-  if Line >= S16_HEIGHT then
+  if Line >= SEGA_ARCADE_HEIGHT then
     Exit;
   FLineMix[Line] := $FF;
   if not OverlayEnabled or (FVDP.State.DisplayEnabled = 0) then
@@ -135,7 +135,7 @@ begin
   if FLineMix[Line] < 2 then
     FOverlayBehindBackground := True;
   // Mode 5 uses palette index zero as the transparent input to the external mixer.
-  FillChar(FOverlay[Line * S16_WIDTH], S16_WIDTH * SizeOf(Word), 0);
+  FillChar(FOverlay[Line * SEGA_ARCADE_WIDTH], SEGA_ARCADE_WIDTH * SizeOf(Word), 0);
   var Background := FVDP.State.BackgroundColour;
   FVDP.State.BackgroundColour := 0;
   try
@@ -157,15 +157,15 @@ end;
 
 procedure TS18Video.MixLayer(Layer: Integer);
 begin
-  for var Y := 0 to S16_HEIGHT - 1 do
+  for var Y := 0 to SEGA_ARCADE_HEIGHT - 1 do
   begin
     var Setting := FLineMix[Y];
     if (Setting = $FF) or (Setting shr 1 <> Layer) then
       Continue;
     var Priority := (Setting and 1) shl Layer;
-    for var X := 0 to S16_WIDTH - 1 do
+    for var X := 0 to SEGA_ARCADE_WIDTH - 1 do
     begin
-      var Source := Y * S16_WIDTH + X;
+      var Source := Y * SEGA_ARCADE_WIDTH + X;
       if FOverlay[Source] and VisiblePixel = 0 then
         Continue;
       var Dest := Source;

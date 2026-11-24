@@ -3,88 +3,49 @@
 interface
 
 uses
-  System.SysUtils, System.Generics.Collections, HW.M68k, S16.RomSets,
-  S16.Cartridge, S16.Video, S16.Sound, S16.I8751, Core.Emulation.Types,
-  Core.Snapshots;
+  SegaArcade.Console, SegaArcade.Video, S16.Sound, Core.Snapshots;
 
 type
-  TS16Console = class
-  protected
-    FCart: TS16Cartridge;
-    FProgram, FKey: TBytes;
-    FCryptoState: Byte;
-    FCryptoIRQ, FResetting: Boolean;
-    FIRQSerial: Cardinal;
-    FOpcodeRead: TMemoryReadCallback;
-    FOpcodeCache: TDictionary<UInt64, Word>;
-    FMCU: TS16I8751;
-    FMCUControl: Byte;
-    FMainReset, FResetPending: Boolean;
-    FMainPauseUntil: Int64;
-    FCPU: TM68kState;
-    FBus: TM68kReadWriteCallbacks;
+  TS16Console = class(TSegaArcadeConsole)
+  private
     FMultiply: array[0..1] of Word;
     FCompare: array[0..1, 0..15] of Word;
     FHistory: array[0..1] of Integer;
-    FRAM: array[0..$1FFF] of Word;
-    FMapper: array[0..$1F] of Byte;
-    FPPI: array[0..3] of Byte;
-    FInput: TEmulatorInput;
-    FCoins: array[0..1] of Integer;
-    FTime, FFrameNumber: Int64;
-    function CreateVideo: TS16Video; virtual;
-    procedure CreateAudio; virtual;
-    procedure ResetAudio; virtual;
-    procedure CommandAudio(Value: Byte); virtual;
-    function ReplyAudio: Byte; virtual;
-    procedure BeginAudioFrame; virtual;
-    procedure EndAudioFrame; virtual;
-    procedure RunAudio; virtual;
-    procedure SerializeAudio(State: TStateArchive); virtual;
-    procedure StartScanline(Line: Integer); virtual;
-    procedure EndScanline(Line: Integer); virtual;
-    function HasNVRAM: Boolean; virtual;
-    function LineDeadline(Line: Integer): Int64; virtual;
-    function ExtraRead(Region: Integer; Offset: Cardinal): Word; virtual;
-    procedure ExtraWrite(Region: Integer; Offset: Cardinal; Value: Word; HighByte, LowByte: Boolean); virtual;
-    procedure WriteROM(Address, Offset: Cardinal; Value: Byte); virtual;
-    function MCURead(Address: Word): Byte;
-    procedure MCUWrite(Address: Word; Value: Byte);
-    function MCUPortRead(Port: Byte): Byte; virtual;
-    procedure MCUPortWrite(Port, Value: Byte); virtual;
-    function MCUAddress(Address: Word; out Physical: Cardinal): Boolean;
-    procedure SetMainReset(Asserted: Boolean);
-    procedure ResetMainCPU;
-    procedure SimulateMCU;
     function ReadMath(UnitIndex: Integer; Offset: Cardinal): Word;
     procedure WriteMath(UnitIndex: Integer; Offset: Cardinal; Value: Word; HighByte, LowByte: Boolean);
-    function DecodeAddress(Address: Cardinal; out Offset: Cardinal): Integer; virtual;
-    function ReadOpcode(Address: Cardinal): Word;
-    function ReadIO(Offset: Cardinal): Word; virtual;
-    procedure WriteIO(Offset: Cardinal; Value: Byte); virtual;
-    procedure WriteMapper(Index, Value: Byte);
-    function Pad(const Buttons: TEmulatorButtons): Byte;
+    function MCUAddress(Address: Word; out Physical: Cardinal): Boolean;
+    procedure SimulateMCU;
+  protected
+    function CreateVideo: TSegaArcadeVideo; override;
+    procedure CreateAudio; override;
+    procedure ResetAudio; override;
+    procedure CommandAudio(Value: Byte); override;
+    function ReplyAudio: Byte; override;
+    procedure BeginAudioFrame; override;
+    procedure EndAudioFrame; override;
+    procedure RunAudio; override;
+    procedure SerializeAudio(State: TStateArchive); override;
+    function HasNVRAM: Boolean; override;
+    function LineDeadline(Line: Integer): Int64; override;
+    function MCURead(Address: Word): Byte; override;
+    procedure MCUWrite(Address: Word; Value: Byte); override;
+    function MCUPortRead(Port: Byte): Byte; override;
+    procedure MCUPortWrite(Port, Value: Byte); override;
+    function DecodeAddress(Address: Cardinal; out Offset: Cardinal): Integer; override;
+    function ReadIO(Offset: Cardinal): Word; override;
+    procedure WriteIO(Offset: Cardinal; Value: Byte); override;
+    function UsesMapper: Boolean; override;
+    function HasMCU: Boolean; override;
+    procedure VerticalBlank; override;
+    procedure SerializeBoardState(State: TStateArchive); override;
+    function ExtraRead(Region: Integer; Offset: Cardinal): Word; override;
+    procedure ExtraWrite(Region: Integer; Offset: Cardinal; Value: Word; HighByte, LowByte: Boolean); override;
   public
-    Video: TS16Video;
     Sound: TS16Sound;
-    DIP: array[0..1] of Byte; // SW1 coinage, SW2 game options.
-    constructor Create(Cart: TS16Cartridge); virtual;
     destructor Destroy; override;
-    procedure Reset; virtual;
-    procedure RunFrame;
-    function AudioSamples: TArray<SmallInt>; virtual;
-    function FrameRate: Double; virtual;
-    function ReadWord(Address: Cardinal): Word;
-    procedure WriteWord(Address: Cardinal; Value: Word; HighByte: Boolean = True; LowByte: Boolean = True);
-    procedure SetInput(const Input: TEmulatorInput);
-    procedure AddPointerMotion(DX, DY: Integer); virtual;
-    procedure InsertCoin(Player: Integer);
-    function Battery: TBytes;
-    procedure LoadBattery(const Data: TBytes);
-    procedure SerializeState(State: TStateArchive); virtual;
-    property CPU: TM68kState read FCPU;
-    property MCU: TS16I8751 read FMCU;
-    property FrameNumber: Int64 read FFrameNumber;
+    procedure Reset; override;
+    function AudioSamples: TArray<SmallInt>; override;
+    function FrameRate: Double; override;
   end;
 
   TS16ConsoleClass = class of TS16Console;
@@ -92,77 +53,83 @@ type
 implementation
 
 uses
-  System.Math, System.Classes, S16.Crypto;
-
-function BusRead(User: Pointer; Address: Cardinal; HighByte, LowByte: Byte; Cycle: Cardinal; var Terminate: Byte): Cardinal;
-begin
-  Result := TS16Console(User).ReadWord(Address shl 1);
-end;
-
-function OpcodeRead(User: Pointer; Address: Cardinal; HighByte, LowByte: Byte; Cycle: Cardinal; var Terminate: Byte): Cardinal;
-begin
-  Result := TS16Console(User).ReadOpcode(Address shl 1);
-end;
-
-procedure BusWrite(User: Pointer; Address: Cardinal; HighByte, LowByte: Byte; Cycle: Cardinal; var Terminate: Byte; Value: Cardinal);
-begin
-  TS16Console(User).WriteWord(Address shl 1, Word(Value and $FFFF), HighByte <> 0, LowByte <> 0);
-end;
-
-procedure IRQDone(User: Pointer);
-begin
-  var Console := TS16Console(User);
-  if Console.FCart.RomSet.Crypto = 3 then
-  begin
-    Console.FCryptoIRQ := True;
-    Inc(Console.FIRQSerial);
-  end;
-  if (Console.FMCU = nil) or (Console.FCart.RomSet.Board <> 0) then
-    Clown68000Interrupt(Console.FCPU, 0);
-end;
-
-constructor TS16Console.Create(Cart: TS16Cartridge);
-begin
-  inherited Create;
-  FCart := Cart;
-  FProgram := Cart['maincpu'];
-  FKey := Cart['maincpu:key'];
-  FOpcodeCache := TDictionary<UInt64, Word>.Create;
-  if Cart.RomSet.Crypto in [1, 2, 3] then
-  begin
-    if Length(FKey) <> $2000 then
-      raise EReadError.Create('The FD1089/FD1094 CPU requires its 8 KiB key ROM');
-    FOpcodeRead := OpcodeRead;
-  end;
-  FBus.UserData := Self;
-  FBus.ReadCallback := BusRead;
-  FBus.WriteCallback := BusWrite;
-  FBus.InterruptAcknowledgeCallback := IRQDone;
-  Video := CreateVideo;
-  CreateAudio;
-  if Cart.RomSet.MCU and (Cart.RomSet.MCUSimulation = smNone) then
-  begin
-    FMCU := TS16I8751.Create(Cart['mcu']);
-    FMCU.ReadExternal := MCURead;
-    FMCU.WriteExternal := MCUWrite;
-    FMCU.ReadPort := MCUPortRead;
-    FMCU.WritePort := MCUPortWrite;
-  end;
-  for var I := 0 to 1 do
-    DIP[I] := Cart.RomSet.DIPs[I];
-  Reset;
-end;
+  System.Math, Core.Emulation.Types, HW.M68k, SegaArcade.RomSets, S16.Video;
 
 destructor TS16Console.Destroy;
 begin
-  FMCU.Free;
-  FOpcodeCache.Free;
   Sound.Free;
-  Video.Free;
   inherited;
 end;
 
-function TS16Console.CreateVideo: TS16Video;
+procedure TS16Console.Reset;
+begin
+  FillChar(FMultiply, SizeOf(FMultiply), 0);
+  FillChar(FCompare, SizeOf(FCompare), 0);
+  FillChar(FHistory, SizeOf(FHistory), 0);
+  inherited;
+end;
+
+function TS16Console.UsesMapper: Boolean;
+begin
+  Result := FCart.RomSet.Board <> 0;
+end;
+
+function TS16Console.HasMCU: Boolean;
+begin
+  Result := inherited HasMCU and (FCart.RomSet.MCUSimulation = smNone);
+end;
+
+procedure TS16Console.VerticalBlank;
+begin
+  if FCart.RomSet.MCUSimulation = smNone then
+    inherited
+  else
+    SimulateMCU;
+end;
+
+procedure TS16Console.SerializeBoardState(State: TStateArchive);
+begin
+  State.Field(FMultiply, SizeOf(FMultiply));
+  State.Field(FCompare, SizeOf(FCompare));
+  State.Field(FHistory, SizeOf(FHistory));
+end;
+
+function TS16Console.ExtraRead(Region: Integer; Offset: Cardinal): Word;
+begin
+  case Region of
+    9:
+      Exit($FFFF);
+    10:
+      Exit(ReadMath(0, Offset));
+    11:
+      Exit(ReadMath(1, (Offset and $1F) or $1000));
+  end;
+  Result := inherited ExtraRead(Region, Offset);
+end;
+
+procedure TS16Console.ExtraWrite(Region: Integer; Offset: Cardinal; Value: Word; HighByte, LowByte: Boolean);
+begin
+  case Region of
+    10:
+      begin
+        WriteMath(0, Offset, Value, HighByte, LowByte);
+        Exit;
+      end;
+    11:
+      begin
+        WriteMath(1, (Offset and $1F) or $1000, Value, HighByte, LowByte);
+        Exit;
+      end;
+    9:
+      begin
+        if LowByte and (Offset < 4) then
+          Video.TileBank[Offset shr 1] := Byte(Value and 7);
+        Exit;
+      end;
+  end;
+end;
+
+function TS16Console.CreateVideo: TSegaArcadeVideo;
 begin
   Result := TS16Video.Create(FCart['tiles'], FCart['sprites'], FCart.RomSet.Board = 0, FCart.RomSet.Board);
 end;
@@ -213,14 +180,6 @@ begin
   Result := Sound.Samples;
 end;
 
-procedure TS16Console.StartScanline(Line: Integer);
-begin
-end;
-
-procedure TS16Console.EndScanline(Line: Integer);
-begin
-end;
-
 function TS16Console.FrameRate: Double;
 begin
   Result := S16_FPS;
@@ -234,57 +193,6 @@ end;
 function TS16Console.HasNVRAM: Boolean;
 begin
   Result := FCart.RomSet.Board = 0;
-end;
-
-function TS16Console.ExtraRead(Region: Integer; Offset: Cardinal): Word;
-begin
-  Result := $FFFF;
-end;
-
-procedure TS16Console.ExtraWrite(Region: Integer; Offset: Cardinal; Value: Word; HighByte, LowByte: Boolean);
-begin
-end;
-
-procedure TS16Console.WriteROM(Address, Offset: Cardinal; Value: Byte);
-begin
-end;
-
-procedure TS16Console.Reset;
-begin
-  FCPU := Default(TM68kState);
-  if not HasNVRAM then
-    FillChar(FRAM, SizeOf(FRAM), 0);
-  FillChar(FMapper, SizeOf(FMapper), 0);
-  FillChar(FMultiply, SizeOf(FMultiply), 0);
-  FillChar(FCompare, SizeOf(FCompare), 0);
-  FillChar(FHistory, SizeOf(FHistory), 0);
-  FillChar(FPPI, SizeOf(FPPI), 0);
-  FillChar(FCoins, SizeOf(FCoins), 0);
-  FMainReset := False;
-  FResetPending := False;
-  FMainPauseUntil := 0;
-  FMCUControl := 0;
-  if FMCU <> nil then
-    FMCU.Reset;
-  FTime := 0;
-  FFrameNumber := 0;
-  Video.Reset;
-  ResetAudio;
-  ResetMainCPU;
-end;
-
-procedure TS16Console.ResetMainCPU;
-begin
-  FCryptoState := 0;
-  FCryptoIRQ := False;
-  FIRQSerial := 0;
-  FOpcodeCache.Clear;
-  FResetting := True;
-  try
-    Clown68000Reset(FCPU, FBus, FOpcodeRead);
-  finally
-    FResetting := False;
-  end;
 end;
 
 function TS16Console.DecodeAddress(Address: Cardinal; out Offset: Cardinal): Integer;
@@ -484,18 +392,6 @@ begin
   end;
 end;
 
-function TS16Console.Pad(const Buttons: TEmulatorButtons): Byte;
-const
-  Order: array[0..7] of TEmulatorButton = (TEmulatorButton.C, TEmulatorButton.A,
-    TEmulatorButton.B, TEmulatorButton.X, TEmulatorButton.Down,
-    TEmulatorButton.Up, TEmulatorButton.Right, TEmulatorButton.Left);
-begin
-  Result := $FF;
-  for var I := 0 to 7 do
-    if Order[I] in Buttons then
-      Result := Result and Byte($FF xor (1 shl I));
-end;
-
 function TS16Console.ReadIO(Offset: Cardinal): Word;
 
   function QuartetPad(const Buttons: TEmulatorButtons; Coin: Boolean): Byte;
@@ -597,13 +493,6 @@ begin
   end;
 end;
 
-procedure TS16Console.SetMainReset(Asserted: Boolean);
-begin
-  if Asserted and not FMainReset then
-    FResetPending := True;
-  FMainReset := Asserted;
-end;
-
 function TS16Console.MCUPortRead(Port: Byte): Byte;
 begin
   Result := $FF;
@@ -658,21 +547,8 @@ function TS16Console.MCURead(Address: Word): Byte;
 var
   Physical: Cardinal;
 begin
-  if FCart.RomSet.Board <> 0 then
-  begin
-    case Address and $FF of
-      0, 1:
-        Exit(FMapper[Address and 1]);
-      2:
-        if FMainReset then
-          Exit(0)
-        else
-          Exit($0F);
-      3:
-        Exit(ReplyAudio);
-    end;
-    Exit($FF);
-  end;
+  if UsesMapper then
+    Exit(inherited MCURead(Address));
   if (FMCUControl shr 3) and 7 in [5, 6, 7] then
     Exit(FProgram[(((FMCUControl shr 3) and 7) - 5) * $10000 + (Address xor 1)]);
   if not MCUAddress(Address, Physical) then
@@ -688,10 +564,9 @@ procedure TS16Console.MCUWrite(Address: Word; Value: Byte);
 var
   Physical: Cardinal;
 begin
-  if FCart.RomSet.Board <> 0 then
+  if UsesMapper then
   begin
-    if Address and $FF < $20 then
-      WriteMapper(Byte(Address and $1F), Value);
+    inherited;
     Exit;
   end;
   if not MCUAddress(Address, Physical) then
@@ -700,185 +575,6 @@ begin
     WriteWord(Physical, Word(Value) shl 8, True, False)
   else
     WriteWord(Physical, Value, False, True);
-end;
-
-procedure TS16Console.WriteMapper(Index, Value: Byte);
-begin
-  FMapper[Index] := Value;
-  case Index of
-    2:
-      SetMainReset(Value and 3 = 3);
-    3:
-      CommandAudio(Value);
-    4:
-      if Value and 7 <> 7 then
-        Clown68000Interrupt(FCPU, (not Value) and 7);
-    5:
-      case Value of
-        1:
-          WriteWord((Cardinal(FMapper[$A]) shl 17) or (Cardinal(FMapper[$B]) shl 9) or
-            (Cardinal(FMapper[$C]) shl 1), (Word(FMapper[0]) shl 8) or FMapper[1]);
-        2:
-          begin
-            var Data := ReadWord((Cardinal(FMapper[7]) shl 17) or
-              (Cardinal(FMapper[8]) shl 9) or (Cardinal(FMapper[9]) shl 1));
-            FMapper[0] := Byte(Data shr 8);
-            FMapper[1] := Byte(Data and $FF);
-          end;
-      end;
-  end;
-end;
-
-function TS16Console.ReadOpcode(Address: Cardinal): Word;
-begin
-  var Offset: Cardinal;
-  if DecodeAddress(Address and $FFFFFE, Offset) <> 0 then
-    Exit(ReadWord(Address));
-  var State := FCryptoState;
-  if FCryptoIRQ then
-    State := FKey[0];
-  var CacheKey := (UInt64(State) shl 48) or (UInt64(Address and $FFFFFF) shl 24) or Offset;
-  if FResetting then
-    CacheKey := CacheKey or (UInt64(1) shl 63);
-  if FOpcodeCache.TryGetValue(CacheKey, Result) then
-    Exit;
-  var Value := (Word(FProgram[Offset]) shl 8) or FProgram[Offset + 1];
-  case FCart.RomSet.Crypto of
-    1, 2:
-      Result := FD1089(Address, Value, FKey, True, FCart.RomSet.Crypto = 2);
-    3:
-      Result := FD1094(Address shr 1, Value, FKey, State, FResetting and (Address < 8));
-  else
-    Result := Value;
-  end;
-  FOpcodeCache.Add(CacheKey, Result);
-end;
-
-function TS16Console.ReadWord(Address: Cardinal): Word;
-begin
-  Address := Address and $FFFFFE;
-  var Offset: Cardinal;
-  var Region := DecodeAddress(Address, Offset);
-  case Region of
-    0:
-      begin
-        Result := (Word(FProgram[Offset]) shl 8) or FProgram[Offset + 1];
-        if FCart.RomSet.Crypto in [1, 2] then
-          Result := FD1089(Address, Result, FKey, False, FCart.RomSet.Crypto = 2);
-        Exit;
-      end;
-    3:
-      Exit(FRAM[(Offset shr 1) and $1FFF]);
-    4:
-      Exit(Video.SpriteRAM[Offset shr 1]);
-    5:
-      Exit(Video.TileRAM[Offset shr 1]);
-    6:
-      Exit(Video.PaletteRAM[Offset shr 1]);
-    7:
-      Exit(ReadIO(Offset));
-    8:
-      Exit(Video.TextRAM[Offset shr 1]);
-    9:
-      Exit($FFFF);
-    10:
-      Exit(ReadMath(0, Offset));
-    11:
-      Exit(ReadMath(1, (Offset and $1F) or $1000));
-    12..15:
-      Exit(ExtraRead(Region, Offset));
-  end;
-  Result := $FFFF;
-  if FCart.RomSet.Board <> 0 then
-    case (Address shr 1) and $1F of
-      0, 1:
-        Result := $FF00 or FMapper[(Address shr 1) and 1];
-      2:
-        if FMainReset then
-          Result := $FF00
-        else
-          Result := $FF0F;
-      3:
-        Result := $FF00 or ReplyAudio;
-    end;
-end;
-
-procedure TS16Console.WriteWord(Address: Cardinal; Value: Word; HighByte, LowByte: Boolean);
-
-  procedure Merge(var Dest: Word);
-  begin
-    if HighByte then
-      Dest := (Dest and $FF) or (Value and $FF00);
-    if LowByte then
-      Dest := (Dest and $FF00) or (Value and $FF);
-  end;
-
-begin
-  Address := Address and $FFFFFE;
-  var Offset: Cardinal;
-  var Region := DecodeAddress(Address, Offset);
-  case Region of
-    0:
-      begin
-        if LowByte then
-          WriteROM(Address, Offset, Byte(Value and $FF));
-        Exit;
-      end;
-    3:
-      begin
-        Merge(FRAM[(Offset shr 1) and $1FFF]);
-        Exit;
-      end;
-    4:
-      begin
-        Merge(Video.SpriteRAM[Offset shr 1]);
-        Exit;
-      end;
-    5:
-      begin
-        Merge(Video.TileRAM[Offset shr 1]);
-        Exit;
-      end;
-    6:
-      begin
-        Merge(Video.PaletteRAM[Offset shr 1]);
-        Exit;
-      end;
-    7:
-      begin
-        if LowByte then
-          WriteIO(Offset, Byte(Value and $FF));
-        Exit;
-      end;
-    8:
-      begin
-        Merge(Video.TextRAM[Offset shr 1]);
-        Exit;
-      end;
-    10:
-      begin
-        WriteMath(0, Offset, Value, HighByte, LowByte);
-        Exit;
-      end;
-    11:
-      begin
-        WriteMath(1, (Offset and $1F) or $1000, Value, HighByte, LowByte);
-        Exit;
-      end;
-    12..15:
-      begin
-        ExtraWrite(Region, Offset, Value, HighByte, LowByte);
-        Exit;
-      end;
-    9:
-      begin
-        if LowByte and (Offset < 4) then
-          Video.TileBank[Offset shr 1] := Byte(Value and 7);
-        Exit;
-      end;
-  end;
-  if LowByte and (FCart.RomSet.Board <> 0) then
-    WriteMapper(Byte((Address shr 1) and $1F), Byte(Value and $FF));
 end;
 
 // Native Pascal adaptation of MAME's tturf_i8751_sim / wb3_i8751_sim.
@@ -913,142 +609,4 @@ begin
   end;
 end;
 
-procedure TS16Console.RunFrame;
-begin
-  BeginAudioFrame;
-  for var Line := 0 to 261 do
-  begin
-    StartScanline(Line);
-    if Line = 224 then
-    begin
-      Video.Render;
-      if FCart.RomSet.MCUSimulation <> smNone then
-        SimulateMCU
-      else if FMCU = nil then
-        Clown68000Interrupt(FCPU, 4)
-      else
-        FMCU.SetIRQ(0, True);
-    end;
-    if Line = 261 then
-      Video.Latch;
-    if (Line = 0) and (FMCU <> nil) then
-      FMCU.SetIRQ(0, False);
-    var Target := LineDeadline(Line);
-    while FTime < Target do
-    begin
-      if FMCU <> nil then
-        while FMCU.Cycles * 15 <= FTime do
-          FMCU.Step;
-      if FResetPending and not FMainReset then
-      begin
-        ResetMainCPU;
-        FResetPending := False;
-      end;
-      var Cycles: Cardinal;
-      if FMainReset or (FTime < FMainPauseUntil) then
-        Cycles := 16
-      else if FCart.RomSet.Crypto = 3 then
-      begin
-        var PC := FCPU.ProgramCounter;
-        var Opcode := ReadOpcode(PC);
-        var Command := -1;
-        if (FCPU.Stopped = 0) and (Opcode = $0C80) and (ReadOpcode(PC + 4) = $FFFF) then
-          Command := ReadOpcode(PC + 2);
-        var Serial := FIRQSerial;
-        Cycles := Clown68000DoCycles(FCPU, FBus, 1, -1, FOpcodeRead);
-        if Command >= 0 then
-          case Command and $300 of
-            $000:
-              FCryptoState := Byte(Command and $FF);
-            $100:
-              begin
-                FCryptoState := Byte(Command and $FF);
-                FCryptoIRQ := False;
-              end;
-            $200:
-              FCryptoIRQ := True;
-            $300:
-              FCryptoIRQ := False;
-          end;
-        if (Opcode = $4E73) and (Serial = FIRQSerial) then
-          FCryptoIRQ := False;
-      end
-      else
-        Cycles := Clown68000DoCycles(FCPU, FBus, 32, -1, FOpcodeRead);
-      if (Cycles = 0) or (FCPU.Halted <> 0) then
-        raise EInvalidOpException.CreateFmt('68000 halted at %.6x', [FCPU.ProgramCounter]);
-      Inc(FTime, Cycles);
-      RunAudio;
-    end;
-    EndScanline(Line);
-  end;
-  EndAudioFrame;
-  Inc(FFrameNumber);
-  for var I := 0 to 1 do
-    if FCoins[I] > 0 then
-      Dec(FCoins[I]);
-end;
-
-procedure TS16Console.SetInput(const Input: TEmulatorInput);
-begin
-  FInput := Input;
-end;
-
-procedure TS16Console.AddPointerMotion(DX, DY: Integer);
-begin
-end;
-
-procedure TS16Console.InsertCoin(Player: Integer);
-begin
-  if not (Player in [1, 2]) then
-    raise EArgumentOutOfRangeException.Create('System 16 coin player');
-  FCoins[Player - 1] := 3;
-end;
-
-function TS16Console.Battery: TBytes;
-begin
-  Result := nil;
-  if not HasNVRAM then
-    Exit;
-  SetLength(Result, SizeOf(FRAM));
-  Move(FRAM, Result[0], SizeOf(FRAM));
-end;
-
-procedure TS16Console.LoadBattery(const Data: TBytes);
-begin
-  if (not HasNVRAM) or (Length(Data) <> SizeOf(FRAM)) then
-    raise EReadError.Create('Invalid arcade NVRAM size');
-  Move(Data[0], FRAM, SizeOf(FRAM));
-end;
-
-procedure TS16Console.SerializeState(State: TStateArchive);
-begin
-  State.Field(FMCUControl, SizeOf(FMCUControl));
-  State.Field(FMainReset, SizeOf(FMainReset));
-  State.Field(FResetPending, SizeOf(FResetPending));
-  State.Field(FMainPauseUntil, SizeOf(FMainPauseUntil));
-  if FMCU <> nil then
-    FMCU.SerializeState(State);
-  State.Field(FCryptoState, SizeOf(FCryptoState));
-  State.Field(FCryptoIRQ, SizeOf(FCryptoIRQ));
-  State.Field(FIRQSerial, SizeOf(FIRQSerial));
-  State.Field(FCPU, SizeOf(FCPU));
-  State.Field(FRAM, SizeOf(FRAM));
-  State.Field(FMultiply, SizeOf(FMultiply));
-  State.Field(FCompare, SizeOf(FCompare));
-  State.Field(FHistory, SizeOf(FHistory));
-  State.Field(FMapper, SizeOf(FMapper));
-  State.Field(FPPI, SizeOf(FPPI));
-  State.CompatibleField(FInput, SizeOf(FInput), TEmulatorInput.LegacySize, TEmulatorInput.TravelSize);
-  State.Field(FCoins, SizeOf(FCoins));
-  State.Field(FTime, SizeOf(FTime));
-  State.Field(FFrameNumber, SizeOf(FFrameNumber));
-  State.Field(DIP, SizeOf(DIP));
-  Video.SerializeState(State);
-  SerializeAudio(State);
-  if (FTime < 0) or (FFrameNumber < 0) then
-    raise EReadError.Create('Invalid arcade clock state');
-end;
-
 end.
-

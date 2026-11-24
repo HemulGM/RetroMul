@@ -188,6 +188,8 @@ begin
   var Launch := Value(Session, 'launch_method');
   if Launch = 'file_picker' then
     Launch := Translate('File picker')
+  else if Launch = 'optical_drive' then
+    Launch := Translate('Optical drive')
   else if Launch = 'library' then
     Launch := Translate('Game library')
   else if Launch = 'drag_and_drop' then
@@ -203,7 +205,7 @@ begin
   var Error := FMetadata.GetValue('error');
   LabelError.Visible := (Error <> nil) and (Error.Value <> '');
   if LabelError.Visible then
-    LabelError.Text := Translate('Last error: ') + Error.Value;
+    LabelError.Text := Translate('Last error: ') + TranslateCoreMessage(Error.Value);
 end;
 
 procedure TFeedbackView.SystemChanged(Sender: TObject);

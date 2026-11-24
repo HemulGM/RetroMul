@@ -66,10 +66,19 @@ type
 
   PVertexChannels = ^TVertexChannels;
 
+  TTileColors = array[0..TileSize * TileSize - 1] of Cardinal;
+
+  PTileColors = ^TTileColors;
+
+  TFieldTile = record
+    Colors: TTileColors;
+    Written: Boolean;
+  end;
+
   TTileBuffers = record
     Depth: array[0..TileSize * TileSize - 1] of Single;
     Tag: array[0..TileSize * TileSize - 1] of Integer;   // triangle index, -1 background
-    Color: array[0..TileSize * TileSize - 1] of Cardinal;
+    Color: TTileColors;
     Modified: array[0..TileSize * TileSize - 1] of Byte; // modifier volume result
     Stencil: array[0..TileSize * TileSize - 1] of Byte;
     Fresh: array[0..TileSize * TileSize - 1] of Byte;    // shaded in this entry
@@ -159,6 +168,9 @@ type
     // Closing instruction of each modifier volume (1 inside, 2 outside).
     FVolumeMode: TArray<Byte>;
     FScaleX: Integer;
+    FFieldY: Integer;
+    FFieldCenterWeight, FFieldNeighborWeight: Cardinal;
+    FFieldTiles: TArray<TFieldTile>;
     FCullValue: Single;
     // Triangles still to set up for the current render (by the first thread
     // rendering tiles).
@@ -170,6 +182,7 @@ type
     procedure RenderGroups(Slot: Integer);
     procedure PrepareEntries;
     procedure RenderEntry(N, Slot: Integer);
+    procedure RenderTiles(First, Count, Slot: Integer);
     procedure Prepare;
     procedure AddTriangle(Poly: Integer; I0, I1, I2: Integer; Volume: Integer);
     procedure Bin;
@@ -181,7 +194,8 @@ type
     procedure ApplyVolumes(B: PTileBuffers; TileX, TileY, List, Pass: Integer; Translucent: Boolean);
     procedure ShadeOpaque(B: PTileBuffers; TileX, TileY: Integer);
     procedure RasterTranslucent(B: PTileBuffers; F: PFragmentBuffer; TileX, TileY, Pass: Integer; Presort: Boolean);
-    procedure WriteTile(B: PTileBuffers; TileX, TileY: Integer);
+    procedure WriteTile(const Colors: TTileColors; TileX, TileY: Integer);
+    procedure WriteField;
     function DepthPass(Mode: Cardinal; Z, Stored: Single): Boolean; inline;
   public
     PolygonsRendered: Integer;
@@ -190,8 +204,6 @@ type
     // Renders the scene selected by PARAM_BASE/REGION_BASE; returns the
     // number of tiles drawn.
     function Render: Integer;
-    // Tiles of the current render for worker threads (0..TileCount-1).
-    procedure RenderTiles(First, Count, Slot: Integer);
     // Every tile of the current render, on Threads threads (the caller's
     // included). Tiles are independent, so the result does not depend on it.
     procedure RenderAll;
@@ -222,8 +234,7 @@ const
   PVRFogColVert = $0B4;
   PVRFogDensity = $0B8;
   PVRTextControl = $0E4;
-  PVRPTAlphaRef = $11C;
-  PVRScalerCtlReg = $0F4;
+  PVRYCoeff = $118;
   PVRFogTable = $200;
   PVRPalette = $1000;
   DitherMatrix: array[0..15] of Integer = (0, 4, 1, 5, 6, 2, 7, 3, 1, 5, 0, 4, 7, 3, 6, 2);
@@ -363,7 +374,10 @@ end;
 
 function TDCRenderer.FramebufferLast: Cardinal;
 begin
-  Result := FramebufferFirst + FFBStride * Cardinal(FTilesY * TileSize);
+  var Lines := FTilesY * TileSize;
+  if FFieldY >= 0 then
+    Lines := Lines div 2;
+  Result := FramebufferFirst + FFBStride * Cardinal(Lines);
 end;
 
 function TDCRenderer.RenderAsync: Boolean;
@@ -388,6 +402,8 @@ begin
   if not FBusy then
     Exit;
   FDone.WaitFor(INFINITE);
+  if FFieldY >= 0 then
+    WriteField;
   FBusy := False;
 end;
 
@@ -397,15 +413,19 @@ begin
   begin
     EnsureSetup;
     RenderTiles(0, Length(FEntries), 0);
-    Exit;
+  end
+  else
+  begin
+    FNextGroup := 0;
+    FPending := Length(FWorkers);
+    FDone.ResetEvent;
+    for var W in FWorkers do
+      W.FStart.SetEvent;
+    RenderGroups(0);
+    FDone.WaitFor(INFINITE);
   end;
-  FNextGroup := 0;
-  FPending := Length(FWorkers);
-  FDone.ResetEvent;
-  for var W in FWorkers do
-    W.FStart.SetEvent;
-  RenderGroups(0);
-  FDone.WaitFor(INFINITE);
+  if FFieldY >= 0 then
+    WriteField;
 end;
 
 function TDCRenderer.TileCount: Integer;
@@ -440,12 +460,6 @@ begin
   var Y1 := V[I1].Y;
   var X2 := V[I2].X;
   var Y2 := V[I2].Y;
-  if FScaleX = 2 then
-  begin
-    X0 := X0 * 2;
-    X1 := X1 * 2;
-    X2 := X2 * 2;
-  end;
   var Area := (X1 - X0) * (Y2 - Y0) - (X2 - X0) * (Y1 - Y0);
   if IsNan(Area) or (Abs(Area) < 1E-12) then
     Exit;
@@ -592,6 +606,16 @@ begin
   Bin;
 end;
 
+function TilePassesUserClip(const Poly: TPVRPoly; TileX, TileY: Integer): Boolean; inline;
+begin
+  if not (Poly.ClipMode in [2, 3]) then
+    Exit(True);
+  var Inside := (TileX >= Poly.ClipX0) and (TileX <= Poly.ClipX1) and
+    (TileY >= Poly.ClipY0) and (TileY <= Poly.ClipY1);
+  // Mode 2 keeps the rectangle, mode 3 keeps its complement.
+  Result := Inside = (Poly.ClipMode = 2);
+end;
+
 procedure TDCRenderer.Bin;
 begin
   // Counting sort of triangles into (tile, list) bins, in submission order.
@@ -602,10 +626,11 @@ begin
   for var I := 0 to FTriCount - 1 do
   begin
     var T: PRenderTri := @FTris[I];
-    var List := FContext.Polys[T.Poly].List;
+    var Poly: PPVRPoly := @FContext.Polys[T.Poly];
     for var TY := T.MinY div TileSize to T.MaxY div TileSize do
       for var TX := T.MinX div TileSize to T.MaxX div TileSize do
-        Inc(FBinCount[(TY * FTilesX + TX) * 5 + List]);
+        if TilePassesUserClip(Poly^, TX, TY) then
+          Inc(FBinCount[(TY * FTilesX + TX) * 5 + Poly.List]);
   end;
   var Sum := 0;
   for var I := 0 to High(FBinCount) do
@@ -619,14 +644,15 @@ begin
   for var I := 0 to FTriCount - 1 do
   begin
     var T: PRenderTri := @FTris[I];
-    var List := FContext.Polys[T.Poly].List;
+    var Poly: PPVRPoly := @FContext.Polys[T.Poly];
     for var TY := T.MinY div TileSize to T.MaxY div TileSize do
       for var TX := T.MinX div TileSize to T.MaxX div TileSize do
-      begin
-        var Bin := (TY * FTilesX + TX) * 5 + List;
-        FBinItems[FBinStart[Bin] + FBinCount[Bin]] := I;
-        Inc(FBinCount[Bin]);
-      end;
+        if TilePassesUserClip(Poly^, TX, TY) then
+        begin
+          var Bin := (TY * FTilesX + TX) * 5 + Poly.List;
+          FBinItems[FBinStart[Bin] + FBinCount[Bin]] := I;
+          Inc(FBinCount[Bin]);
+        end;
   end;
 end;
 
@@ -735,9 +761,20 @@ begin
   FFBClipX := FPVR.R[PVRFBXClip shr 2];
   FFBClipY := FPVR.R[PVRFBYClip shr 2];
   FCullValue := PSingle(@FPVR.R[PVRFPUCullVal shr 2])^;
-  FScaleX := 1;
-  if (FPVR.R[PVRScalerCtlReg shr 2] and $10000) <> 0 then
-    FScaleX := 2;
+  var Scaler := FPVR.R[PVRScalerCtl shr 2];
+  // The guest submits vertices in raster coordinates. The X scaler only
+  // halves the width when transferring the rendered tiles to VRAM.
+  FScaleX := 1 + Integer((Scaler shr 16) and 1);
+  // Sega Dev.Box System Architecture §3.4.12.2: render a full picture,
+  // then filter and store only the lines for the selected field.
+  FFieldY := -1;
+  if (Scaler and $2FFFF) = $20800 then
+  begin
+    FFieldY := Integer((Scaler shr 18) and 1);
+    var Coeff := FPVR.R[PVRYCoeff shr 2];
+    FFieldCenterWeight := (Coeff shr 8) and $FF;
+    FFieldNeighborWeight := Coeff and $FF;
+  end;
   ReadRegions;
   // Lists built for another parameter base (TA_ISP_BASE <> PARAM_BASE): by
   // where the regions point, when that context is newer than one built for
@@ -767,6 +804,12 @@ begin
   end;
   FTilesX := MaxX + 1;
   FTilesY := MaxY + 1;
+  if FFieldY >= 0 then
+  begin
+    SetLength(FFieldTiles, FTilesX * FTilesY);
+    for var Tile := 0 to High(FFieldTiles) do
+      FFieldTiles[Tile].Written := False;
+  end;
   PrepareEntries;
   FSetupPending := False;
   if FContext <> nil then
@@ -1616,7 +1659,36 @@ begin
   end;
 end;
 
-procedure TDCRenderer.WriteTile(B: PTileBuffers; TileX, TileY: Integer);
+function ScaledTileColor(Row: PCardinal; X, ScaleX: Integer): Cardinal; inline;
+begin
+  if ScaleX = 1 then
+    Exit(Row[X]);
+  // Horizontal 2x supersampling: average neighbouring samples.
+  Result := ((Row[X * 2] shr 1) and $7F7F7F7F) + ((Row[X * 2 + 1] shr 1) and $7F7F7F7F);
+end;
+
+function FilterFieldColor(Above, Center, Below, SideWeight, CenterWeight: Cardinal): Cardinal; inline;
+begin
+  Result := 0;
+  for var Channel := 0 to 3 do
+  begin
+    var Sum := ((Above and $FF) + (Below and $FF)) * SideWeight + (Center and $FF) * CenterWeight;
+    Result := Result or (Min(Cardinal(255), Sum shr 8) shl (Channel * 8));
+    Above := Above shr 8;
+    Center := Center shr 8;
+    Below := Below shr 8;
+  end;
+end;
+
+procedure TDCRenderer.WriteField;
+begin
+  // Wait for all tiles so the three-line filter can read across tile seams.
+  for var Tile := 0 to High(FFieldTiles) do
+    if FFieldTiles[Tile].Written then
+      WriteTile(FFieldTiles[Tile].Colors, Tile mod FTilesX, Tile div FTilesX);
+end;
+
+procedure TDCRenderer.WriteTile(const Colors: TTileColors; TileX, TileY: Integer);
 begin
   var Ctrl := FFBCtrl;
   var Pack := Ctrl and 7;
@@ -1642,26 +1714,49 @@ begin
     Bytes := 4;
   end;
   var Width := TileSize div FScaleX;
+  var TileAbove, TileBelow: PTileColors;
+  TileAbove := nil;
+  TileBelow := nil;
+  if FFieldY >= 0 then
+  begin
+    var Tile := TileY * FTilesX + TileX;
+    if (TileY > 0) and FFieldTiles[Tile - FTilesX].Written then
+      TileAbove := @FFieldTiles[Tile - FTilesX].Colors;
+    if (TileY + 1 < FTilesY) and FFieldTiles[Tile + FTilesX].Written then
+      TileBelow := @FFieldTiles[Tile + FTilesX].Colors;
+  end;
   for var Y := 0 to TileSize - 1 do
   begin
     var SY := TileY * TileSize + Y;
     if (SY < MinY) or (SY > MaxY) then
       Continue;
+    var DestY := SY;
+    var Row := @Colors[Y * TileSize];
+    var Above := Row;
+    var Below := Row;
+    if FFieldY >= 0 then
+    begin
+      // Both fields start on line zero. Field 1 continues with 3, 5, ...
+      // while field 0 continues with 2, 4, ... (Sega Fig. 3-35).
+      if (SY > 0) and (((SY and 1) <> FFieldY) or (SY = 1)) then
+        Continue;
+      DestY := SY div 2;
+      Above := @Colors[Max(Y - 1, 0) * TileSize];
+      Below := @Colors[Min(Y + 1, TileSize - 1) * TileSize];
+      if (Y = 0) and (TileAbove <> nil) then
+        Above := @TileAbove^[(TileSize - 1) * TileSize];
+      if (Y = TileSize - 1) and (TileBelow <> nil) then
+        Below := @TileBelow^[0];
+    end;
     for var X := 0 to Width - 1 do
     begin
       var SX := TileX * Width + X;
       if (SX < MinX) or (SX > MaxX) then
         Continue;
-      var C: Cardinal;
-      if FScaleX = 2 then
-      begin
-        // Horizontal 2x supersampling: average neighbouring samples.
-        var C0 := B.Color[Y * TileSize + X * 2];
-        var C1 := B.Color[Y * TileSize + X * 2 + 1];
-        C := (((C0 shr 1) and $7F7F7F7F) + ((C1 shr 1) and $7F7F7F7F));
-      end
-      else
-        C := B.Color[Y * TileSize + X];
+      var C := ScaledTileColor(Row, X, FScaleX);
+      if FFieldY >= 0 then
+        C := FilterFieldColor(ScaledTileColor(Above, X, FScaleX), C, ScaledTileColor(Below, X, FScaleX),
+          FFieldNeighborWeight, FFieldCenterWeight);
       var A := Integer(C shr 24);
       var R := Integer((C shr 16) and $FF);
       var G := Integer((C shr 8) and $FF);
@@ -1693,7 +1788,7 @@ begin
       else
         V := C;
       end;
-      var Offset := Base + Cardinal(SY) * Stride + Cardinal(SX * Bytes);
+      var Offset := Base + Cardinal(DestY) * Stride + Cardinal(SX * Bytes);
       if ToTexture then
       begin
         if Bytes = 2 then
@@ -1813,7 +1908,16 @@ begin
   end;
   // no_writeout (bit 28) keeps the tile for a following pass.
   if (E.Control and $10000000) = 0 then
-    WriteTile(B, TX, TY);
+  begin
+    if FFieldY >= 0 then
+    begin
+      var Tile := FEntryTile[N];
+      FFieldTiles[Tile].Colors := B.Color;
+      FFieldTiles[Tile].Written := True;
+    end
+    else
+      WriteTile(B.Color, TX, TY);
+  end;
 end;
 
 procedure TDCRenderer.RenderTiles(First, Count, Slot: Integer);

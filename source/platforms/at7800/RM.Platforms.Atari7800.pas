@@ -21,13 +21,18 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads,
-  System.SysUtils, System.Classes, System.UITypes, Core.Emulation,
-  Core.Platforms, Core.Platforms.Atari7800.Adapter, A7800.Cartridge,
-  Core.Snapshots, RM.Settings.Catalog, RM.Platforms.Atari7800.Settings,
-  RM.Platforms.Atari7800.Gamepads, RM.Platforms.Presentation, RM.Gamepad.Factory,
-  RM.Input.Runtime, RM.Session.Runtime, RM.Settings.Runtime, RM.Window.Layout,
+  RM.Input.Gamepads, System.SysUtils, System.Classes, System.UITypes,
+  Core.Emulation, Core.Platforms, Core.Platforms.Atari7800.Adapter,
+  A7800.Cartridge, Core.Snapshots, RM.Settings.Catalog,
+  RM.Platforms.Atari7800.Settings, RM.Platforms.Atari7800.Gamepads,
+  RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Input.Runtime,
+  RM.Session.Runtime, RM.Settings.Runtime, RM.Window.Layout,
   RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices;
+
+const
+  PlatformIcon =
+ 'M8,24 L88,24 L98,72 L2,72 Z M12,30 L84,30 L86,44 L10,44 Z ' +
+    'M16,54 L30,54 L30,62 L16,62 Z M40,54 L48,54 L48,62 L40,62 Z M58,54 L66,54 L66,62 L58,62 Z';
 
 class procedure TA7800Platform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
 begin
@@ -134,9 +139,7 @@ begin
   RegisterPlatformInputHandler('at7800', TPlatformInputHandler);
   RegisterPlatformGamepads('at7800', TGamepadAtari7800, []);
   // Console silhouette is a subject-specific image.
-  RegisterPlatformPresentation('at7800', 'at7800',
-    'M8,24 L88,24 L98,72 L2,72 Z M12,30 L84,30 L86,44 L10,44 Z ' +
-    'M16,54 L30,54 L30,62 L16,62 Z M40,54 L48,54 L48,62 L40,62 Z M58,54 L66,54 L66,62 L58,62 Z');
+  RegisterPlatformPresentation('at7800', 'at7800', PlatformIcon);
   var Definition := TPlatformInputDefinition.Create([TEmulatorButton.Up, TEmulatorButton.Down,
       TEmulatorButton.Left, TEmulatorButton.Right, TEmulatorButton.A, TEmulatorButton.B,
       TEmulatorButton.Start, TEmulatorButton.Select, TEmulatorButton.Mode]);

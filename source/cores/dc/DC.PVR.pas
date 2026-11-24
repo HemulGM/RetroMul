@@ -3,7 +3,6 @@
 // PowerVR2 (CLX2) register file, sync pulse generator and framebuffer
 // scanout. Rendering and the tile accelerator live in separate units and
 // are attached through TDCPVR.TA / OnStartRender.
-// References: Marcus Comstedt's Dreamcast pages, KallistiOS pvr_regs.h.
 {$IFDEF DC_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
 {$POINTERMATH ON}
 
@@ -45,6 +44,7 @@ const
   PVRScalerCtl = $0F4;
   PVRPalRamCtrl = $108;
   PVRSPGStatus = $10C;
+  PVRPTAlphaRef = $11C;
   PVRTAOLBase = $124;
   PVRTAISPBase = $128;
   PVRTAOLLimit = $12C;
@@ -138,6 +138,9 @@ type
 
 implementation
 
+const
+  PVRPTAlphaRefReset = $FF;
+
 constructor TDCPVR.Create(Memory: TDCMemory; Scheduler: TDCScheduler; Interrupts: TDCInterrupts);
 begin
   inherited Create;
@@ -153,6 +156,7 @@ begin
   FillChar(R, SizeOf(R), 0);
   R[PVRID shr 2] := $17FD11DB;
   R[PVRRevision shr 2] := $11;
+  R[PVRPTAlphaRef shr 2] := PVRPTAlphaRefReset;
   // Power-on sync matches the boot ROM's NTSC 480i setup; software replaces it.
   if PAL then
   begin
@@ -545,6 +549,10 @@ begin
   Archive.Field(FFIFOCount, SizeOf(FFIFOCount));
   if Archive.Loading then
   begin
+    // Older cores initialized this register to zero. Repair the old default
+    // on load. From version 3 onward, zero is an explicit saved value.
+    if (Archive.Version in [1, 2]) and (R[PVRPTAlphaRef shr 2] = 0) then
+      R[PVRPTAlphaRef shr 2] := PVRPTAlphaRefReset;
     if (FFIFOCount < 0) or (FFIFOCount > 7) or (SPG.Line < 0) or (SPG.FieldLines < 16) or
       (SPG.FieldLines > 1100) or (SPG.Line > SPG.FieldLines) then
       raise EReadError.Create('Dreamcast snapshot PVR state');

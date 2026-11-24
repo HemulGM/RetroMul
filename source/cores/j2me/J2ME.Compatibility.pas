@@ -37,6 +37,10 @@ function J2MECompatibilityStackAttack2(Suite: TJ2MESuite): Boolean;
 
 function J2MECompatibilityMarslander(Suite: TJ2MESuite): Boolean;
 
+function J2MECompatibilityAlonsoRacing(Suite: TJ2MESuite): Boolean;
+
+function J2MEAlonsoRaceInterval(Canvas: TJVMObject): Integer;
+
 function NormalizeJ2MECompatibilityResource(const Name: string; const Data: TBytes): TBytes;
 
 procedure InstallJ2MECompatibilityClasses(Suite: TJ2MESuite; VM: TJVM; out ArmiesOfWarClass: TJVMClass);
@@ -611,6 +615,23 @@ begin
   Result := (Suite <> nil) and
     ResourceMatchesHash(Suite, 'Marslander.class', '83a60184fe02bb89b1ab8660d4cd493bc8d0204199ce13985ca3190058ccb6c2') and
     ResourceMatchesHash(Suite, 'd.class', '48bedcb94792ac7a351f5ba74bb6f7e16f3345a3eadb17aab0e209d583a557f2');
+end;
+
+function J2MECompatibilityAlonsoRacing(Suite: TJ2MESuite): Boolean;
+begin
+  Result := (Suite <> nil) and
+    ResourceMatchesHash(Suite, 'f1/b.class', '524bc804771162adbc3442da7cc5423b94b9314dd689c39e8e46d7a40425646d') and
+    ResourceMatchesHash(Suite, 'f1/d.class', 'bc3625d9af099f45a83067d0294d8f2fdde661b6c879e45a28d2f251d74a81a6');
+end;
+
+function J2MEAlonsoRaceInterval(Canvas: TJVMObject): Integer;
+begin
+  Result := 0;
+  var Mode: TJVMValue;
+  // run() advances the physics once and reposts itself with no clock.
+  // 60 ms gives the 48-update starting lights about three seconds.
+  if (Canvas.ClassName = 'f1/b') and Canvas.Fields.TryGetValue('f1/b.dc:B', Mode) and (Mode.AsInt = 4) then
+    Result := 60;
 end;
 
 procedure InstallMarslanderIntro(Suite: TJ2MESuite; VM: TJVM);

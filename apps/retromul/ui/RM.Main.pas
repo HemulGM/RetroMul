@@ -79,6 +79,7 @@ type
     procedure OpenHelpWebsiteClick(Sender: TObject);
     procedure ReportBugClick(Sender: TObject); virtual;
     procedure ButtonOpenClick(Sender: TObject); virtual;
+    procedure ButtonOpenOpticalDiscClick(Sender: TObject);
     procedure FormSafeAreaChanged(Sender: TObject; const AInsets: TRectF); virtual;
     procedure FormCloseQuery(Sender: TObject; var CanClose: Boolean); virtual;
     procedure LayoutClientClick(Sender: TObject); virtual;
@@ -213,8 +214,8 @@ implementation
 
 uses
   System.IOUtils, System.Math, System.Messaging, FMX.Forms, FMX.Graphics,
-  FMX.OpenDialog, FMX.BehaviorManager, WinUI3.Style, Core.EmulatorFactory,
-  RM.Storage.Dialogs, RM.Feedback, RM.Controllers.Browser, RM.Controllers.Window,
+  FMX.OpenDialog, FMX.BehaviorManager, Core.EmulatorFactory, RM.Storage.Dialogs,
+  RM.Feedback, RM.Controllers.Browser, RM.Controllers.Window,
   RM.Controllers.Settings, RM.Controllers.Snapshots, RM.Controllers.Input,
   RM.Controllers.Mobile, RM.Controllers.Session, RM.Dialogs, RM.Styles,
   RM.Rumble, FMX.Image, RM.Input.Gamepads, RM.Help.Content, RM.Settings.Catalog,
@@ -286,7 +287,6 @@ begin
   FState := TMainState.Create;
   FControllers := TMainControllers.Create(Self);
   FormStyles := TFormStyles.Create(Application);
-  ChangeStyleBookColor(FormStyles.StyleBookWinUI3, ThemeAccentColor);
   inherited;
   ButtonHelpBack.StylesData['text.Margins.Left'] := 44;
   ComboBoxHelpPlatforms.ListBox.ScrollAnimation := TBehaviorBoolean.True;
@@ -984,6 +984,11 @@ end;
 procedure TFormMain.ButtonOpenClick(Sender: TObject);
 begin
   TMainControllers(FControllers).Session.ButtonOpenClick(Sender);
+end;
+
+procedure TFormMain.ButtonOpenOpticalDiscClick(Sender: TObject);
+begin
+  TMainControllers(FControllers).Session.ButtonOpenOpticalDiscClick(Sender);
 end;
 
 procedure TFormMain.OpenRom;

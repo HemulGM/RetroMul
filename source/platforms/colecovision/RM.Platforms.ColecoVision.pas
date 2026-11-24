@@ -25,16 +25,21 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads,
-  System.SysUtils, System.Classes, System.UITypes, Core.Emulation,
-  Core.Platforms, Core.Snapshots, Core.PlatformServices, CV.Cartridge,
-  Core.Platforms.ColecoVision.Adapter, RM.Platforms.ColecoVision.Input,
-  RM.Platforms.ColecoVision.Gamepads, RM.Platforms.ColecoVision.Settings,
-  RM.Settings.Catalog, RM.Platforms.Presentation, RM.Gamepad.Factory,
-  RM.Input.Runtime, RM.Keyboard.Input, RM.Session.Runtime, RM.Keyboard.Session,
-  RM.Window.Layout, RM.Keyboard.Window, RM.Settings.Runtime,
-  RM.Keyboard.Settings, RM.ControlsHelp.Content, RM.Settings.Callouts,
-  RM.Settings.Devices;
+  RM.Input.Gamepads, System.SysUtils, System.Classes, System.UITypes,
+  Core.Emulation, Core.Platforms, Core.Snapshots, Core.PlatformServices,
+  CV.Cartridge, Core.Platforms.ColecoVision.Adapter,
+  RM.Platforms.ColecoVision.Input, RM.Platforms.ColecoVision.Gamepads,
+  RM.Platforms.ColecoVision.Settings, RM.Settings.Catalog,
+  RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Input.Runtime,
+  RM.Keyboard.Input, RM.Session.Runtime, RM.Keyboard.Session, RM.Window.Layout,
+  RM.Keyboard.Window, RM.Settings.Runtime, RM.Keyboard.Settings,
+  RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices;
+
+const
+  PlatformIcon =
+    'M4,8 L92,8 L96,16 L96,74 L4,74 Z M12,16 L12,52 L40,52 L40,16 Z ' +
+    'M56,16 L56,52 L84,52 L84,16 Z M16,20 L36,20 L36,32 L16,32 Z ' +
+    'M60,20 L80,20 L80,32 L60,32 Z M12,60 L88,60 L88,66 L12,66 Z';
 
 class procedure TColecoVisionPlatform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
 begin
@@ -107,11 +112,6 @@ begin
 end;
 
 class procedure TColecoVisionPlatform.RegisterPlatform;
-const
-  // ColecoVision console silhouette with its recessed controller bays.
-  Icon = 'M4,8 L92,8 L96,16 L96,74 L4,74 Z M12,16 L12,52 L40,52 L40,16 Z ' +
-    'M56,16 L56,52 L84,52 L84,16 Z M16,20 L36,20 L36,32 L16,32 Z ' +
-    'M60,20 L80,20 L80,32 L60,32 Z M12,60 L88,60 L88,66 L12,66 Z';
 begin
   if FRegistered then
     Exit;
@@ -148,7 +148,7 @@ begin
     [TGamepadDeviceVariant.Create('superaction', TGamepadColecoSuperAction),
       TGamepadDeviceVariant.Create('driving', TGamepadColecoDriving),
       TGamepadDeviceVariant.Create('roller', TGamepadColecoRoller)]);
-  RegisterPlatformPresentation('colecovision', 'colecovision', Icon);
+  RegisterPlatformPresentation('colecovision', 'colecovision', PlatformIcon);
   var Definition := TPlatformInputDefinition.Create([TEmulatorButton.Up, TEmulatorButton.Down,
       TEmulatorButton.Left, TEmulatorButton.Right, TEmulatorButton.A, TEmulatorButton.B,
       TEmulatorButton.Start, TEmulatorButton.Select]);

@@ -175,7 +175,7 @@ type
     procedure ConfigurationChange(Sender: TObject);
     procedure UpdateConfigurationNotice;
     procedure MeasureConfigurationNotice;
-    procedure Heading(const Name, Caption: string; Emphasized: Boolean = True; TitleSize: Single = 20);
+    procedure Heading(const Name, Caption: string);
     procedure RenderGroup(Group: TSettingsGroup);
     procedure RenderField(Definition: TSettingsFieldDefinition);
     procedure RenderBlock(Definition: TSettingsBlockDefinition);
@@ -605,7 +605,7 @@ procedure TSettingsView.BuildVideoPreview;
 begin
   var PreviousGroup := FGroup;
   var PreviousDefinition := FContext.CurrentGroup;
-  FContext.Heading('GroupPreview', 'Preview', True, True);
+  FContext.Heading('GroupPreview', 'Preview', True);
   FPreviewGroup := FGroup;
   AddSettingsControl(FContext, 'Row160144', '160 × 144',
     'Preview of the selected palette and shader settings.', TSettingsRowKind.Preview,
@@ -1000,7 +1000,7 @@ begin
     end
     else if FCategory = SETTINGS_CATEGORY_LIBRARY then
     begin
-      Heading('GroupPlatformFolders', 'Platform ROM folders', False, 14);
+      Heading('GroupPlatformFolders', 'Platform ROM folders');
       FContext.AddAction('RowDetectRomFolders', 'Detect platform folders',
         'Choose a parent folder to fill the platform paths below.',
         'Detect automatically', DetectRomFoldersClick);
@@ -1287,9 +1287,9 @@ begin
     SaveInputBindings(FInput, FSession.Drafts[FPage]);
 end;
 
-procedure TSettingsView.Heading(const Name, Caption: string; Emphasized: Boolean; TitleSize: Single);
+procedure TSettingsView.Heading(const Name, Caption: string);
 begin
-  FContext.Heading(Name, Caption, Emphasized, False, TitleSize);
+  FContext.Heading(Name, Caption);
 end;
 
 procedure TSettingsView.RenderGroup(Group: TSettingsGroup);
@@ -1304,12 +1304,6 @@ begin
   View.Panel := Template.PanelSetting;
   View.Title := Template.LabelSettingTitle;
   View.Title.Text := Translate(Group.Caption);
-  View.Title.TextSettings.Font.Size := Group.TitleSize;
-  View.Title.StyledSettings := View.Title.StyledSettings - [TStyledSetting.Style];
-  if Group.Emphasized then
-    View.Title.TextSettings.Font.Style := [TFontStyle.fsBold]
-  else
-    View.Title.TextSettings.Font.Style := [];
   View.Panel.TagString := View.Title.Text;
   FGroup := View.Panel;
   if Group.Preview then
@@ -2316,7 +2310,7 @@ end;
 procedure TSettingsView.BuildPort(Port: Integer; const Caption: string);
 begin
   if FCategory <> SETTINGS_CATEGORY_CONTROLS then
-    Heading('GroupPort' + IntToStr(Port + 1), 'Port ' + IntToStr(Port + 1), Port < 2);
+    Heading('GroupPort' + IntToStr(Port + 1), 'Port ' + IntToStr(Port + 1));
   var Key := 'Port' + IntToStr(Port + 1);
   var FixedDevice := PlatformSettingsDevices(CurrentCoreId).FixedDevice(DeviceContext(Port, ''));
   if FixedDevice <> '' then

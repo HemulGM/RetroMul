@@ -22,12 +22,17 @@ type
     FChanged: TDCIRLChanged;
     FUser: Pointer;
     FLevel: Integer;
+    FCaptureMask, FCapturedNormal: Cardinal;
     procedure Update;
   public
     S: TDCInterruptState;
     constructor Create(Changed: TDCIRLChanged; User: Pointer);
     procedure Reset;
     procedure RaiseNormal(Bit: Integer);
+    procedure RaiseNormalMask(Mask: Cardinal);
+    // Capture selected notifications during a synchronous device operation.
+    procedure BeginNormalCapture(Mask: Cardinal);
+    function EndNormalCapture: Cardinal;
     procedure SetExternal(Bit: Integer; Active: Boolean);
     procedure RaiseError(Bit: Integer);
     function NormalStatus: Cardinal;
@@ -51,6 +56,8 @@ end;
 procedure TDCInterrupts.Reset;
 begin
   S := Default(TDCInterruptState);
+  FCaptureMask := 0;
+  FCapturedNormal := 0;
   FLevel := -1;
   Update;
 end;
@@ -84,8 +91,30 @@ end;
 
 procedure TDCInterrupts.RaiseNormal(Bit: Integer);
 begin
-  S.Normal := S.Normal or (Cardinal(1) shl Bit);
+  var Mask := Cardinal(1) shl Bit;
+  if (FCaptureMask and Mask) <> 0 then
+    FCapturedNormal := FCapturedNormal or Mask
+  else
+    RaiseNormalMask(Mask);
+end;
+
+procedure TDCInterrupts.RaiseNormalMask(Mask: Cardinal);
+begin
+  S.Normal := S.Normal or Mask;
   Update;
+end;
+
+procedure TDCInterrupts.BeginNormalCapture(Mask: Cardinal);
+begin
+  FCaptureMask := Mask;
+  FCapturedNormal := 0;
+end;
+
+function TDCInterrupts.EndNormalCapture: Cardinal;
+begin
+  Result := FCapturedNormal;
+  FCaptureMask := 0;
+  FCapturedNormal := 0;
 end;
 
 procedure TDCInterrupts.SetExternal(Bit: Integer; Active: Boolean);

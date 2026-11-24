@@ -34,7 +34,7 @@ type
   private
     FSuite: TJ2MESuite;
     FDefaultEncoding: string;
-    FStackAttack2, FSummerSki, FMarslander: Boolean;
+    FStackAttack2, FSummerSki, FMarslander, FAlonsoRacing: Boolean;
     FArmiesOfWarClass: TJVMClass;
     FExplicitInitialPaintClass: string;
     FEmptyGameURLTemplate, FSamsungVibrationMillis: Boolean;
@@ -134,7 +134,9 @@ type
     procedure ApplyKeyEvent(KeyCode: Integer; Pressed: Boolean; IgnoreExecutionPause: Boolean = False);
     function HasPendingCanvasHide: Boolean;
     function TakePausedCanvasHide(out Job: TJ2MEInvocation): Boolean;
-    function TakeDisplayEvent: TJ2MEInvocation;
+    function RaceCallbackCanvas(const Job: TJ2MEInvocation): TJVMObject;
+    function RaceCallbackDeferred(Canvas: TJVMObject): Boolean;
+    function TakeDisplayEvent(out Event: TJ2MEInvocation): Boolean;
     procedure CoalesceKeyEvents;
     procedure PollCustomKeyRepeats;
     procedure CancelPointer;
@@ -204,6 +206,8 @@ uses
 
 const
   DisplayClass = 'javax/microedition/lcdui/Display';
+  RunCanvasSerially = '$runSerially';
+  RaceCallbackDeadline = '$raceCallbackDeadline';
   RunFormSerially = '$runFormSerially';
   RunFormSeriallyDesc = '(Ljavax/microedition/lcdui/Form;Ljava/lang/Runnable;[Ljava/lang/Object;)V';
   CustomKeyInitialDelayMS = 400;
@@ -222,6 +226,7 @@ begin
   FExplicitInitialPaintClass := J2MECompatibilityExplicitInitialPaint(Suite);
   FEmptyGameURLTemplate := J2MECompatibilityEmptyGameURLTemplate(Suite);
   FStackAttack2 := J2MECompatibilityStackAttack2(Suite);
+  FAlonsoRacing := J2MECompatibilityAlonsoRacing(Suite);
   FPlatformName := J2MECompatibilityPlatform(Suite);
   FSummerSki := J2MECompatibilitySummerSki(Suite);
   FMarslander := J2MECompatibilityMarslander(Suite);
@@ -603,7 +608,7 @@ begin
   C.AddNative('numAlphaLevels', '()I');
   C.AddNative('numGrayLevels', '()I');
   C.AddNative('callSerially', '(Ljava/lang/Runnable;)V');
-  C.AddNative('$runSerially', '(Ljavax/microedition/lcdui/Canvas;Ljava/lang/Runnable;)V', True).Access :=
+  C.AddNative(RunCanvasSerially, '(Ljavax/microedition/lcdui/Canvas;Ljava/lang/Runnable;)V', True).Access :=
     JVM_ACC_PRIVATE or JVM_ACC_STATIC or JVM_ACC_NATIVE;
   C.AddNative(RunFormSerially, RunFormSeriallyDesc, True).Access :=
     JVM_ACC_PRIVATE or JVM_ACC_STATIC or JVM_ACC_NATIVE;
@@ -1005,7 +1010,7 @@ begin
     begin
       var Runnable := VM.GetObject(Arg(1).AsRef);
       if IsDisplayShown(FScreen) and FUI.IsCanvas(FScreen) and not WaitingForInitialPaint(VM.GetObject(FScreen)) then
-        QueueUI(C, '$runSerially', '(Ljavax/microedition/lcdui/Canvas;Ljava/lang/Runnable;)V',
+        QueueUI(C, RunCanvasSerially, '(Ljavax/microedition/lcdui/Canvas;Ljava/lang/Runnable;)V',
           [TJVMValue.Ref(FScreen), Arg(1)])
       else
       begin
@@ -1019,9 +1024,9 @@ begin
       end;
       Exit;
     end;
-    if (N = '$runSerially') or (N = RunFormSerially) then
+    if (N = RunCanvasSerially) or (N = RunFormSerially) then
     begin
-      if (N = '$runSerially') and not VM.TakeGuestResult(GuestResult) then
+      if (N = RunCanvasSerially) and not VM.TakeGuestResult(GuestResult) then
       begin
         // serviceRepaints waits for a paint started on a different guest
         // thread even while its callback has temporarily released the monitor.
@@ -1569,9 +1574,47 @@ begin
     (Length(Job.Arguments) = 2) and (Job.Arguments[1].AsInt = 0);
 end;
 
-function TJ2MERuntime.TakeDisplayEvent: TJ2MEInvocation;
+function TJ2MERuntime.RaceCallbackCanvas(const Job: TJ2MEInvocation): TJVMObject;
+begin
+  Result := nil;
+  if not FHost.FAlonsoRacing or (Job.ClassName <> DisplayClass) or (Job.Name <> RunCanvasSerially) or
+    (Length(Job.Arguments) <> 2) then
+    Exit;
+  var Screen := Job.Arguments[0].AsRef;
+  if (Screen = 0) or (Screen <> FHost.FScreen) or (Job.Arguments[1].AsRef <> Screen) then
+    Exit;
+  var Canvas := FVM.GetObject(Screen);
+  if J2MEAlonsoRaceInterval(Canvas) > 0 then
+    Result := Canvas;
+end;
+
+function TJ2MERuntime.RaceCallbackDeferred(Canvas: TJVMObject): Boolean;
+begin
+  var Deadline: TJVMValue;
+  Result := (Canvas <> nil) and Canvas.Fields.TryGetValue(RaceCallbackDeadline, Deadline) and
+    (FHost.MonotonicMillis < Deadline.AsLong);
+end;
+
+function TJ2MERuntime.TakeDisplayEvent(out Event: TJ2MEInvocation): Boolean;
 begin
   var Head := FEventQueue.Peek;
+  var RaceCanvas := RaceCallbackCanvas(Head);
+  if RaceCallbackDeferred(RaceCanvas) then
+  begin
+    if FEventQueue.Count = 1 then
+      Exit(False);
+    // Allow input through while keeping the next race update at the head.
+    FEventQueue.Dequeue;
+    Event := FEventQueue.Dequeue;
+    var Remaining := FEventQueue.Count;
+    FEventQueue.Enqueue(Head);
+    for var I := 1 to Remaining do
+      FEventQueue.Enqueue(FEventQueue.Dequeue);
+    Exit(True);
+  end;
+  if RaceCanvas <> nil then
+    RaceCanvas.Fields.AddOrSetValue(RaceCallbackDeadline,
+      TJVMValue.Long(FHost.MonotonicMillis + J2MEAlonsoRaceInterval(RaceCanvas)));
   if (Head.ClassName = DisplayClass) and (Head.Name = RunFormSerially) and (Length(Head.Arguments) = 3) then
   begin
     var Screen := Head.Arguments[0].AsRef;
@@ -1591,11 +1634,13 @@ begin
         for var J := 0 to High(Jobs) do
           if J <> I then
             FEventQueue.Enqueue(Jobs[J]);
-        Exit(Job);
+        Event := Job;
+        Exit(True);
       end;
     end;
   end;
-  Result := FEventQueue.Dequeue;
+  Event := FEventQueue.Dequeue;
+  Result := True;
 end;
 
 function TJ2MERuntime.HasPendingCanvasHide: Boolean;
@@ -1644,7 +1689,9 @@ begin
     Exit(HasPendingCanvasHide);
   Result := ((FState = TJ2MEState.Paused) and HasPendingCanvasHide) or FVM.HasRunnableWork or (FQueue.Count <> 0) or (FHost.FResumeRequested and not FHost.FLifecyclePaused);
   if FState <> TJ2MEState.Paused then
-    Result := Result or (FEventQueue.Count <> 0) or (FHost.FUIJobs.Count <> 0) or
+    Result := Result or (FEventQueue.Count > 1) or
+      ((FEventQueue.Count = 1) and not RaceCallbackDeferred(RaceCallbackCanvas(FEventQueue.Peek))) or
+      (FHost.FUIJobs.Count <> 0) or
       (FHost.FDisplayChanges.Count <> 0) or FHost.FNokiaSound.HasEvents;
 end;
 
@@ -1990,7 +2037,10 @@ begin
     if (FVM.ExecutionContextState(FEventContext) <> TJVMState.Running) and (FEventQueue.Count > 0) then
     begin
       if FHost.HasDisplayForeground then
-        Job := TakeDisplayEvent
+      begin
+        if not TakeDisplayEvent(Job) then
+          Exit;
+      end
       else if not TakePausedCanvasHide(Job) then
         Exit;
       try

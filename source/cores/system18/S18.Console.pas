@@ -3,10 +3,11 @@
 interface
 
 uses
-  System.SysUtils, S16.Console, S16.Video, S18.Video, S32.Sound, Core.Snapshots;
+  System.SysUtils, SegaArcade.Console, SegaArcade.Video, S18.Video, S32.Sound,
+  Core.Snapshots;
 
 type
-  TS18Console = class(TS16Console)
+  TS18Console = class(TSegaArcadeConsole)
   private
     FAudio: TS32Sound;
     FPorts: array[0..7] of Byte;
@@ -30,7 +31,7 @@ type
     procedure UpdateTrackballs;
     procedure UpdateGunPositions;
   protected
-    function CreateVideo: TS16Video; override;
+    function CreateVideo: TSegaArcadeVideo; override;
     procedure CreateAudio; override;
     procedure ResetAudio; override;
     procedure CommandAudio(Value: Byte); override;
@@ -39,6 +40,7 @@ type
     procedure EndAudioFrame; override;
     procedure RunAudio; override;
     procedure SerializeAudio(State: TStateArchive); override;
+    procedure SerializeBoardState(State: TStateArchive); override;
     procedure StartScanline(Line: Integer); override;
     procedure EndScanline(Line: Integer); override;
     function HasNVRAM: Boolean; override;
@@ -89,7 +91,7 @@ begin
   Result := TS18Video(Video);
 end;
 
-function TS18Console.CreateVideo: TS16Video;
+function TS18Console.CreateVideo: TSegaArcadeVideo;
 begin
   Result := TS18Video.Create(FCart['tiles'], FCart['sprites']);
 end;
@@ -659,6 +661,21 @@ end;
 procedure TS18Console.SerializeAudio(State: TStateArchive);
 begin
   FAudio.SerializeState(State);
+end;
+
+procedure TS18Console.SerializeBoardState(State: TStateArchive);
+var
+  UnusedMultiplier: array[0..1] of Word;
+  UnusedComparators: array[0..1, 0..15] of Word;
+  UnusedCompareHistory: array[0..1] of Integer;
+begin
+  // Earlier System 18 snapshots include the unused System 16 math registers.
+  FillChar(UnusedMultiplier, SizeOf(UnusedMultiplier), 0);
+  FillChar(UnusedComparators, SizeOf(UnusedComparators), 0);
+  FillChar(UnusedCompareHistory, SizeOf(UnusedCompareHistory), 0);
+  State.Field(UnusedMultiplier, SizeOf(UnusedMultiplier));
+  State.Field(UnusedComparators, SizeOf(UnusedComparators));
+  State.Field(UnusedCompareHistory, SizeOf(UnusedCompareHistory));
 end;
 
 procedure TS18Console.SerializeState(State: TStateArchive);

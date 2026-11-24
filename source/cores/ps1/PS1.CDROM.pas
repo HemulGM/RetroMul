@@ -118,6 +118,8 @@ type
     property Disc: TCDDisc read FDisc;
   end;
 
+function PS1HasUsableSubchannelQ(Disc: TCDDisc): Boolean;
+
 implementation
 
 const
@@ -267,23 +269,25 @@ begin
   FScheduler.Cancel(TPS1Event.CDROM);
 end;
 
+function PS1HasUsableSubchannelQ(Disc: TCDDisc): Boolean;
+begin
+  if (Disc = nil) or not Disc.HasSubchannelQ then
+    Exit(False);
+
+  // A subchannel file whose Q checksums mostly fail is ignored.
+  var Buffer: TBytes;
+  var Valid := 0;
+  for var Sample := 0 to 15 do
+    if Disc.ReadSubQ(Disc.LeadOut * Sample div 16, Buffer) then
+      Inc(Valid);
+  Result := Valid >= 12;
+end;
+
 procedure TPS1CDROM.SetDisc(Disc: TCDDisc);
 begin
   FDisc := Disc;
   FMotorOn := (FDisc <> nil) and not FShellOpen;
-  FStoredQ := False;
-  if FDisc = nil then
-    Exit;
-
-  if not FDisc.HasSubchannelQ then
-    Exit;
-
-  // A subchannel file whose Q checksums mostly fail is ignored.
-  var Valid := 0;
-  for var Sample := 0 to 15 do
-    if FDisc.ReadSubQ(FDisc.LeadOut * Sample div 16, FBuffer) then
-      Inc(Valid);
-  FStoredQ := Valid >= 12;
+  FStoredQ := PS1HasUsableSubchannelQ(Disc);
 end;
 
 function TPS1CDROM.MotorReady: Boolean;

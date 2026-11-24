@@ -8,7 +8,7 @@ uses
   FMX.Controls.Presentation, FMX.ListBox, FMXInput;
 
 type
-  TRetroDialogKind = (Information, Warning, Error, Confirmation, Loading, PlatformChoice);
+  TRetroDialogKind = (Information, Warning, Error, Confirmation, Loading, PlatformChoice, OpticalDriveChoice);
 
   TRetroDialogChoice = (Accept, Alternative, Cancel);
 
@@ -59,6 +59,8 @@ procedure ShowRetroConfirmation(Owner: TComponent; const Text: string; const OnR
 procedure ShowRetroChoice(Owner: TComponent; const Text: string; const OnResult: TProc<TRetroDialogChoice>; const AcceptText, AlternativeText, CancelText: string);
 
 procedure ShowRetroPlatformChoice(Owner: TComponent; const Text: string; const Platforms: TArray<string>; const OnResult: TProc<Integer>);
+
+procedure ShowRetroOpticalDriveChoice(Owner: TComponent; const Drives: TArray<string>; const OnResult: TProc<Integer>);
 
 procedure ShowRetroLoading(Owner: TComponent; const Text: string; const OnCancel: TProc);
 
@@ -329,6 +331,14 @@ begin
       'Continue', 'Cancel launch', '', nil, Platforms, OnResult);
 end;
 
+procedure ShowRetroOpticalDriveChoice(Owner: TComponent; const Drives: TArray<string>; const OnResult: TProc<Integer>);
+begin
+  var Host := FindHost(OwnerForm(Owner), True);
+  if Host <> nil then
+    Host.Enqueue(Owner, Translate('Select the drive containing the game disc.'), TRetroDialogKind.OpticalDriveChoice,
+      nil, 'Continue', 'Cancel', '', nil, Drives, OnResult);
+end;
+
 procedure ShowRetroLoading(Owner: TComponent; const Text: string; const OnCancel: TProc);
 begin
   var Host := FindHost(OwnerForm(Owner), True);
@@ -408,17 +418,20 @@ end;
 
 procedure TRetroDialog.Configure(const Text: string; Kind: TRetroDialogKind; const OnResult: TProc<Boolean>; const AcceptText, CancelText, AlternativeText: string; const OnAlternative: TProc);
 const
-  Titles: array[TRetroDialogKind] of string = ('Information', 'Warning', 'Error', 'Confirmation', 'Loading...', 'Choose target platform');
-  Symbols: array[TRetroDialogKind] of string = ('i', '!', '!', '?', '', '?');
+  Titles: array[TRetroDialogKind] of string = ('Information', 'Warning', 'Error', 'Confirmation', 'Loading...',
+    'Choose target platform', 'Open optical disc');
+  Symbols: array[TRetroDialogKind] of string = ('i', '!', '!', '?', '', '?', '?');
 begin
   FOnResult := OnResult;
   FOnAlternative := OnAlternative;
-  FConfirmation := Kind in [TRetroDialogKind.Confirmation, TRetroDialogKind.PlatformChoice];
-  LayoutPlatform.Visible := Kind = TRetroDialogKind.PlatformChoice;
+  LayoutPlatform.Visible := Kind in [TRetroDialogKind.PlatformChoice, TRetroDialogKind.OpticalDriveChoice];
+  FConfirmation := (Kind = TRetroDialogKind.Confirmation) or LayoutPlatform.Visible;
   ComboBoxPlatform.Items.Clear;
   ComboBoxPlatform.ItemIndex := -1;
   ComboBoxPlatform.OnChange := PlatformChanged;
   LabelPlatform.Text := Translate('Target platform');
+  if Kind = TRetroDialogKind.OpticalDriveChoice then
+    LabelPlatform.Text := Translate('Optical drive');
   ButtonAccept.Enabled := not LayoutPlatform.Visible;
   FLoading := Kind = TRetroDialogKind.Loading;
   FCustomActions := (AcceptText <> '') or (CancelText <> '');
@@ -859,7 +872,7 @@ begin
     begin
       Complete(False, True, True);
     end);
-  if FActive.Kind = TRetroDialogKind.PlatformChoice then
+  if FActive.Kind in [TRetroDialogKind.PlatformChoice, TRetroDialogKind.OpticalDriveChoice] then
     FDialog.ConfigurePlatforms(FActive.Platforms);
   FDialog.Visible := True;
   FDialog.BringToFront;

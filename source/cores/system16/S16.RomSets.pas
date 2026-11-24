@@ -3,40 +3,18 @@
 interface
 
 uses
-  System.SysUtils, Core.Archive.Container;
+  Core.Archive.Container, SegaArcade.RomSets;
 
 type
-  TS16MCUSimulation = (smNone, smToughTurf, smWonderBoy3);
+  TS16RomSet = TSegaArcadeRomSet;
 
-  TS16RomFile = record
-    Region, Name: string;
-    CRC: Cardinal;
-    Offset, Size, Stride, SourceOffset, FileSize: Integer;
-  end;
+function FindSystem16Rom(const Name: string; out RomSet: TS16RomSet): Boolean;
 
-  TS16Region = record
-    Name: string;
-    Size: Integer;
-  end;
-
-  // 0=16A, 1=5358 small, 2=5358, 3=5521, 4=5704, 5=5797.
-  TS16RomSet = record
-    Name, Parent, Title, Inputs, Unsupported: string;
-    Board, Rotation, Crypto: Integer;
-    MCU: Boolean; // Physical board has an 8751.
-    MCUSimulation: TS16MCUSimulation;
-    DIPs: array[0..1] of Byte;
-    Regions: TArray<TS16Region>;
-    Files: TArray<TS16RomFile>;
-    class function Parse(const Data: string): TS16RomSet; static;
-    class function FindIn(const Catalog: array of string; const Name: string; out RomSet: TS16RomSet): Boolean; static;
-    class function IdentifyIn(const Catalog: array of string; const Archive: IArchiveContainer; const Hint: string; out RomSet: TS16RomSet): Boolean; static;
-    class function Find(const Name: string; out RomSet: TS16RomSet): Boolean; static;
-    class function Identify(const Archive: IArchiveContainer; const Hint: string; out RomSet: TS16RomSet): Boolean; static;
-  end;
+function IdentifySystem16Rom(const Archive: IArchiveContainer; const Hint: string; out RomSet: TS16RomSet): Boolean;
 
 implementation
 
+// ROM boards: 0=16A, 1=5358 small, 2=5358, 3=5521, 4=5704, 5=5797.
 const
   SYSTEM16_SET_DATA: array[0..119] of string = (
     'bodyslam||0|0|Body Slam (8751 317-0015)|bodyslam||0,255,253,1,0|maincpu,262144;tiles,98304;sprites,262144;soundcpu,196608;upd7751,4096;upd7751data,131072;mcu,4096|maincpu,epr-10066' +
@@ -926,108 +904,14 @@ const
     '61.b10,899985841,1048576,131072,2,0,131072;sprites,opr-12142.a2,316901980,1310721,65536,2,0,65536;sprites,opr-12162.b11,4194762020,1310720,65536,2,0,65536;soundcpu,epr-12147.a10,32' +
     '77886983,0,32768,1,0,32768;soundcpu,mpr-12148.a11,4221206313,65536,131072,1,0,131072;soundcpu,mpr-12149.a12,3596712729,196608,131072,1,0,131072');
 
-class function TS16RomSet.Parse(const Data: string): TS16RomSet;
+function FindSystem16Rom(const Name: string; out RomSet: TS16RomSet): Boolean;
 begin
-  Result := Default(TS16RomSet);
-  var P := Data.Split(['|']);
-  Result.Name := P[0];
-  Result.Parent := P[1];
-  Result.Board := StrToInt(P[2]);
-  Result.Rotation := StrToInt(P[3]);
-  Result.Title := P[4];
-  Result.Inputs := P[5];
-  Result.Unsupported := P[6];
-  var Hardware := P[7].Split([',']);
-  Result.Crypto := StrToInt(Hardware[0]);
-  Result.MCU := Hardware[3] = '1';
-  Result.MCUSimulation := TS16MCUSimulation(StrToInt(Hardware[4]));
-  Result.DIPs[0] := Byte(StrToInt(Hardware[1]));
-  Result.DIPs[1] := Byte(StrToInt(Hardware[2]));
-  var R := P[8].Split([';']);
-  SetLength(Result.Regions, Length(R));
-  for var i := 0 to High(R) do
-  begin
-    var V := R[i].Split([',']);
-    Result.Regions[i].Name := V[0];
-    Result.Regions[i].Size := StrToInt(V[1]);
-  end;
-  R := P[9].Split([';']);
-  SetLength(Result.Files, Length(R));
-  for var i := 0 to High(R) do
-  begin
-    var V := R[i].Split([',']);
-    Result.Files[i].Region := V[0];
-    Result.Files[i].Name := V[1];
-    Result.Files[i].CRC := StrToUInt(V[2]);
-    Result.Files[i].Offset := StrToInt(V[3]);
-    Result.Files[i].Size := StrToInt(V[4]);
-    Result.Files[i].Stride := StrToInt(V[5]);
-    Result.Files[i].SourceOffset := StrToInt(V[6]);
-    Result.Files[i].FileSize := StrToInt(V[7]);
-  end;
+  Result := TSegaArcadeRomSet.FindIn(SYSTEM16_SET_DATA, Name, RomSet);
 end;
 
-class function TS16RomSet.Find(const Name: string; out RomSet: TS16RomSet): Boolean;
+function IdentifySystem16Rom(const Archive: IArchiveContainer; const Hint: string; out RomSet: TS16RomSet): Boolean;
 begin
-  Result := FindIn(SYSTEM16_SET_DATA, Name, RomSet);
-end;
-
-class function TS16RomSet.FindIn(const Catalog: array of string; const Name: string; out RomSet: TS16RomSet): Boolean;
-begin
-  for var Data in Catalog do
-    if SameText(Data.Substring(0, Data.IndexOf('|')), Name) then
-    begin
-      RomSet := Parse(Data);
-      Exit(True);
-    end;
-  RomSet := Default(TS16RomSet);
-  Result := False;
-end;
-
-class function TS16RomSet.Identify(const Archive: IArchiveContainer; const Hint: string; out RomSet: TS16RomSet): Boolean;
-begin
-  Result := IdentifyIn(SYSTEM16_SET_DATA, Archive, Hint, RomSet);
-end;
-
-class function TS16RomSet.IdentifyIn(const Catalog: array of string; const Archive: IArchiveContainer; const Hint: string; out RomSet: TS16RomSet): Boolean;
-begin
-  Result := False;
-  RomSet := Default(TS16RomSet);
-  if Archive = nil then
-    Exit;
-  var Name := ChangeFileExt(ExtractFileName(Hint.Replace('/', PathDelim)), '');
-  var Best: Int64 := -1;
-  for var Data in Catalog do
-  begin
-    var Candidate := Parse(Data);
-    var Complete := True;
-    var Count := 0;
-    for var F in Candidate.Files do
-      if F.Region = 'maincpu' then
-      begin
-        Inc(Count);
-        if Archive.FindCRC(F.CRC) < 0 then
-          Complete := False;
-      end;
-    if Complete and (Count > 0) then
-    begin
-      var Score: Int64 := 0;
-      for var F in Candidate.Files do
-        if Archive.FindCRC(F.CRC) >= 0 then
-          Inc(Score, F.Size);
-      if SameText(Candidate.Name, Name) then
-        Inc(Score, Int64(1) shl 48);
-      if Score > Best then
-      begin
-        Best := Score;
-        RomSet := Candidate;
-      end;
-    end;
-  end;
-  if Best >= 0 then
-    Exit(True);
-  // A named split or incomplete set gets a precise missing-ROM diagnostic.
-  Result := FindIn(Catalog, Name, RomSet);
+  Result := TSegaArcadeRomSet.IdentifyIn(SYSTEM16_SET_DATA, Archive, Hint, RomSet);
 end;
 
 end.

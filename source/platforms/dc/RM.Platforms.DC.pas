@@ -33,17 +33,23 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads,
-  RM.Settings.Catalog, Core.CD.Disc, Core.PlatformServices, System.StrUtils,
-  Core.Emulation, Core.Platforms, Core.Platforms.DC.Adapter, Core.Snapshots,
-  DC.ELF, RM.Platforms.DC.Settings, RM.Platforms.Presentation,
-  RM.Platforms.DC.Icons, RM.Gamepad.Factory, RM.Platforms.DC.Gamepads,
-  RM.Input.Runtime, RM.Platforms.DC.Runtime, RM.Session.Runtime,
-  RM.Window.Layout, RM.Settings.Runtime, RM.ControlsHelp.Content,
-  RM.Platforms.DC.Help, RM.Settings.Callouts, RM.Settings.Devices,
-  RM.Platforms.DC.Devices, System.Classes;
+  RM.Input.Gamepads, RM.Settings.Catalog, Core.CD.Disc, Core.PlatformServices,
+  System.StrUtils, Core.Emulation, Core.Platforms, Core.Platforms.DC.Adapter,
+  Core.Snapshots, DC.ELF, RM.Platforms.DC.Settings, RM.Platforms.Presentation,
+  RM.Gamepad.Factory, RM.Platforms.DC.Gamepads, RM.Input.Runtime,
+  RM.Platforms.DC.Runtime, RM.Session.Runtime, RM.Window.Layout,
+  RM.Settings.Runtime, RM.ControlsHelp.Content, RM.Platforms.DC.Help,
+  RM.Settings.Callouts, RM.Settings.Devices, RM.Platforms.DC.Devices,
+  System.Classes;
 
 const
+  PlatformIcon =
+    'M10,12 L54,12 C57.3,12 60,14.7 60,18 L60,50 C60,53.3 57.3,56 54,56 L10,56 C6.7,56 4,53.3 4,50 L4,18 ' +
+    'C4,14.7 6.7,12 10,12 Z M32,16 C24.27,16 18,22.27 18,30 C18,37.73 24.27,44 32,44 C39.73,44 46,37.73 46,30 ' +
+    'C46,22.27 39.73,16 32,16 Z M32,20 C37.52,20 42,24.48 42,30 C42,35.52 37.52,40 32,40 C26.48,40 22,35.52 22,30 ' +
+    'C22,24.48 26.48,20 32,20 Z M32,27 C30.34,27 29,28.34 29,30 C29,31.66 30.34,33 32,33 C33.66,33 35,31.66 35,30 ' +
+    'C35,28.34 33.66,27 32,27 Z M10,48 L10,52 L17,52 L17,48 Z M20,48 L20,52 L27,52 L27,48 Z M37,48 L37,52 L44,52 ' +
+    'L44,48 Z M47,48 L47,52 L54,52 L54,48 Z ';
   DC_IMAGE_MAX_SIZE = 64 * 1024 * 1024;
 
 class procedure TDCPlatform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
@@ -149,8 +155,8 @@ end;
 
 class procedure TDCPlatform.RegisterRuntimeServices;
 begin
-  var Policy := TSnapshotPolicy.Create(2);
-  Policy.AcceptedVersions := [1];
+  var Policy := TSnapshotPolicy.Create(4);
+  Policy.AcceptedVersions := [1, 2, 3];
   RegisterSnapshotPolicy(ROM_CORE_ID_DC, Policy);
   var Service := Default(TPlatformServices);
   Service.LibraryFeatures := [TLibraryFeature.Playlists, TLibraryFeature.CueTracks] + [TLibraryFeature.GdiTracks];
@@ -223,7 +229,7 @@ begin
   RegisterPlatformInputHandler('dc', TDCInputHandler);
   RegisterInput;
   RegisterPlatformGamepads('dc', TGamepadDCStandart, []);
-  RegisterPlatformPresentation('dc', 'dc', PlatformIconDC);
+  RegisterPlatformPresentation('dc', 'dc', PlatformIcon);
 end;
 
 class procedure TDCPlatform.RegisterPlatform;

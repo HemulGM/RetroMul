@@ -6,9 +6,9 @@ uses
   System.UITypes, Core.Snapshots, System.Diagnostics, System.Hash,
   System.SysUtils, System.Classes, System.IniFiles, System.SyncObjs,
   System.Generics.Collections, Core.Storage, Core.Emulation, J2ME.Suite,
-  J2ME.Runtime, Core.Platforms.J2ME.Playback, Core.Bluetooth.Types,
-  Core.Messaging.Types, J2ME.Device, J2ME.Screen, J2ME.Display, Core.RomMetadata,
-  J2ME.Input, Core.Input.Touch, J2ME.Sensor;
+  J2ME.Runtime, Core.Platforms.J2ME.Playback, Core.Emulation.Bluetooth,
+  Core.Bluetooth.Types, Core.Messaging.Types, J2ME.Device, J2ME.Screen,
+  J2ME.Display, Core.RomMetadata, J2ME.Input, Core.Input.Touch, J2ME.Sensor;
 
 type
   TJ2MEConfig = class(TEmulatorConfigBase)
@@ -711,7 +711,7 @@ end;
 
 function TJ2MECoreAdapter.GetGameActions: TArray<TEmulationGameAction>;
 begin
-  SetLength(Result, 1);
+  Result := [Default(TEmulationGameAction)];
   Result[0].Id := 'rotate-screen';
   Result[0].Caption := 'Rotate screen';
   Result[0].Enabled := True;

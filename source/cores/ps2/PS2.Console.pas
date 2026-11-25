@@ -1167,16 +1167,12 @@ end;
 
 // The VU1 domain's earliest event, at its time.
 procedure TPS2Console.RunDomainEvent;
+var
+  Event: TPS2Event;
+  At: Int64;
 begin
-  var Event := TPS2Event.DMAC;
-  var At := DomainScheduler.Due(TPS2Event.DMAC);
-  for var E in [TPS2Event.GIF, TPS2Event.VIF1] do
-    if DomainScheduler.Due(E) < At then
-    begin
-      Event := E;
-      At := DomainScheduler.Due(E);
-    end;
-  DomainScheduler.Cancel(Event);
+  if not DomainScheduler.TakeNext(Event, At) then
+    Exit;
   VU1Domain.EnterEvent(At);
   try
     case Event of

@@ -12,9 +12,9 @@ uses
   RM.Platforms.DC, RM.Platforms.GameWatch, RM.Platforms.GB, RM.Platforms.NDS,
   RM.Platforms.GBA, RM.Platforms.GBC, RM.Platforms.MD, RM.Platforms.MSX,
   RM.Platforms.N64, RM.Platforms.NeoGeo, RM.Platforms.NES, RM.Platforms.WS,
-  RM.Platforms.NGP, RM.Platforms.PCE, RM.Platforms.PS1, RM.Platforms.PS2, RM.Platforms.PSP,
-  RM.Platforms.Saturn, RM.Platforms.SG1000, RM.Platforms.SMS, RM.Platforms.SNES,
-  RM.Platforms.ZX, RM.Platforms.ColecoVision;
+  RM.Platforms.NGP, RM.Platforms.PCE, RM.Platforms.PS1, RM.Platforms.PS2,
+  RM.Platforms.PSP, RM.Platforms.Saturn, RM.Platforms.SG1000, RM.Platforms.SMS,
+  RM.Platforms.SNES, RM.Platforms.ZX, RM.Platforms.ColecoVision;
 
 initialization
   TFlashPlatform.RegisterPlatform;

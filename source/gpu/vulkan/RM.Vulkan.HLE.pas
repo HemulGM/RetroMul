@@ -2227,6 +2227,12 @@ begin
     Inc(FStats.Flushes);
     if FTextures.Count > MaxTextures then
     begin
+      // Recycled images have a bounded pool. Keeping the usable cache full
+      // moves only the excess images into that pool, avoiding bulk eviction
+      // followed by fresh allocations when those textures are used again.
+      var Retained := MaxTextures;
+      if not FRecycleActive then
+        Retained := MaxTextures * 3 div 4;
       var List := FTextures.Values.ToArray;
       TArray.Sort<TVulkanHLETexture>(
         List,
@@ -2236,7 +2242,7 @@ begin
           Result := CompareValue(A.LastUse, B.LastUse);
         end)
       );
-      for var I := 0 to Length(List) - MaxTextures * 3 div 4 - 1 do
+      for var I := 0 to Length(List) - Retained - 1 do
       begin
         FTextures.Remove(List[I].Key);
         DestroyTexture(List[I]);

@@ -401,7 +401,7 @@ type
     function NewTarget: TVulkanHLETarget; override;
     procedure InitTarget(T: TVulkanHLETarget); override;
     function ReuseTarget(T: TVulkanHLETarget; Width, Height: Integer): TVulkanHLETarget; override;
-    procedure ForgetTarget(T: TPS2HLETarget);
+    procedure ForgetTarget(T: TPS2HLETarget; Replacement: TPS2HLETarget = nil);
     procedure DestroyTarget(T: TVulkanHLETarget); override;
     procedure LoadTarget(T: TVulkanHLETarget); override;
     function PlanPack(T: TPS2HLETarget; X, Y, W, H: Integer; out Bytes: Int64): Boolean;
@@ -1430,7 +1430,7 @@ begin
   CheckVulkan(FAPI.vkCreateFramebuffer(FDevice, @Info, nil, @T.BlendFramebuffer), 'vkCreateFramebuffer');
 end;
 
-procedure TPS2GSVulkanHLE.ForgetTarget(T: TPS2HLETarget);
+procedure TPS2GSVulkanHLE.ForgetTarget(T: TPS2HLETarget; Replacement: TPS2HLETarget);
 begin
   if FScale > 1 then
   begin
@@ -1447,7 +1447,7 @@ begin
         FPageOwners[I].Target := nil;
     for var SlotId := 0 to High(FImageOwners) do
       if FImageOwners[SlotId] = T then
-        FImageOwners[SlotId] := nil;
+        FImageOwners[SlotId] := Replacement;
   end;
   if T.InActiveTargets then
     for var I := 0 to FActiveCount - 1 do
@@ -1474,12 +1474,14 @@ begin
   EndPass;
   ImageBarrier;
   var Replacement := TPS2HLETarget(NewTarget);
-  ForgetTarget(Old);
   Replacement.Color := T.Color;
   Replacement.Depth := T.Depth;
   Replacement.Framebuffer := T.Framebuffer;
   Replacement.BlendSet := Old.BlendSet;
   Replacement.BlendFramebuffer := Old.BlendFramebuffer;
+  // The upload descriptor still refers to the same image view and can be
+  // in flight. Carry its slot with the image instead of rebinding it.
+  ForgetTarget(Old, Replacement);
   Inc(FTargetReuses);
   Result := Replacement;
 end;

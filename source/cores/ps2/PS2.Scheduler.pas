@@ -59,7 +59,12 @@ type
   private
     FDue: array[TPS2Event] of Int64;
     FNextDue: Int64;
+    FNextEvent: TPS2Event;
+    // Empty slots outside this range are never needed to find the next event.
+    // The VU1 scheduler normally uses only the DMAC/GIF/VIF1 slots.
+    FFirstSlot, FLastSlot: Integer;
     procedure UpdateNext;
+    procedure RebuildNext;
   public
     // Advanced by the EE and by stalls; never decreases.
     Now: Int64;
@@ -74,6 +79,8 @@ type
     procedure Cancel(Event: TPS2Event);
     function Due(Event: TPS2Event): Int64; inline;
     function Pending(Event: TPS2Event): Boolean; inline;
+    // Earliest pending event, also when the caller owns a separate clock.
+    function TakeNext(out Event: TPS2Event; out At: Int64): Boolean;
     // Earliest due event not later than Now, in (time, declaration) order.
     function TakeDue(out Event: TPS2Event; out At: Int64): Boolean;
     procedure SerializeState(State: TStateArchive);
@@ -97,17 +104,39 @@ begin
   for var E := Low(TPS2Event) to High(TPS2Event) do
     FDue[E] := PS2Never;
   FNextDue := PS2Never;
+  FNextEvent := Low(TPS2Event);
+  FFirstSlot := Ord(High(TPS2Event)) + 1;
+  FLastSlot := Ord(Low(TPS2Event)) - 1;
 end;
 
 procedure TPS2Scheduler.UpdateNext;
 begin
   var Next := PS2Never;
-  for var E := Low(TPS2Event) to High(TPS2Event) do
+  var Event := Low(TPS2Event);
+  for var Slot := FFirstSlot to FLastSlot do
+  begin
+    var E := TPS2Event(Slot);
     if FDue[E] < Next then
+    begin
       Next := FDue[E];
+      Event := E;
+    end;
+  end;
   FNextDue := Next;
+  FNextEvent := Event;
   if Next < Deadline then
     Deadline := Next;
+end;
+
+procedure TPS2Scheduler.RebuildNext;
+begin
+  FFirstSlot := Ord(Low(TPS2Event));
+  FLastSlot := Ord(High(TPS2Event));
+  while (FFirstSlot <= FLastSlot) and (FDue[TPS2Event(FFirstSlot)] = PS2Never) do
+    Inc(FFirstSlot);
+  while (FFirstSlot <= FLastSlot) and (FDue[TPS2Event(FLastSlot)] = PS2Never) do
+    Dec(FLastSlot);
+  UpdateNext;
 end;
 
 procedure TPS2Scheduler.Schedule(Event: TPS2Event; At: Int64);
@@ -119,15 +148,26 @@ end;
 
 procedure TPS2Scheduler.ScheduleAt(Event: TPS2Event; At: Int64);
 begin
-  var Old := FDue[Event];
+  if At = PS2Never then
+  begin
+    Cancel(Event);
+    Exit;
+  end;
+  var Slot := Ord(Event);
+  if Slot < FFirstSlot then
+    FFirstSlot := Slot;
+  if Slot > FLastSlot then
+    FLastSlot := Slot;
   FDue[Event] := At;
   if At <= FNextDue then
   begin
+    if (At < FNextDue) or (Event < FNextEvent) then
+      FNextEvent := Event;
     FNextDue := At;
     if At < Deadline then
       Deadline := At;
   end
-  else if Old = FNextDue then
+  else if Event = FNextEvent then
     UpdateNext;
 end;
 
@@ -135,9 +175,8 @@ procedure TPS2Scheduler.Cancel(Event: TPS2Event);
 begin
   if FDue[Event] = PS2Never then
     Exit;
-  var Old := FDue[Event];
   FDue[Event] := PS2Never;
-  if Old = FNextDue then
+  if Event = FNextEvent then
     UpdateNext;
 end;
 
@@ -151,24 +190,25 @@ begin
   Result := FDue[Event] <> PS2Never;
 end;
 
+function TPS2Scheduler.TakeNext(out Event: TPS2Event; out At: Int64): Boolean;
+begin
+  Event := FNextEvent;
+  At := FNextDue;
+  Result := At <> PS2Never;
+  if Result then
+  begin
+    FDue[Event] := PS2Never;
+    UpdateNext;
+  end;
+end;
+
 function TPS2Scheduler.TakeDue(out Event: TPS2Event; out At: Int64): Boolean;
 begin
-  Result := False;
+  if FNextDue <= Now then
+    Exit(TakeNext(Event, At));
   Event := Low(TPS2Event);
   At := PS2Never;
-  if FNextDue > Now then
-    Exit;
-  for var E := Low(TPS2Event) to High(TPS2Event) do
-    if FDue[E] < At then
-    begin
-      At := FDue[E];
-      Event := E;
-    end;
-  if At > Now then
-    Exit;
-  FDue[Event] := PS2Never;
-  UpdateNext;
-  Result := True;
+  Result := False;
 end;
 
 procedure TPS2Scheduler.Save(out S: TPS2SchedulerSaved);
@@ -182,7 +222,8 @@ end;
 procedure TPS2Scheduler.Restore(const S: TPS2SchedulerSaved);
 begin
   Move(S.Due, FDue, SizeOf(FDue));
-  FNextDue := S.NextDue;
+  // The event and scan bounds are derived from the saved slots.
+  RebuildNext;
   Now := S.Now;
   Deadline := S.Deadline;
 end;
@@ -196,7 +237,7 @@ begin
     if Now < 0 then
       raise EReadError.Create('PS2 snapshot scheduler time');
     Deadline := Now;
-    UpdateNext;
+    RebuildNext;
   end;
 end;
 

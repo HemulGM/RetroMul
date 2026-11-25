@@ -663,6 +663,9 @@ framebuffers and immutable blend descriptor to a new target of the same size
 at the renderer's current resolution. A queue barrier orders the old accesses
 before the new target loads its own GS memory. The guest target identity and
 its coherence state are reset each time.
+The compute upload descriptor follows its image when the target is reused.
+The texture cache evicts only entries over its limit so that the bounded
+image recycling pool can retain more of the images used again soon.
 
 At 1× and 2×, a page-aligned PSMCT32 target one page row tall holds
 only the 8 KiB pages covered by its dirty rectangle. Adjacent targets can

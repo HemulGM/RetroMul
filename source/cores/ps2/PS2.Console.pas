@@ -95,6 +95,9 @@ type
     // The VU1 domain ahead of the EE on a thread while channel 1 runs (off
     // with PS2_VU1_THREAD=0).
     FAheadThread: TPS2VU1Thread;
+    // Host scheduling only: pause speculation after an expensive JIT replay.
+    FAheadAdaptive: Boolean;
+    FAheadRetryAt: Int64;
     // Running ahead: views the domain thread posts (the EE side keeps the
     // one at FViewDone, the last up to its time).
     FViews: TArray<TPS2DomainView>;
@@ -254,6 +257,8 @@ const
   // SPU2 samples computed together, and their EE cycles.
   SPU2Batch = 32;
   SPU2BatchCycles = SPU2Batch * (PS2EEClock div PS2SPU2Rate);
+  VU1ReplayMinPairs = 65536;
+  VU1ReplayCooldown = Int64(PS2EEClock);
 
 { TPS2Console }
 
@@ -301,8 +306,10 @@ begin
   GIF.Clock := @VU1Domain.Now;
   // Speculative execution restores the guest's exact host floating-point state.
 {$IF DEFINED(MSWINDOWS) AND DEFINED(CPUX64)}
-  if GetEnvironmentVariable('PS2_VU1_THREAD') <> '0' then
+  var AheadMode := GetEnvironmentVariable('PS2_VU1_THREAD');
+  if AheadMode <> '0' then
   begin
+    FAheadAdaptive := AheadMode <> '1';
     GIF.DeferWork := True;
     GIF.CommitClock := @Scheduler.Now;
     GIF.OnRequest :=
@@ -692,6 +699,7 @@ begin
   // (The thread works on what the reset replaces.)
   if (FAheadThread <> nil) and VU1Domain.Ahead then
     StopAhead;
+  FAheadRetryAt := 0;
   Scheduler.Reset;
   DomainScheduler.Reset;
   VU1Domain.Reset;
@@ -1216,6 +1224,7 @@ begin
   Result :=
     (FAheadThread <> nil)
     and not VU1Domain.Ahead
+    and ((Scheduler.Now >= FAheadRetryAt) or not VU1.Core.UseJit)
     and (VU1Domain.Depth = 0)
     and ((DMAC.Ch[DMAVIF1].CHCR and CHCRSTR) <> 0)
     and ((DMAC.Ch[DMAVIF1].CHCR and CHCRDir) <> 0)
@@ -1264,13 +1273,24 @@ begin
     if Failure = '' then
     begin
       var Applied := Scheduler.Now;
-      if FAheadThread.ConflictAt <= Applied then
+      var Conflict := FAheadThread.ConflictAt <= Applied;
+      if Conflict then
       begin
         Applied := FAheadThread.ConflictAt - 1;
       end;
       if FAheadThread.Last > Applied then
       begin
+        var InitialPairs := FCheckpoint.VU1.Core.Executed;
+        var SpeculativePairs := VU1.Core.Executed - InitialPairs;
         RollBack(Applied);
+        // Repeated conflicts can make the JIT run the same long VU1 program
+        // twice. Let the EE run it inline before probing for overlap again.
+        if Conflict and FAheadAdaptive and VU1.Core.UseJit then
+        begin
+          var ReplayedPairs := VU1.Core.Executed - InitialPairs;
+          if (ReplayedPairs >= VU1ReplayMinPairs) and (ReplayedPairs >= SpeculativePairs div 2) then
+            FAheadRetryAt := Scheduler.Now + VU1ReplayCooldown;
+        end;
       end;
       Sound := True;
     end;
@@ -1917,6 +1937,7 @@ begin
   else
   begin
     // (The domain caught up with the EE when the snapshot was taken.)
+    FAheadRetryAt := 0;
     VU1Domain.Now := Scheduler.Now;
     DomainScheduler.Reset;
     DomainScheduler.ScheduleAt(TPS2Event.VIF1, Scheduler.Due(TPS2Event.VIF1));

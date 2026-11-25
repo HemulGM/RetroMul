@@ -14,3 +14,4 @@ const
   FlagFBA: Cardinal = 8;
   FlagAlpha1: Cardinal = 16;
   FlagBlend: Cardinal = 32;
+  FlagCompactTexture: Cardinal = 512;

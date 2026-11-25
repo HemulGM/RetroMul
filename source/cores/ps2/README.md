@@ -374,6 +374,8 @@ queues, register commits, VI arithmetic, branches, memory operations and
 CLIP flag reads. Upper ADD/SUB/MUL/MADD/MSUB and cross products call the exact
 four-field PS2 SIMD routines directly; uncommon operations retain interpreter
 helpers. XGKICK still uses the shared packet reader with its original timing.
+The native path skips the reader until the next quadword is due and keeps
+the original callback boundaries when a packet can finish.
 Payload quadwords already due can be copied in runs up to the next tag,
 packet end or RAM wrap; stores and callbacks retain their observation cycles.
 The JIT test compares full packets and callback times with the original
@@ -652,6 +654,37 @@ consumes outputs in guest cycle order. Reads of shared memory are validated
 before acceptance; a conflict restores the domain checkpoint and replays the
 affected work. `PS2_VU1_THREAD=0` selects the same-thread path. Save states
 still contain the accepted guest state, not host thread or Vulkan state.
+With the VU1 JIT active, a shared-memory conflict that repeats a large
+portion of a speculative run temporarily schedules VU1 on the EE thread.
+`PS2_VU1_THREAD=1` forces speculative scheduling for comparison.
+
+A clean render target evicted from the HLE cache can hand its Vulkan images,
+framebuffers and immutable blend descriptor to a new target of the same size
+at the renderer's current resolution. A queue barrier orders the old accesses
+before the new target loads its own GS memory. The guest target identity and
+its coherence state are reset each time.
+
+At 1× and 2×, a page-aligned PSMCT32 target one page row tall holds
+only the 8 KiB pages covered by its dirty rectangle. Adjacent targets can
+remain dirty on the GPU while they draw to disjoint pages. Expanding a stale
+target into another page reloads the guest contents before drawing there.
+When all cache entries are dirty, their stores are grouped before an entry
+is recycled.
+
+With increased internal resolution, reading a texture from dirty GS pages
+resolves the targets that cover those pages. Other targets stay on the GPU.
+Texture watches remain valid across a partial resolve when none of the source
+pages were stored. Texture footprints with full page rows mark ranges of
+blocks together, including unaligned bases and GS memory wrap. Scaled CPU
+readback waits for its submission's fence, which also covers earlier work on
+the same queue. Native-resolution draws skip the ownership tracking used for
+scaled presentation.
+
+An unscaled, single-level PSMT8 texture with one GS page of pitch can have
+several logical page coordinates for the same physical page. The renderer
+decodes those pages in a 128-texel-wide image and maps the logical coordinates
+when fetching texels. Clamp, repeat and linear filtering still use the
+original texture dimensions.
 
 An attached screen consumes scaled fields in order. When the display queue
 fills, the emulation worker waits before running the next field; a detached

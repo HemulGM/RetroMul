@@ -350,6 +350,7 @@ stdcall
     procedure ImageBarrier;
     // Transfer and shader writes before are visible to the host after.
     procedure HostReadBarrier;
+    procedure SubmitReadback;
     procedure Submit;
     procedure WaitAll;
     // Room for Bytes in the slot's staging buffer (submitting it when full).
@@ -386,10 +387,13 @@ stdcall
     // Targets.
     // The target of Stride x NeedHeight pixels at Addr in Format: a new one
     // MinHeight tall at least (twice as tall when it grows), MaxHeight at most.
-    function FindTarget(Addr, Format, Stride, PixelBytes: Cardinal; NeedHeight, MinHeight, MaxHeight: Integer): TVulkanHLETarget;
+    function FindTarget(Addr, Format, Stride, PixelBytes: Cardinal; NeedHeight, MinHeight, MaxHeight: Integer; FlushOnFull: Boolean = False): TVulkanHLETarget;
     function NewTarget: TVulkanHLETarget; virtual;
     // A new target has its images and framebuffer.
     procedure InitTarget(T: TVulkanHLETarget); virtual;
+    // Optional: replace a clean victim with a new logical target that owns
+    // its GPU objects. The subclass orders reuse against earlier commands.
+    function ReuseTarget(T: TVulkanHLETarget; Width, Height: Integer): TVulkanHLETarget; virtual;
     procedure DestroyTarget(T: TVulkanHLETarget); virtual;
     // Console memory's surface into the images, each pixel as a block of the
     // scale's size.
@@ -424,6 +428,8 @@ stdcall
     function FindTexture(Key: UInt64): TVulkanHLETexture;
     // A new texture's size, levels and scale (ScaleFor, or 1).
     procedure DescribeTexture(Request: Pointer; out Width, Height, Levels, Scale: Integer); virtual; abstract;
+    // A subclass can prove older verification is still valid for this request.
+    function TextureVerified(T: TVulkanHLETexture): Boolean; virtual;
     // The texture's source bytes are still what console memory holds (SameSource).
     function TextureMatches(T: TVulkanHLETexture; Request: Pointer): Boolean; virtual; abstract;
     // The texture's levels decoded and uploaded (KeepSource, LevelTexels,
@@ -1336,6 +1342,16 @@ begin
   FSlot := (FSlot + 1) mod Length(FSlots);
 end;
 
+procedure TVulkanHLERenderer.SubmitReadback;
+begin
+  // Completion of this submission also covers earlier work on this queue.
+  // Other slots can reset their signaled fences when they are next reused.
+  var Commands := Slot.Cmd;
+  HostReadBarrier;
+  Submit;
+  Commands.Wait;
+end;
+
 procedure TVulkanHLERenderer.WaitAll;
 begin
   Submit;
@@ -1482,11 +1498,22 @@ end;
 
 { Targets }
 
-function TVulkanHLERenderer.FindTarget(Addr, Format, Stride, PixelBytes: Cardinal; NeedHeight, MinHeight, MaxHeight: Integer): TVulkanHLETarget;
+function TVulkanHLERenderer.FindTarget(Addr, Format, Stride, PixelBytes: Cardinal; NeedHeight, MinHeight, MaxHeight: Integer; FlushOnFull: Boolean): TVulkanHLETarget;
 var
   Info: VkFramebufferCreateInfo;
   Views: array[0..1] of VkImageView;
+
+  function OldestClean: TVulkanHLETarget;
+  begin
+    Result := nil;
+    for var T in FTargets do
+      if not T.Dirty and (T <> FTarget) and ((Result = nil) or (T.LastUse < Result.LastUse)) and
+        (not FlushOnFull or not TargetNewer(T)) then
+        Result := T;
+  end;
+
 begin
+  Result := nil;
   var Old: TVulkanHLETarget := nil;
   for var T in FTargets do
     if (T.Addr = Addr) and (T.Format = Format) and (T.Stride = Stride) then
@@ -1513,18 +1540,32 @@ begin
   else if FTargets.Count >= HLEMaxTargets then
   begin
     // The longest unused target that console memory holds in full goes.
-    var Oldest: TVulkanHLETarget := nil;
-    for var T in FTargets do
-      if not T.Dirty and (T <> FTarget) and ((Oldest = nil) or (T.LastUse < Oldest.LastUse)) then
-        Oldest := T;
+    var Oldest := OldestClean;
+    if (Oldest = nil) and FlushOnFull then
+    begin
+      // Independent dirty targets can fill the cache. Resolve them together
+      // before allocating another set of images and descriptors.
+      FlushAll;
+      Oldest := OldestClean;
+    end;
     if Oldest <> nil then
     begin
-      WaitAll;
+      Result := ReuseTarget(Oldest, W, H);
+      if Result = nil then
+        WaitAll;
       FTargets.Remove(Oldest);
-      DestroyTarget(Oldest);
+      if Result = nil then
+        DestroyTarget(Oldest)
+      else
+      begin
+        if FFrameTarget = Oldest then
+          FFrameTarget := nil;
+        Oldest.Free;
+      end;
     end;
   end;
-  Result := NewTarget;
+  if Result = nil then
+    Result := NewTarget;
   Result.Addr := Addr;
   Result.Format := Format;
   Result.Stride := Stride;
@@ -1534,15 +1575,16 @@ begin
   Result.MaxHeight := MaxHeight;
   // (A dropped target's images of the size: its pixels are loaded before any
   // use.)
-  for var I := FTargetPool.Count - 1 downto 0 do
-    if (FTargetPool[I].Width = W * FScale) and (FTargetPool[I].Height = H * FScale) then
-    begin
-      Result.Color := FTargetPool[I].Color;
-      Result.Depth := FTargetPool[I].Depth;
-      Result.Framebuffer := FTargetPool[I].Framebuffer;
-      FTargetPool.Delete(I);
-      Break;
-    end;
+  if Result.Framebuffer = 0 then
+    for var I := FTargetPool.Count - 1 downto 0 do
+      if (FTargetPool[I].Width = W * FScale) and (FTargetPool[I].Height = H * FScale) then
+      begin
+        Result.Color := FTargetPool[I].Color;
+        Result.Depth := FTargetPool[I].Depth;
+        Result.Framebuffer := FTargetPool[I].Framebuffer;
+        FTargetPool.Delete(I);
+        Break;
+      end;
   if Result.Framebuffer = 0 then
   begin
     Result.Color := CreateImage(VK_FORMAT_R8G8B8A8_UNORM, W * FScale, H * FScale, 1, FColorUsage,
@@ -1573,6 +1615,11 @@ end;
 
 procedure TVulkanHLERenderer.InitTarget(T: TVulkanHLETarget);
 begin
+end;
+
+function TVulkanHLERenderer.ReuseTarget(T: TVulkanHLETarget; Width, Height: Integer): TVulkanHLETarget;
+begin
+  Result := nil;
 end;
 
 procedure TVulkanHLERenderer.DestroyTarget(T: TVulkanHLETarget);
@@ -1740,8 +1787,11 @@ begin
   Inc(FUseCounter);
   if FTextures.TryGetValue(Key, Result) then
   begin
-    if Result.Verified = FRun then
-      Inc(FStats.TextureHits)
+    if (Result.Verified = FRun) or TextureVerified(Result) then
+    begin
+      Result.Verified := FRun;
+      Inc(FStats.TextureHits);
+    end
     else if TextureMatches(Result, Request) then
     begin
       WatchTexture(Result, Request);
@@ -1766,6 +1816,11 @@ begin
     Result := AddTexture(Key, W, H, Levels, Scale, Request);
   end;
   Result.LastUse := FUseCounter;
+end;
+
+function TVulkanHLERenderer.TextureVerified(T: TVulkanHLETexture): Boolean;
+begin
+  Result := False;
 end;
 
 function TVulkanHLERenderer.FindTexture(Key: UInt64): TVulkanHLETexture;

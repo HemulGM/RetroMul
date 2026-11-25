@@ -40,6 +40,14 @@ end;
 
 function Texel(P: Integer2; Level: Integer): Integer4;
 begin
+  if (PC.Flags and FlagCompactTexture) <> 0 then
+  begin
+    // Resolve wrapping in the logical texture before folding the page axes.
+    var X := Clamp(P.X, 0, (1 shl Integer((PC.Tex shr 24) and 15)) - 1);
+    var Y := Clamp(P.Y, 0, (1 shl Integer(PC.Tex shr 28)) - 1);
+    var At := Integer2(X and 127, Y + ((X shr 7) shl 6));
+    Exit(Integer4(RoundFloat(TexelFetch(UTexture, At, 0) * 255.0)));
+  end;
   var Offset: Integer2 := Integer2(ArithmeticShiftRight(Integer(PC.TexOffset shl 16), 16),
     ArithmeticShiftRight(Integer(PC.TexOffset), 16)) * TextureScale;
   if (PC.Flags and FlagTarget) = 0 then

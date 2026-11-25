@@ -188,6 +188,8 @@ type
 
     FBlendSetups: Int64;
     FHeld, FWatched: TPS2GSPages;
+    FTextureWatchRun: Int64;
+    FStoredPageRuns: array[0..511] of Int64;
     FRevision: Int64;
     // The state the draw being built was set up for, with its CLUT.
     FLast: TPS2GSDraw;
@@ -333,7 +335,7 @@ type
     FGrowU0, FGrowV0, FGrowU1, FGrowV1: Integer;
     FPartials: Int64;
     FVertices: array[0..5] of TPS2HLEVertex;
-    FDepthLoads, FTargetTextures, FCopies, FPartialStores, FSetups: Int64;
+    FDepthLoads, FTargetTextures, FCopies, FPartialStores, FSetups, FTargetReuses: Int64;
     FDisplay: array[1..2] of TPS2HLEDisplay;
     FStoreRow: TArray<Cardinal>;
     function FitsTarget(const D: TPS2GSDraw; LastY: Integer): Boolean;
@@ -341,11 +343,14 @@ type
     function TargetFor(const D: TPS2GSDraw): TPS2HLETarget;
     procedure FlushOthers(T: TPS2HLETarget; const Pages: TPS2GSPages);
     procedure CheckDestSpans(T: TPS2HLETarget; const C, Z: TPageSpan);
+    function TracksColorPages(T: TVulkanHLETarget): Boolean; inline;
+    function HeldColor(T: TVulkanHLETarget): TPageSpan;
     procedure ActivateTarget(T: TPS2HLETarget);
     function TargetTexture(const D: TPS2GSDraw; out OffX, OffY: Integer): TPS2HLETarget;
     function CopyOf(T: TPS2HLETarget): TVulkanHLETexture;
     procedure RefreshCopy(V: PPS2HLEVertex; Count: Integer);
     function HeldFor(TPSM: Cardinal): TPS2GSPages;
+    function CompactTextureHeight(const D: TPS2GSDraw; Width, Height, Levels: Integer): Integer;
     procedure CopyClut(const D: TPS2GSDraw);
     procedure GatherTexture(Request: Pointer);
     procedure Flush(Reason: TPS2HLEFlush);
@@ -362,6 +367,7 @@ type
     function UploadTargetGpu(T: TPS2HLETarget; Depth: Boolean): Boolean;
     procedure Store(T: TPS2HLETarget; Color, Depth: Boolean);
     procedure StoreOverlapping(const Pages: TPS2GSPages);
+    procedure NoteStoredPages(const Pages: TPageSpan);
     procedure WatchFault(const Writes: TPS2GSPages);
     function SameState(const D: TPS2GSDraw): Boolean;
     function SameStateFull(const D: TPS2GSDraw): Boolean;
@@ -394,6 +400,8 @@ type
     function PipelineFor(Key: UInt64): VkPipeline; override;
     function NewTarget: TVulkanHLETarget; override;
     procedure InitTarget(T: TVulkanHLETarget); override;
+    function ReuseTarget(T: TVulkanHLETarget; Width, Height: Integer): TVulkanHLETarget; override;
+    procedure ForgetTarget(T: TPS2HLETarget);
     procedure DestroyTarget(T: TVulkanHLETarget); override;
     procedure LoadTarget(T: TVulkanHLETarget); override;
     function PlanPack(T: TPS2HLETarget; X, Y, W, H: Integer; out Bytes: Int64): Boolean;
@@ -406,6 +414,7 @@ type
     function TargetNewer(T: TVulkanHLETarget): Boolean; override;
     procedure NewRun; override;
     procedure DescribeTexture(Request: Pointer; out Width, Height, Levels, Scale: Integer); override;
+    function TextureVerified(T: TVulkanHLETexture): Boolean; override;
     function TextureMatches(T: TVulkanHLETexture; Request: Pointer): Boolean; override;
     procedure DecodeTexture(T: TVulkanHLETexture; Request: Pointer); override;
     procedure WatchTexture(T: TVulkanHLETexture; Request: Pointer); override;
@@ -493,13 +502,13 @@ const
   MemMask = PS2GSMemorySize - 1;
   // Blend factors past the bindings' list.
   VK_BLEND_FACTOR_SRC1_ALPHA = 17;
-  // Texture bytes compared with their source at most.
   FLAG_TEXTURED = 1;
   FLAG_FOG = 2;
   FLAG_TARGET = 4;
   FLAG_FBA = 8;
   FLAG_ALPHA1 = 16;
   FLAG_BLEND = 32;
+  FLAG_COMPACT_TEXTURE = 512;
 
 type
   // A texture as EnsureTexture looks it up (CachedTexture's request).
@@ -1292,7 +1301,7 @@ end;
 
 procedure TPS2GSVulkanHLE.InitTarget(T: TVulkanHLETarget);
 begin
-  if FShaderBlend then
+  if FShaderBlend and (TPS2HLETarget(T).BlendSet = 0) then
     CreateBlendTarget(TPS2HLETarget(T));
 end;
 
@@ -1421,35 +1430,67 @@ begin
   CheckVulkan(FAPI.vkCreateFramebuffer(FDevice, @Info, nil, @T.BlendFramebuffer), 'vkCreateFramebuffer');
 end;
 
-procedure TPS2GSVulkanHLE.DestroyTarget(T: TVulkanHLETarget);
+procedure TPS2GSVulkanHLE.ForgetTarget(T: TPS2HLETarget);
 begin
-  if FRGBLease.T = T then
+  if FScale > 1 then
   begin
-    FRGBLease.T := nil;
-    FRGBLease.Pixels := nil;
+    if FRGBLease.T = T then
+    begin
+      FRGBLease.T := nil;
+      FRGBLease.Pixels := nil;
+    end;
+    for var N := Low(FDisplay) to High(FDisplay) do
+      if FDisplay[N].Target = T then
+        FDisplay[N] := Default(TPS2HLEDisplay);
+    for var I := 0 to High(FPageOwners) do
+      if FPageOwners[I].Target = T then
+        FPageOwners[I].Target := nil;
+    for var SlotId := 0 to High(FImageOwners) do
+      if FImageOwners[SlotId] = T then
+        FImageOwners[SlotId] := nil;
   end;
-  for var N := Low(FDisplay) to High(FDisplay) do
-    if FDisplay[N].Target = T then
-      FDisplay[N] := Default(TPS2HLEDisplay);
-  for var I := 0 to 511 do
-    if FPageOwners[I].Target = T then
-      FPageOwners[I].Target := nil;
-  for var SlotId := 0 to High(FImageOwners) do
-    if FImageOwners[SlotId] = T then
-      FImageOwners[SlotId] := nil;
-  var G := TPS2HLETarget(T);
-  FreeAndNil(G.ZPlan);
-  if G.ZView <> 0 then
-    FAPI.vkDestroyImageView(FDevice, G.ZView, nil);
-  if G.InActiveTargets then
+  if T.InActiveTargets then
     for var I := 0 to FActiveCount - 1 do
-      if FActiveTargets[I] = G then
+      if FActiveTargets[I] = T then
       begin
         Dec(FActiveCount);
         FActiveTargets[I] := FActiveTargets[FActiveCount];
-        G.InActiveTargets := False;
+        T.InActiveTargets := False;
         Break;
       end;
+end;
+
+function TPS2GSVulkanHLE.ReuseTarget(T: TVulkanHLETarget; Width, Height: Integer): TVulkanHLETarget;
+begin
+  var Old := TPS2HLETarget(T);
+  if (T.Width <> Width) or (T.Height <> Height) or (T.Framebuffer = 0) or
+    Old.ZDirty or (Old.ZView <> 0) or (Old.ZPlan <> nil) or (Old.Copy <> nil) or (T.AsTexture <> nil) then
+    Exit(nil);
+
+  // Equal native extents also have equal image extents at this renderer's scale.
+  // The barrier orders earlier uses before the new target loads its GS pages.
+  // Only the images, framebuffers and immutable descriptors carry over.
+  Record_;
+  EndPass;
+  ImageBarrier;
+  var Replacement := TPS2HLETarget(NewTarget);
+  ForgetTarget(Old);
+  Replacement.Color := T.Color;
+  Replacement.Depth := T.Depth;
+  Replacement.Framebuffer := T.Framebuffer;
+  Replacement.BlendSet := Old.BlendSet;
+  Replacement.BlendFramebuffer := Old.BlendFramebuffer;
+  Inc(FTargetReuses);
+  Result := Replacement;
+end;
+
+procedure TPS2GSVulkanHLE.DestroyTarget(T: TVulkanHLETarget);
+begin
+  var G := TPS2HLETarget(T);
+  ForgetTarget(G);
+  FreeAndNil(G.ZPlan);
+  if G.ZView <> 0 then
+    FAPI.vkDestroyImageView(FDevice, G.ZView, nil);
   if G.BlendSet <> 0 then
     FAPI.vkFreeDescriptorSets(FDevice, FBlendPool, 1, @G.BlendSet);
   if G.BlendFramebuffer <> 0 then
@@ -1718,6 +1759,7 @@ end;
 procedure TPS2GSVulkanHLE.ReleaseWatches;
 begin
   FillChar(FWatched, SizeOf(FWatched), 0);
+  FTextureWatchRun := FRun + 1;
   Inc(FRevision);
 end;
 
@@ -1760,7 +1802,7 @@ begin
         Integer(FCompute.Properties.limits.maxFramebufferHeight)) div FScale);
   MaxH := MaxH - MaxH mod PH;
   var Need := Min(RoundRows(FNeedY + 1, PH), MaxH);
-  Result := TPS2HLETarget(FindTarget((D.FBP shl 8) and MemMask, D.FPSM, Stride, PB, Need, Need, MaxH));
+  Result := TPS2HLETarget(FindTarget((D.FBP shl 8) and MemMask, D.FPSM, Stride, PB, Need, Need, MaxH, FScale <= 2));
 end;
 
 // Other targets newer than GS memory in Pages (which T is about to draw):
@@ -1783,6 +1825,28 @@ begin
     (A.Count <> 0)
     and (B.Count <> 0)
     and ((((A.First + 512 - B.First) and 511) < B.Count) or (((B.First + 512 - A.First) and 511) < A.Count));
+end;
+
+function TPS2GSVulkanHLE.TracksColorPages(T: TVulkanHLETarget): Boolean;
+begin
+  // One native PSMCT32 page row. Each group of 64 columns maps to one
+  // contiguous 8 KiB page, including rows that wrap at the end of VRAM.
+  Result := (FScale <= 2) and (T.Format = PSMCT32) and (T.Height = 32) and
+    ((T.Addr and 8191) = 0);
+end;
+
+function TPS2GSVulkanHLE.HeldColor(T: TVulkanHLETarget): TPageSpan;
+begin
+  if T.HeldY1 > T.HeldY2 then
+    Exit(Default(TPageSpan));
+  if TracksColorPages(T) then
+  begin
+    var First := Cardinal(T.X1 shr 6);
+    var Last := Cardinal(T.X2 shr 6);
+    Exit(PageSpan(T.Addr + First * 8192, (Last - First + 1) * 8192));
+  end;
+  var RowBytes := T.Stride * T.PixelBytes;
+  Result := PageSpan(T.Addr + Cardinal(T.HeldY1) * RowBytes, Cardinal(T.HeldY2 - T.HeldY1 + 1) * RowBytes);
 end;
 
 procedure TPS2GSVulkanHLE.ActivateTarget(T: TPS2HLETarget);
@@ -1841,9 +1905,8 @@ begin
       Continue;
     if U.Dirty then
     begin
-      var Row := U.Stride * U.PixelBytes;
-      if (U.HeldY1 <= U.HeldY2)
-        and Hits(U.Addr + Cardinal(U.HeldY1) * Row, Cardinal(U.HeldY2 - U.HeldY1 + 1) * Row) then
+      var Color := HeldColor(U);
+      if SpanHits(C, Color) or SpanHits(Z, Color) then
         Held := True;
       if not U.Stale and Hits(U.Addr, U.Bytes) then
       begin
@@ -1892,8 +1955,8 @@ begin
     if U.Dirty and (U.HeldY1 <= U.HeldY2) then
     begin
       FillChar(Part, SizeOf(Part), 0);
-      AddRange(Part, U.Addr + Cardinal(U.HeldY1) * U.Stride * U.PixelBytes,
-        Cardinal(U.HeldY2 - U.HeldY1 + 1) * U.Stride * U.PixelBytes);
+      var Color := HeldColor(U);
+      AddRange(Part, Color.Base, Color.Size);
       Held := Held or Meets(Part, Pages);
     end;
     if U.ZDirty and (U.ZHeldY1 <= U.ZHeldY2) then
@@ -2086,6 +2149,19 @@ begin
   var Count := T.Bytes;
   if not Whole and (T.HeldY1 <= T.HeldY2) then
   begin
+    if TracksColorPages(T) then
+    begin
+      // Other targets may have changed the pages outside this span. Keep
+      // their old shadow bytes so EnsureTarget can still detect the changes.
+      var Color := HeldColor(T);
+      if FUsePagePins and CapturePins(TPS2HLETarget(T), False, Color.Base - T.Addr, Color.Size) then
+        Exit(True);
+      if Cardinal(Length(T.Shadow)) = T.Bytes then
+        ReadMemory(Color.Base, @T.Shadow[Color.Base - T.Addr], Color.Size)
+      else
+        T.Loaded := False;
+      Exit(True);
+    end;
     var Row := T.Stride * T.PixelBytes;
     First := Cardinal(T.HeldY1) * Row;
     Count := Cardinal(T.HeldY2 - T.HeldY1 + 1) * Row;
@@ -2724,8 +2800,8 @@ procedure TPS2GSVulkanHLE.HoldTarget(T: TPS2HLETarget);
 begin
   if T.Dirty and (T.HeldY1 <= T.HeldY2) then
   begin
-    var RowBytes := T.Stride * T.PixelBytes;
-    HoldMemory(T.Addr + Cardinal(T.HeldY1) * RowBytes, Cardinal(T.HeldY2 - T.HeldY1 + 1) * RowBytes);
+    var Color := HeldColor(T);
+    HoldMemory(Color.Base, Color.Size);
   end;
   if T.ZDirty and (T.ZHeldY1 <= T.ZHeldY2) then
     HoldDepthRows(T, T.ZHeldY1, T.ZHeldY2);
@@ -2903,7 +2979,7 @@ begin
     ColorAt := T.BatchAt[False];
     ColorBytes := T.BatchAt[True];
   end
-  else
+  else if (CW * CH > 0) or (ZW * ZH > 0) then
   begin
     Record_;
     EndPass;
@@ -2936,8 +3012,7 @@ begin
     end;
     HostReadBarrier;
     WaitAll;
-    if (CW * CH > 0) or (ZW * ZH > 0) then
-      FReadback.Invalidate;
+    FReadback.Invalidate(0, UInt64(ColorBytes + Int64(ZW) * ZH * 4));
   end;
   if CW * CH > 0 then
   begin
@@ -3905,8 +3980,7 @@ var
         Region.imageExtent.height := N * FScale;
         Region.imageExtent.depth := 1;
         FAPI.vkCmdCopyImageToBuffer(Slot.Cmd.Handle, Image, VK_IMAGE_LAYOUT_GENERAL, ReadBuffer.Handle, 1, @Region);
-        HostReadBarrier;
-        WaitAll;
+        SubmitReadback;
         ReadBuffer.Invalidate(0, UInt64(SW) * UInt64(N) * UInt64(FScale) * 4);
       end;
       if FScale = 2 then
@@ -4031,26 +4105,18 @@ begin
       var X, Y, W, H: Integer;
       if FPartialStoreMask <> nil then
       begin
-        var First, Last: Integer;
-        var At, Row: Cardinal;
+        var Span: TPageSpan;
         if Z then
         begin
-          First := T.ZHeldY1;
-          Last := T.ZHeldY2;
-          At := T.ZAddr;
-          Row := T.ZRowBytes;
+          if T.ZHeldY1 > T.ZHeldY2 then
+            Continue;
+          Span := PageSpan(T.ZAddr + Cardinal(T.ZHeldY1) * T.ZRowBytes,
+            Cardinal(T.ZHeldY2 - T.ZHeldY1 + 1) * T.ZRowBytes);
         end
         else
-        begin
-          First := T.HeldY1;
-          Last := T.HeldY2;
-          At := T.Addr;
-          Row := T.Stride * T.PixelBytes;
-        end;
-        if First > Last then
-          Continue;
+          Span := HeldColor(T);
         var Part := Default(TPS2GSPages);
-        AddRange(Part, At + Cardinal(First) * Row, Cardinal(Last - First + 1) * Row);
+        AddRange(Part, Span.Base, Span.Size);
         if not Meets(Part, FPartialStoreMask^) then
           Continue;
       end;
@@ -4145,8 +4211,13 @@ begin
       FAPI.vkCmdCopyImageToBuffer(Cmd, Image, VK_IMAGE_LAYOUT_GENERAL, FReadback.Handle, 1, @Region);
     end;
   end;
-  HostReadBarrier;
-  WaitAll;
+  if FScale > 1 then
+    SubmitReadback
+  else
+  begin
+    HostReadBarrier;
+    WaitAll;
+  end;
   FReadback.Invalidate(0, Bytes);
   FStoreBatched := True;
   Result := True;
@@ -4162,9 +4233,15 @@ begin
   Store(TPS2HLETarget(T), True, True);
 end;
 
+procedure TPS2GSVulkanHLE.NoteStoredPages(const Pages: TPageSpan);
+begin
+  for var I := 0 to Integer(Pages.Count) - 1 do
+    FStoredPageRuns[(Pages.First + Cardinal(I)) and 511] := FRun + 1;
+end;
+
 // The targets newer than GS memory in Pages go back to it (not all of them,
-// as FlushAll); the rest stay held, and a new run starts (what was compared
-// with GS memory there is compared again).
+// as FlushAll); the rest stay held. Textures that still have valid watches
+// only need to check for the pages written back by these stores.
 procedure TPS2GSVulkanHLE.StoreOverlapping(const Pages: TPS2GSPages);
 var
   Held: TPS2GSPages;
@@ -4185,15 +4262,21 @@ begin
       if T.Dirty and (T.HeldY1 <= T.HeldY2) then
       begin
         FillChar(Held, SizeOf(Held), 0);
-        var RowBytes := T.Stride * T.PixelBytes;
-        AddRange(Held, T.Addr + Cardinal(T.HeldY1) * RowBytes, Cardinal(T.HeldY2 - T.HeldY1 + 1) * RowBytes);
+        var Span := HeldColor(T);
+        AddRange(Held, Span.Base, Span.Size);
         Color := Meets(Held, Pages);
+        if Color and (FScale > 1) then
+          NoteStoredPages(Span);
       end;
       if T.ZDirty and (T.ZHeldY1 <= T.ZHeldY2) then
       begin
         FillChar(Held, SizeOf(Held), 0);
-        AddRange(Held, T.ZAddr + Cardinal(T.ZHeldY1) * T.ZRowBytes, Cardinal(T.ZHeldY2 - T.ZHeldY1 + 1) * T.ZRowBytes);
+        var First := T.ZAddr + Cardinal(T.ZHeldY1) * T.ZRowBytes;
+        var Size := Cardinal(T.ZHeldY2 - T.ZHeldY1 + 1) * T.ZRowBytes;
+        AddRange(Held, First, Size);
         Depth := Meets(Held, Pages);
+        if Depth and (FScale > 1) then
+          NoteStoredPages(PageSpan(First, Size));
       end;
       if not (Color or Depth) then
         Continue;
@@ -4285,12 +4368,23 @@ procedure TPS2GSVulkanHLE.Access(const Reads, Writes: TPS2GSPages);
 var
   Both: TPS2GSPages;
 begin
-  if not FCapturingDisplay and AnyPage(Writes) then
-    FDisplayStoreCount := 0;
-  if AnyPage(Writes) then
-    for var I := 0 to 511 do
-      if (Writes[I shr 5] and (Cardinal(1) shl (I and 31))) <> 0 then
-        FPageOwners[I].Target := nil;
+  if (FScale > 1) and AnyPage(Writes) then
+  begin
+    if not FCapturingDisplay then
+      FDisplayStoreCount := 0;
+    for var I := 0 to High(Writes) do
+    begin
+      var Bits := Writes[I];
+      var Page := I * 32;
+      while Bits <> 0 do
+      begin
+        if (Bits and 1) <> 0 then
+          FPageOwners[Page].Target := nil;
+        Bits := Bits shr 1;
+        Inc(Page);
+      end;
+    end;
+  end;
   for var I := 0 to High(Both) do
     Both[I] := Reads[I] or Writes[I];
   if Meets(Both, FHeld) then
@@ -4695,18 +4789,41 @@ begin
       Y1 := R.V0 + R.H - 1;
     end;
     A.Init(Integer(D.TPSM), D.LevelTBP[L], D.LevelTBW[L]);
-    for var BY := Y0 div BH to Y1 div BH do
-      for var BX := X0 div BW to X1 div BW do
+    // A rectangle of complete GS pages occupies a contiguous run of blocks
+    // in each page row, independent of the within-page swizzle.
+    if (FScale > 1) and (((X0 or (X1 + 1)) and Integer(A.WMask)) = 0) and
+      (((Y0 or (Y1 + 1)) and Integer(A.HMask)) = 0) then
+    begin
+      var FirstX := Cardinal(X0 shr A.WShift);
+      var Blocks := ((X1 - X0 + 1) shr A.WShift) * 32;
+      for var PY := Y0 shr A.HShift to Y1 shr A.HShift do
       begin
-        var U := A.Addr(Cardinal(BX * BW), Cardinal(BY * BH));
-        var Block: Cardinal;
-        if Shift < 0 then
-          Block := U shr 9
-        else
-          Block := (U shl Shift) shr 8;
-        Block := Block and 16383;
-        FBlockBits[Block shr 6] := FBlockBits[Block shr 6] or (UInt64(1) shl (Block and 63));
+        var Block := D.LevelTBP[L] + (FirstX + Cardinal(PY) * A.Width) * 32;
+        var Left := Blocks;
+        while Left > 0 do
+        begin
+          // An unaligned TBP can cross bitset words and wrap in GS memory.
+          var Index := (Block and 16383) shr 6;
+          var Bit := Block and 63;
+          var Count := Min(Left, 64 - Integer(Bit));
+          FBlockBits[Index] := FBlockBits[Index] or ((High(UInt64) shr (64 - Count)) shl Bit);
+          Inc(Block, Count);
+          Dec(Left, Count);
+        end;
       end;
+    end
+    else
+      for var BY := Y0 div BH to Y1 div BH do
+        for var BX := X0 div BW to X1 div BW do
+        begin
+          var U := A.Addr(Cardinal(BX * BW), Cardinal(BY * BH));
+          var Block: Cardinal;
+          if Shift < 0 then
+            Block := U shr 9
+          else
+            Block := (U shl Shift) shr 8;
+          FBlockBits[Block shr 6] := FBlockBits[Block shr 6] or (UInt64(1) shl (Block and 63));
+        end;
   end;
   // Runs of blocks, whole words of the set skipped.
   FTexByteCount := 0;
@@ -4761,8 +4878,8 @@ begin
     var T := TPS2HLETarget(V);
     if T.Dirty and not Is24(T.Format) and (T.HeldY1 <= T.HeldY2) then
     begin
-      var RowBytes := T.Stride * T.PixelBytes;
-      AddRange(Result, T.Addr + Cardinal(T.HeldY1) * RowBytes, Cardinal(T.HeldY2 - T.HeldY1 + 1) * RowBytes);
+      var Span := HeldColor(T);
+      AddRange(Result, Span.Base, Span.Size);
     end;
     if T.ZDirty and not Is24(T.ZPSM) and (T.ZHeldY1 <= T.ZHeldY2) then
       AddRange(Result, T.ZAddr + Cardinal(T.ZHeldY1) * T.ZRowBytes, Cardinal(T.ZHeldY2 - T.ZHeldY1 + 1) * T.ZRowBytes);
@@ -4961,11 +5078,31 @@ begin
       AddRectPages(FTexPages, D.LevelTBP[L], D.LevelTBW[L], D.TPSM, 0, 0, Max(1, (1 shl D.TW) shr L) - 1,
         Max(1, (1 shl D.TH) shr L) - 1);
   if Meets(FTexPages, FHeld) and Meets(FTexPages, HeldFor(D.TPSM)) then
-    Flush(frTexture);
+    if FScale = 1 then
+      Flush(frTexture)
+    else
+    begin
+      Inc(FFlushes[frTexture]);
+      StoreOverlapping(FTexPages);
+    end;
   Request.D := @D;
   Request.Levels := Levels;
   FTexGathered := False;
   Result := CachedTexture(Key, @Request);
+end;
+
+function TPS2GSVulkanHLE.CompactTextureHeight(const D: TPS2GSDraw; Width, Height, Levels: Integer): Integer;
+begin
+  Result := 0;
+  if (D.TPSM <> PSMT8) or (Levels <> 1) or (((D.LevelTBW[0] + 1) shr 1) <> 1) or
+    (Width <> 1 shl D.TW) or (Height <> 1 shl D.TH) or (Width < 256) or (Height < 64) or
+    (ScaleFor(Width, Height) <> 1) then
+    Exit;
+  // With a pitch of one page, X pages alias later Y pages. Decode each
+  // physical page once and fold logical X into Y at the point of sampling.
+  var Rows := Height + (Width div 128 - 1) * 64;
+  if Cardinal(Rows) <= FCompute.Properties.limits.maxImageDimension2D then
+    Result := Rows;
 end;
 
 procedure TPS2GSVulkanHLE.DescribeTexture(Request: Pointer; out Width, Height, Levels, Scale: Integer);
@@ -4978,7 +5115,35 @@ begin
   // Vulkan mip extents must remain the native mip extent times this factor.
   if (R.U0 = 0) and (R.V0 = 0) and (Width = 1 shl R.D.TW) and (Height = 1 shl R.D.TH) and
     (Width shr (Levels - 1) > 0) and (Height shr (Levels - 1) > 0) then
-    Scale := ScaleFor(Width, Height);
+  begin
+    var Rows := CompactTextureHeight(R.D^, Width, Height, Levels);
+    if Rows > 0 then
+    begin
+      Width := 128;
+      Height := Rows;
+    end
+    else
+      Scale := ScaleFor(Width, Height);
+  end;
+end;
+
+function TPS2GSVulkanHLE.TextureVerified(T: TVulkanHLETexture): Boolean;
+begin
+  if (FScale = 1) or (T.Verified < FTextureWatchRun) or not T.Checkable then
+    Exit(False);
+  for var I := 0 to High(FTexPages) do
+  begin
+    var Bits := FTexPages[I];
+    var Page := I * 32;
+    while Bits <> 0 do
+    begin
+      if ((Bits and 1) <> 0) and (FStoredPageRuns[Page] > T.Verified) then
+        Exit(False);
+      Bits := Bits shr 1;
+      Inc(Page);
+    end;
+  end;
+  Result := True;
 end;
 
 function TPS2GSVulkanHLE.TextureMatches(T: TVulkanHLETexture; Request: Pointer): Boolean;
@@ -5031,6 +5196,11 @@ begin
       Y0 := R.V0;
       W := R.W;
       H := R.H;
+      if (D.TPSM = PSMT8) and (T.Width = 128) and (W > T.Width) then
+      begin
+        W := T.Width;
+        H := T.Height;
+      end;
     end;
     if DecodeMirror(T, R, L, X0, Y0, W, H, @Pal[0], Indices) then
       Continue;
@@ -5478,6 +5648,8 @@ begin
         // A part decoded alone: texel (U, V) is at (U - U0, V - V0) in its image.
         if FPartW > 0 then
           Push.TexOffset := Cardinal((-FPartU0) and $FFFF) or (Cardinal((-FPartV0) and $FFFF) shl 16);
+        if (D.TPSM = PSMT8) and (FPartW = 0) and (Tex.Width = 128) and (D.TW >= 8) then
+          Flags := Flags or FLAG_COMPACT_TEXTURE;
       end;
       if (Source = nil) and (FScale = 2) and (Tex.Scale = 2) and (Tex.NativeMips.View <> 0) and Is16(T.Format) then
         Flags := Flags or 256;
@@ -5880,9 +6052,11 @@ begin
   var HY2 := RoundRows(Y2 + 1, FPageRows) - 1;
   var ZY1 := Y1 - Y1 mod FZPageRows;
   var ZY2 := RoundRows(Y2 + 1, FZPageRows) - 1;
-  // GS memory changed outside the rows drawn so far: the image there is
-  // brought back to it before drawing there.
-  if (T.Stale and ((HY1 < T.HeldY1) or (HY2 > T.HeldY2)))
+  // If GS memory changed outside the held region, reload before widening
+  // it. A single page row can also widen horizontally within the image.
+  var TrackPages := TracksColorPages(T);
+  if (T.Stale and ((HY1 < T.HeldY1) or (HY2 > T.HeldY2) or
+    (TrackPages and ((X1 shr 6 < T.X1 shr 6) or (X2 shr 6 > T.X2 shr 6)))))
     or (T.ZStale and FDepthUsed and ((ZY1 < T.ZHeldY1) or (ZY2 > T.ZHeldY2))) then
   begin
     Flush(frStale);
@@ -5892,7 +6066,19 @@ begin
     if FPassCount = 0 then
       Exit;
   end;
-  HoldNewRows(T, HY1, HY2);
+  if TrackPages then
+  begin
+    var First := Min(X1, T.X1) shr 6;
+    var Last := Max(X2, T.X2) shr 6;
+    if (T.HeldY1 > T.HeldY2) or (First < T.X1 shr 6) or (Last > T.X2 shr 6) then
+    begin
+      HoldMemory(T.Addr + Cardinal(First) * 8192, Cardinal(Last - First + 1) * 8192);
+      T.HeldY1 := HY1;
+      T.HeldY2 := HY2;
+    end;
+  end
+  else
+    HoldNewRows(T, HY1, HY2);
   if FDepthWrites then
     HoldNewDepthRows(T, ZY1, ZY2);
   if FFeedback then
@@ -6053,6 +6239,7 @@ begin
     or (Y1 > T.Height)
     or (Y0 < T.HeldY1)
     or (Y1 - 1 > T.HeldY2)
+    or (TracksColorPages(T) and ((X0 shr 6 < T.X1 shr 6) or ((X1 - 1) shr 6 > T.X2 shr 6)))
     or ((FDepthWrites or (FDepthUsed and T.ZStale)) and ((Y0 < T.ZHeldY1) or (Y1 - 1 > T.ZHeldY2))) then
     Exit;
   var Sl := Slot;
@@ -6559,8 +6746,7 @@ begin
     Exit;
   FAPI
     .vkCmdCopyImageToBuffer(Slot.Cmd.Handle, Found.Color.Image, VK_IMAGE_LAYOUT_GENERAL, FReadback.Handle, 1, @Region);
-  HostReadBarrier;
-  WaitAll;
+  SubmitReadback;
   FReadback.Invalidate(0, UInt64(Count) * 4);
   Pixels := FScanBank.Acquire(Count);
   DisplayAlpha(PCardinal(FReadback.Data), @Pixels[0], Count, Is16(PSM));
@@ -6654,8 +6840,8 @@ begin
         FPartials
       ])
     + Format(
-      ' setups=%d flush: others=%d texture=%d depth=%d stale=%d sync=%d',
-      [FSetups, FFlushes[frOthers], FFlushes[frTexture], FFlushes[frDepth], FFlushes[frStale], FFlushes[frSync]]);
+      ' setups=%d target_reuses=%d flush: others=%d texture=%d depth=%d stale=%d sync=%d',
+      [FSetups, FTargetReuses, FFlushes[frOthers], FFlushes[frTexture], FFlushes[frDepth], FFlushes[frStale], FFlushes[frSync]]);
   Result := Result + Format(' clipped=%d clip_pixels=%d', [FClippedPlanes, FClippedPixels]);
   Result :=
     Result

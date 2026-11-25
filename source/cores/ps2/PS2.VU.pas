@@ -223,6 +223,7 @@ type
     FKickPending: Boolean;
     FKickAddress: Cardinal;
     FKickStart: Int64;
+    FKickDue: Int64; // Next quadword's issue time, derived on restore.
     FKickCount, FKickNextTag, FKickEnd: Integer;
     FKickBuf: array of TPS2Reg128;
     // The clip flag the current pair's FC* instructions see.
@@ -1381,12 +1382,10 @@ begin
   J.Move(jw8, JT0, JMem(jrSelf, Integer(NativeInt(@FUseJit) - NativeInt(Self))));
   J.Branch(jcEq, jw32, JT0, JImm(0), Done);
   J.Move(jw32, JT0, JMem(jrSelf, Integer(NativeInt(@S.TPC) - NativeInt(Self))));
-  J.Alu(jaAnd, jw32, JT0, JImm(FCodeMask));
-  J.Shift(jsShr, jw32, jrT0, 3);
-  if SizeOf(Pointer) = 8 then
-    J.Shift(jsShl, jw64, jrT0, 3)
-  else
-    J.Shift(jsShl, jw64, jrT0, 2);
+  // A VU pair and a 64-bit table entry occupy the same number of bytes.
+  J.Alu(jaAnd, jw32, JT0, JImm(FCodeMask and not Cardinal(7)));
+  if SizeOf(Pointer) = 4 then
+    J.Shift(jsShr, jw32, jrT0, 1);
   J.Move(jw64, JT1, JMem(jrSelf, Integer(NativeInt(@FBodies) - NativeInt(Self))));
   J.Alu(jaAdd, jw64, JT1, JT0);
   J.Move(jw64, JT0, JMem(jrT1, 0));
@@ -1886,6 +1885,7 @@ var
     J.Branch(jcEq, jw32, JT0, JImm(0), NoKick);
     J.Move(jw64, JT0, JS1);
     J.Alu(jaAdd, jw64, JT0, JImm(Issue));
+    J.Branch(jcLt, jw64, JT0, M(@FKickDue), NoKick);
     J.Move(jw64, M(@S.Cycles), JT0);
     J.Call(@TPS2VUCore.TakeKick, [JSelf, JImm(0)]);
     J.Bind(NoKick);
@@ -2384,16 +2384,12 @@ begin
   // The whole block within the budget. A run's last 64 pairs are recorded
   // in LoopTrace: the block's pairs all (below) or none of them, else the
   // general path records them pair by pair.
-  J.Move(jw32, JT0, Count);
-  J.Alu(jaAdd, jw64, JT0, JImm(Block.PairCount));
-  J.Move(jw32, JT1, Limit);
-  J.Branch(jcAbove, jw64, JT0, JT1, Slow);
+  J.Move(jw32, JT0, Limit);
+  J.Alu(jaSub, jw32, JT0, Count);
+  J.Branch(jcLt, jw32, JT0, JImm(Block.PairCount), Slow);
   var WholeTrace := J.NewLabel;
-  J.Move(jw32, JT0, Count);
-  J.Alu(jaAdd, jw32, JT0, JImm(64));
-  J.Alu(jaSub, jw32, JT0, Limit);
-  J.Branch(jcGe, jw32, JT0, JImm(0), WholeTrace);
-  J.Branch(jcGe, jw32, JT0, JImm(1 - Block.PairCount), Slow);
+  J.Branch(jcLe, jw32, JT0, JImm(64), WholeTrace);
+  J.Branch(jcLt, jw32, JT0, JImm(64 + Block.PairCount), Slow);
   J.Bind(WholeTrace);
   J.Branch(jcNe, jw64, M(@FFastGate), JImm(0), Slow);
   // Running, no branch or end pending (adjacent bytes: one look).
@@ -3181,6 +3177,8 @@ begin
   var NoKick := J.NewLabel;
   J.Move(jw8, JT0, M(@FKickPending));
   J.Branch(jcEq, jw32, JT0, JImm(0), NoKick);
+  J.Move(jw64, JT0, M(@S.Cycles));
+  J.Branch(jcLt, jw64, JT0, M(@FKickDue), NoKick);
   J.Call(@TPS2VUCore.TakeKick, [JSelf, JImm(0)]);
   J.Bind(NoKick);
   ProfileMark('clip-queue');
@@ -5573,6 +5571,7 @@ begin
   FKickPending := True;
   FKickAddress := Address;
   FKickStart := S.Cycles + KickLatency;
+  FKickDue := FKickStart;
   FKickCount := 0;
   FKickNextTag := 0;
   FKickEnd := -1;
@@ -5583,20 +5582,27 @@ procedure TPS2VUCore.TakeKick(All: Boolean);
 begin
   var Limit := Length(FKickBuf);
   var Due := Limit;
-  if PS2VUKickRuns and not All then
+  if not All then
   begin
-    if S.Cycles < FKickStart then
-      Due := 0
-    else
+    if S.Cycles < FKickDue then
+      Exit;
+    if (S.Cycles - FKickDue < 2) and (FKickCount < FKickNextTag) and (FKickCount + 1 < Limit) and
+      ((FKickEnd < 0) or (FKickCount + 1 < FKickEnd)) then
     begin
-      var N := (S.Cycles - FKickStart) div 2 + 1;
-      if N < Limit then
-        Due := Integer(N);
+      // A lone payload quadword cannot parse a tag or complete the packet.
+      var Src := PUInt64(FData + ((FKickAddress + Cardinal(FKickCount) * 16) and FDataMask));
+      FKickBuf[FKickCount].Lo := Src[0];
+      FKickBuf[FKickCount].Hi := Src[1];
+      Inc(FKickCount);
+      Inc(FKickDue, 2);
+      Exit;
     end;
+    var N := (S.Cycles - FKickStart) div 2 + 1;
+    if N < Limit then
+      Due := Integer(N);
   end;
   while ((FKickEnd < 0) or (FKickCount < FKickEnd))
-          and (FKickCount < Limit)
-          and (All or (FKickStart + 2 * FKickCount <= S.Cycles)) do
+        and (FKickCount < Due) do
   begin
     if PS2VUKickRuns and (FKickCount < FKickNextTag) then
     begin
@@ -5658,6 +5664,7 @@ begin
       RefreshFastGate;
     end;
   end;
+  FKickDue := FKickStart + Int64(2) * FKickCount;
 end;
 
 procedure TPS2VUCore.Start(Address: Cardinal);
@@ -5689,7 +5696,7 @@ begin
   var Stall := HazardStall(Pair^);
   if Stall > 0 then
     AdvanceCycles(Stall);
-  if FKickPending then
+  if FKickPending and (S.Cycles >= FKickDue) then
     TakeKick(False);
   while (S.ClipQCount > 0) and (S.ClipQReady[0] <= S.Cycles) do
   begin
@@ -6047,6 +6054,7 @@ begin
   FKickAddress := C.KickAddress;
   FKickStart := C.KickStart;
   FKickCount := C.KickCount;
+  FKickDue := FKickStart + Int64(2) * FKickCount;
   FKickNextTag := C.KickNextTag;
   FKickEnd := C.KickEnd;
   if Length(C.KickBuf) > 0 then

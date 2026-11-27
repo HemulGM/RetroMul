@@ -62,7 +62,8 @@ implementation
 uses
   System.Types, System.UITypes, System.Math, System.IOUtils,
   System.Net.HttpClient, System.Net.URLClient, System.Net.Mime, FMX.Graphics,
-  FMX.OpenDialog, FMX.BehaviorManager, Core.SavePaths, RM.Styles, RM.Dialogs;
+  FMX.OpenDialog, FMX.BehaviorManager, Core.SavePaths, RM.Styles, RM.Dialogs,
+  System.Hash;
 
 {$R *.fmx}
 
@@ -331,14 +332,26 @@ begin
   UpdateDetails;
   SetAttachment('');
   try
-    var Path := '';
-    if FRomLocation <> '' then
-      Path := FindRecordedAutosave(FStorage, FRomLocation);
+    var Directory := '';
+    var ActiveGame := (FCore <> nil) and FCore.SupportsSnapshots and
+      SameFileName(FRomLocation, Host.State.Session.RomLocation);
+    if ActiveGame then
+      Directory := Host.GameSnapshotDirectory
+    else if FRomLocation <> '' then
+    begin
+      var LibraryState := FStorage.ReadConfig(FStorage.ConfigFile('library'));
+      try
+        Directory := LibraryState.ReadString('Snapshots', THashSHA2.GetHashString(FRomLocation), '');
+      finally
+        LibraryState.Free;
+      end;
+    end;
+    var Path := FindAutosave(FStorage, Directory);
     if Path <> '' then
       SetAttachment(Path)
-    else if (FCore <> nil) and FCore.SupportsSnapshots and not Host.State.Session.EmulationFaulted then
+    else if ActiveGame and (Directory <> '') and not Host.State.Session.EmulationFaulted then
     begin
-      FSnapshotPath := ResolveSnapshotPath(Host.GameSnapshotDirectory, SNAPSHOT_AUTOSAVE);
+      FSnapshotPath := ResolveSnapshotPath(Directory, SNAPSHOT_AUTOSAVE);
       if Supports(FCore, IEmulationSnapshotOperation, FOperation) then
       begin
         FOperation.BeginSnapshot(SNAPSHOT_AUTOSAVE, False);

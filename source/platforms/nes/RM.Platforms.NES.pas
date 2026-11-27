@@ -28,14 +28,14 @@ implementation
 uses
   RM.Input.Gamepads, NES.Cartridge, NES.DiskSystem, NES.StudyBox.Media,
   RM.Settings.Catalog, Core.InputConfig, System.IniFiles, Core.PlatformServices,
-  System.StrUtils, Core.Emulation, Core.Platforms, Core.Platforms.NES.Adapter,
-  RM.Platforms.NES.Settings, RM.Platforms.Presentation, RM.Gamepad.Factory,
-  RM.Platforms.NES.Gamepads, NES.Controller, NES.Types, RM.Input.Runtime,
-  RM.Platforms.NES.Input, RM.Session.Runtime, RM.Platforms.NES.Session,
-  RM.Window.Layout, RM.Platforms.NES.Window, RM.Settings.Runtime,
-  RM.Platforms.NES.SettingsHandler, RM.ControlsHelp.Content,
-  RM.Platforms.NES.Help, RM.Settings.Callouts, RM.Platforms.NES.Devices,
-  RM.Settings.Devices, System.Classes;
+  Core.Emulation.Types, System.StrUtils, Core.Emulation, Core.Platforms,
+  Core.Platforms.NES.Adapter, RM.Platforms.NES.Settings,
+  RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Platforms.NES.Gamepads,
+  NES.Controller, NES.Types, RM.Input.Runtime, RM.Platforms.NES.Input,
+  RM.Session.Runtime, RM.Platforms.NES.Session, RM.Window.Layout,
+  RM.Platforms.NES.Window, RM.Settings.Runtime, RM.Platforms.NES.SettingsHandler,
+  RM.ControlsHelp.Content, RM.Platforms.NES.Help, RM.Settings.Callouts,
+  RM.Platforms.NES.Devices, RM.Settings.Devices, System.Classes;
 
 const
   PlatformIcon =
@@ -157,6 +157,36 @@ begin
   RegisterEmulationCore(Registration);
 end;
 
+type
+  TNESAchievementMedia = class(TInterfacedObject, IEmulationAchievementMedia)
+    function GetConsoleId: Cardinal;
+    function AcceptsROM(const SourceName: string; Input: TStream): Boolean;
+  end;
+
+function TNESAchievementMedia.GetConsoleId: Cardinal;
+begin
+  Result := 7; // RetroAchievements console ID for NES.
+end;
+
+function TNESAchievementMedia.AcceptsROM(const SourceName: string; Input: TStream): Boolean;
+begin
+  var Size := Input.Size;
+  if MatchText(ExtractFileExt(SourceName), ['.fds', '.qd']) or (Size <= NES_ROM_HEADER_SIZE) or
+    (Size > NES_ROM_LARGE_MAX_SIZE) then
+    Exit(False);
+  var Header: TBytes;
+  SetLength(Header, NES_ROM_HEADER_SIZE);
+  var Position := Input.Position;
+  try
+    Input.Position := 0;
+    Input.ReadBuffer(Header[0], Length(Header));
+  finally
+    Input.Position := Position;
+  end;
+  Result := CompareMem(@Header[0], PAnsiChar(NES_ROM_SIGNATURE), NES_ROM_SIGNATURE_SIZE) and
+    ((Size <= NES_ROM_FILE_MAX_SIZE) or IsLargeNesImage(Header, Size));
+end;
+
 class procedure TNESPlatform.RegisterRuntimeServices;
 begin
   var Service := Default(TPlatformServices);
@@ -164,7 +194,9 @@ begin
   Service.DocumentSelection.Title := 'Choose a cassette file';
   Service.DocumentSelection.FileFilter := 'Cassette (*.tape)|*.tape|All files|*.*';
   Service.DocumentSelection.AllowedExtensions := ['.tape'];
-  RegisterPlatformServices('nes', Service);
+  Service.AchievementMedia := TNESAchievementMedia.Create;
+  RegisterPlatformServices(ROM_SYSTEM_NES, Service);
+  Service.AchievementMedia := nil;
   Service.DocumentSelection.Title := 'Choose FDS disk image';
   Service.DocumentSelection.FileFilter := 'NES disk images (*.fds;*.qd;*.img;*.ima)|*.fds;*.qd;*.img;*.ima|All files|*.*';
   Service.DocumentSelection.AllowedExtensions := ['.fds', '.qd'];

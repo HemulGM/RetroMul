@@ -96,6 +96,7 @@ type
   public
     Min, Max, Scale: Single;
     IntegerStorage: Boolean;
+    DecimalDigits: Integer;
     UnitCaption: string;
     function Value: Single;
     procedure SetValue(Value: Single);

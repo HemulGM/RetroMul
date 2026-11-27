@@ -3,8 +3,8 @@
 interface
 
 uses
-  Core.Storage, Core.Microphone, System.Classes, System.SysUtils,
-  System.SyncObjs, NES.Types, NES.Console, NES.Input, PCM.Audio,
+  Core.Storage, Core.Microphone, Core.Emulation.Types, System.Classes,
+  System.SysUtils, System.SyncObjs, NES.Types, NES.Console, NES.Input, PCM.Audio,
   NES.AudioDiagnostics, NES.Controller, Core.InputConfig,
   NES.FamicomKeyboardDevice, NES.FamicomDataRecorder, NES.MiraclePianoDevice,
   NES.Options;
@@ -36,6 +36,8 @@ type
   TNesEmulationThread = class(TThread)
   private
     FConsole: TNesConsole;
+    FAchievementObserver: IEmulationAchievementObserver;
+    FPendingAchievementProgress: TBytes;
     FInputPortsCommand: TInputPortsCommand;
     FStorage: IStorage;
     FAudio: TPCMAudio;
@@ -90,6 +92,8 @@ type
     procedure CaptureFrame;
     procedure UpdateDiskStatus;
     function ProcessSnapshot: Boolean;
+    function AchievementObserver: IEmulationAchievementObserver;
+    procedure RestorePendingAchievementProgress(const Observer: IEmulationAchievementObserver);
     function GetInputPorts: TCoreInputPorts;
     procedure SetInputPorts(const Ports: TCoreInputPorts);
   protected
@@ -122,6 +126,7 @@ type
     procedure SetButtons(Source: UInt32; Player: Integer; const Buttons: TNesButtons; const TurboButtons: TNesButtons = []);
     procedure InsertCoin1;
     procedure InsertCoin2;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     procedure RequestReset;
     procedure RequestPause;
     procedure RequestResume;
@@ -582,7 +587,16 @@ begin
       var Path := ResolveSnapshotPath(FSnapshotDirectory, Name);
       if Loading then
       begin
-        FConsole.LoadSnapshot(Path);
+        var Progress: TBytes;
+        FConsole.LoadSnapshot(Path, Progress);
+        var Observer := AchievementObserver;
+        if Observer <> nil then
+        begin
+          FPendingAchievementProgress := nil;
+          Observer.RestoreProgress(Progress);
+        end
+        else
+          FPendingAchievementProgress := Progress;
         FAudio.Clear;
         FLock.Enter;
         try
@@ -595,7 +609,16 @@ begin
         Result := True;
       end
       else
-        FConsole.SaveSnapshot(Path);
+      begin
+        var Observer := AchievementObserver;
+        var Progress := FPendingAchievementProgress;
+        if Observer <> nil then
+        begin
+          RestorePendingAchievementProgress(Observer);
+          Progress := Observer.CaptureProgress;
+        end;
+        FConsole.SaveSnapshot(Path, Progress);
+      end;
     end;
   except
     on E: Exception do
@@ -891,6 +914,39 @@ begin
   RequestCoin(1);
 end;
 
+function TNesEmulationThread.AchievementObserver: IEmulationAchievementObserver;
+begin
+  FLock.Enter;
+  try
+    Result := FAchievementObserver;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+procedure TNesEmulationThread.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+var
+  Previous: IEmulationAchievementObserver;
+begin
+  FLock.Enter;
+  try
+    Previous := FAchievementObserver;
+    FAchievementObserver := Observer;
+  finally
+    FLock.Leave;
+  end;
+  Previous := nil;
+end;
+
+procedure TNesEmulationThread.RestorePendingAchievementProgress(const Observer: IEmulationAchievementObserver);
+begin
+  if Length(FPendingAchievementProgress) <> 0 then
+  begin
+    Observer.RestoreProgress(FPendingAchievementProgress);
+    FPendingAchievementProgress := nil;
+  end;
+end;
+
 procedure TNesEmulationThread.RequestReset;
 begin
   FLock.Enter;
@@ -1065,6 +1121,11 @@ end;
 
 procedure TNesEmulationThread.RunEmulation;
 begin
+  var ReadAchievementMemory: TEmulationAchievementRead :=
+    function(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal
+    begin
+      Result := FConsole.ReadAchievementMemory(Address, Buffer, Count);
+    end;
   var Samples: TArray<SmallInt>;
   SetLength(Samples, FAudioFormat.BlockFrames);
   var FramePeriod: Int64;
@@ -1179,6 +1240,10 @@ begin
           FrameHints.Pause;
           FAudio.Clear;
           FConsole.Reset;
+          FPendingAchievementProgress := nil;
+          var Observer := AchievementObserver;
+          if Observer <> nil then
+            Observer.Reset;
           FLock.Enter;
           try
             FDiagnostics.Clear;
@@ -1290,6 +1355,13 @@ begin
 
         var T1 := TStopwatch.GetTimeStamp;
         FConsole.RunFrame;
+        var Observer := AchievementObserver;
+        if Observer <> nil then
+        begin
+          RestorePendingAchievementProgress(Observer);
+          Observer.Frame(ReadAchievementMemory);
+        end;
+        Observer := nil;
         // Automatic changes originate inside BIOS assistance. Preserve the
         // same persistence boundary as the manual side-change command.
         var CurrentDisk := FConsole.DiskSystem;

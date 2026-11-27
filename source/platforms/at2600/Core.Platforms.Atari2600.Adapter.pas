@@ -6,6 +6,10 @@ uses
   System.SysUtils, System.Classes, System.IniFiles, Core.Storage, Core.Emulation,
   A2600.Console, A2600.Emulation, Core.InputConfig;
 
+const
+  IntvSystemChangerId = 'intv-system-changer';
+  IntvSystemChangerCoreId = 'INTVSCHG';
+
 type
   TA2600KeyMap = array[TEmulatorButton] of UInt32;
 
@@ -34,13 +38,13 @@ type
     FConfig: IEmulatorConfig;
     FConfigObject: TA2600Config;
     FKeyboard, FGamepad: TEmulatorInput;
-    FPaused: Boolean;
+    FPaused, FSystemChanger: Boolean;
     FError, FSnapshotDirectory: string;
     procedure ApplySettings;
   public
     procedure ApplyLiveSettings;
     procedure SendMouseDelta(DX, DY: Integer; Buttons: Byte);
-    constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; const ImageName: string = '');
+    constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; const ImageName: string = ''; SystemChanger: Boolean = False);
     destructor Destroy; override;
     function GetSystemId: string;
     function GetName: string;
@@ -72,7 +76,7 @@ type
 implementation
 
 uses
-  RM.Platforms.Atari2600, System.UITypes, Core.Snapshots;
+  System.UITypes, Core.Snapshots;
 
 const
   KeyNames: array[TEmulatorButton] of string = ('Up', 'Down', 'Left', 'Right', 'A', 'B', 'Select', 'Start', 'C', 'X', 'Y', 'Z', 'Mode');
@@ -143,9 +147,10 @@ begin
   end;
 end;
 
-constructor TA2600CoreAdapter.Create(Stream: TStream; const Storage: IStorage; const RomName: string; const ImageName: string);
+constructor TA2600CoreAdapter.Create(Stream: TStream; const Storage: IStorage; const RomName: string; const ImageName: string; SystemChanger: Boolean);
 begin
   inherited Create;
+  FSystemChanger := SystemChanger;
   FStorage := Storage;
   if FStorage = nil then
     FStorage := TStorage.Default;
@@ -159,14 +164,14 @@ begin
   if RomName.StartsWith('content://', True) then
     SourceName := FStorage.Describe(RomName).Name;
   FCartridge := Copy(Data);
-  FConfigObject := TA2600Config.Create(FStorage.ConfigFile('at2600'), FStorage);
+  FConfigObject := TA2600Config.Create(FStorage.ConfigFile(GetSystemId), FStorage);
   FConfigObject.FDetectedPAL := (ImageName + ' ' + SourceName).ToUpper.Contains('(PAL)');
   FConfigObject.FPAL := FConfigObject.FDetectedPAL;
   FConfig := FConfigObject;
   FConfig.Load;
   var Check := TA2600Console.Create(Data, FConfigObject.PAL, FConfigObject.Mapper);
   Check.Free;
-  FSnapshotDirectory := FStorage.GameSnapshots('at2600', RomName, SnapshotIdentity(Data));
+  FSnapshotDirectory := FStorage.GameSnapshots(GetSystemId, RomName, SnapshotIdentity(Data));
 end;
 
 destructor TA2600CoreAdapter.Destroy;
@@ -187,8 +192,11 @@ begin
   if FThread <> nil then
     Exit;
 
-  FThread := TA2600Worker.Create(FCartridge, FConfigObject.PAL, FConfigObject.Mapper, FStorage);
-  FThread.InputPorts := LoadCoreInputPorts(FStorage, 'at2600', GetConfig.FileName);
+  var CoreId := 'A2600';
+  if FSystemChanger then
+    CoreId := IntvSystemChangerCoreId;
+  FThread := TA2600Worker.Create(FCartridge, FConfigObject.PAL, FConfigObject.Mapper, FStorage, CoreId);
+  FThread.InputPorts := LoadCoreInputPorts(FStorage, GetSystemId, GetConfig.FileName);
   FThread.SnapshotDirectory := FSnapshotDirectory;
   ApplySettings;
   FThread.Start;
@@ -322,12 +330,18 @@ end;
 
 function TA2600CoreAdapter.GetSystemId: string;
 begin
-  Result := 'at2600';
+  if FSystemChanger then
+    Result := IntvSystemChangerId
+  else
+    Result := 'at2600';
 end;
 
 function TA2600CoreAdapter.GetName: string;
 begin
-  Result := 'Atari 2600';
+  if FSystemChanger then
+    Result := 'Intellivision System Changer'
+  else
+    Result := 'Atari 2600';
 end;
 
 function TA2600CoreAdapter.GetSupportsSnapshots: Boolean;

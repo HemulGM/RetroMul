@@ -17,6 +17,8 @@ The table lists registered systems. Supported files and ROM sets can also be loa
 | Atari Jaguar | `.j64`, `.bin`, `.rom` |
 | Atari Jaguar CD | `.cue`, `.chd`, `.cdi`, `.mds`, `.nrg`, `.ccd`, multi-disc `.m3u` |
 | Atari Lynx | `.lnx`, `.lyx`, BS93 `.o` / `.com` / `.bll`; BIOS embedded |
+| Intellivision | `.int`, `.itv`, `.rom`, `.bin`, `.cc3`, `.luigi`, `.playcable`, .kiosk |
+| Intellivision System Changer | `.systemchanger`; Atari 2600 `.a26`, `.bin`, `.rom` in the System Changer folder |
 | ColecoVision | `.col`, `.cv`, `.rom`, `.bin` |
 | NES / Famicom | `.nes`; Famicom Disk System `.fds`, `.qd` |
 | Famicom Disk System | `.fds`, `.qd` |

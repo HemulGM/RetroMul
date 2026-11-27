@@ -10,7 +10,9 @@ uses
   System.SysUtils, System.Classes, System.UITypes, System.Math, System.Hash,
   Core.InputConfig, Core.Emulation.Types, Core.Snapshots, HW.ARM, GBA.Firmware,
   GBA.Video, GBA.Sound, GBA.Cartridge
-  {$IFDEF RETROMUL_GBA_NATIVE_QUIET}, GBA.NativeClock{$ENDIF};
+  {$IFDEF RETROMUL_GBA_NATIVE_QUIET}
+    , GBA.NativeClock
+  {$ENDIF};
 
 const
   GBA_CLOCK = 16777216;
@@ -50,6 +52,7 @@ type
 
   // A packed view preserves the four-byte alignment and snapshot layout.
   PGBACPUAccessWords = ^TGBACPUAccessWords;
+
   TGBACPUAccessWords = packed record
     AddressValue, Metadata: UInt64;
   end;
@@ -162,13 +165,16 @@ type
     function IsEEPROM(Address: Cardinal): Boolean; inline;
     procedure InstallHLEBIOS;
   public
-    {$IFDEF RETROMUL_GBA_NATIVE_QUIET_TEST}function NativeQuietSelfTest: string;{$ENDIF}
+    {$IFDEF RETROMUL_GBA_NATIVE_QUIET_TEST}
+    function NativeQuietSelfTest: string;
+    {$ENDIF}
     constructor Create(const Data: TBytes; const BIOS: TBytes = nil; LegacyHLE: Boolean = False);
     destructor Destroy; override;
     procedure Reset;
     procedure RunFrame;
     procedure Step;
     function ReadBus(Address: Cardinal; Size: Integer): Cardinal;
+    procedure GetAchievementMemory(out InternalRAM, ExternalRAM, SaveRAM: PByte; out SaveSize: Cardinal);
     procedure WriteBus(Address, Value: Cardinal; Size: Integer);
     procedure ConfigureInputPorts(const Ports: TCoreInputPorts);
     procedure SetInput(const Input: TEmulatorButtons);
@@ -237,12 +243,16 @@ begin
   end;
   FPadEnabled := True;
   Reset;
-  {$IFDEF RETROMUL_GBA_NATIVE_QUIET}CreateNativeQuiet;{$ENDIF}
+  {$IFDEF RETROMUL_GBA_NATIVE_QUIET}
+  CreateNativeQuiet;
+  {$ENDIF}
 end;
 
 destructor TGBAConsole.Destroy;
 begin
-  {$IFDEF RETROMUL_GBA_NATIVE_QUIET}FNativeQuiet.Free;{$ENDIF}
+  {$IFDEF RETROMUL_GBA_NATIVE_QUIET}
+  FNativeQuiet.Free;
+  {$ENDIF}
   FCPU.Free;
   FSound.Free;
   FVideo.Free;
@@ -404,33 +414,34 @@ end;
 {$ENDIF}
 
 {$IFDEF RETROMUL_GBA_NATIVE_QUIET}
+
 procedure TGBAConsole.CreateNativeQuiet;
 begin
   var L: TGBANativeQuietLayout;
-  L.QuietCycles := Integer(NativeUInt(@FQuietCycles)-NativeUInt(Self));
-  L.InDMA := Integer(NativeUInt(@FInDMA)-NativeUInt(Self));
-  L.CPUResuming := Integer(NativeUInt(@FCPUResuming)-NativeUInt(Self));
-  L.CPUYieldIdle := Integer(NativeUInt(@FCPUYieldIdle)-NativeUInt(Self));
-  L.Halted := Integer(NativeUInt(@FHalted)-NativeUInt(Self));
-  L.Cartridge := Integer(NativeUInt(@FCartridge)-NativeUInt(Self));
-  L.Sound := Integer(NativeUInt(@FSound)-NativeUInt(Self));
-  L.GamePakBusy := Integer(NativeUInt(@FGamePakBusy)-NativeUInt(Self));
-  L.PrefetchValid := Integer(NativeUInt(@FPrefetchValid)-NativeUInt(Self));
-  L.MasterClock := Integer(NativeUInt(@FMasterClock)-NativeUInt(Self));
-  L.TimerMask := Integer(NativeUInt(@FTimerWorkMask)-NativeUInt(Self));
-  L.TimerEvent := Integer(NativeUInt(@FTimerEventCycles)-NativeUInt(Self));
-  L.TimerPending := Integer(NativeUInt(@FTimerPendingCycles)-NativeUInt(Self));
-  L.LineCycle := Integer(NativeUInt(@FLineCycle)-NativeUInt(Self));
-  L.VideoPending := Integer(NativeUInt(@FVideoPendingCycles)-NativeUInt(Self));
-  L.Video := Integer(NativeUInt(@FVideo)-NativeUInt(Self));
-  L.WaitControl := Integer(NativeUInt(@FWaitControl)-NativeUInt(Self));
-  L.WaitSequential := Integer(NativeUInt(@FWaitSequential)-NativeUInt(Self));
-  L.PrefetchNext := Integer(NativeUInt(@FPrefetchNext)-NativeUInt(Self));
-  L.PrefetchPhase := Integer(NativeUInt(@FPrefetchPhase)-NativeUInt(Self));
-  L.PrefetchCount := Integer(NativeUInt(@FPrefetchCount)-NativeUInt(Self));
-  L.WaitPort := Integer(NativeUInt(@FVideo.IO[$204])-NativeUInt(FVideo));
-  FSound.NativeQuietOffsets(L.SoundPending,L.SoundEvent);
-  FCartridge.NativeQuietOffsets(L.Hardware,L.TickRequired);
+  L.QuietCycles := Integer(NativeUInt(@FQuietCycles) - NativeUInt(Self));
+  L.InDMA := Integer(NativeUInt(@FInDMA) - NativeUInt(Self));
+  L.CPUResuming := Integer(NativeUInt(@FCPUResuming) - NativeUInt(Self));
+  L.CPUYieldIdle := Integer(NativeUInt(@FCPUYieldIdle) - NativeUInt(Self));
+  L.Halted := Integer(NativeUInt(@FHalted) - NativeUInt(Self));
+  L.Cartridge := Integer(NativeUInt(@FCartridge) - NativeUInt(Self));
+  L.Sound := Integer(NativeUInt(@FSound) - NativeUInt(Self));
+  L.GamePakBusy := Integer(NativeUInt(@FGamePakBusy) - NativeUInt(Self));
+  L.PrefetchValid := Integer(NativeUInt(@FPrefetchValid) - NativeUInt(Self));
+  L.MasterClock := Integer(NativeUInt(@FMasterClock) - NativeUInt(Self));
+  L.TimerMask := Integer(NativeUInt(@FTimerWorkMask) - NativeUInt(Self));
+  L.TimerEvent := Integer(NativeUInt(@FTimerEventCycles) - NativeUInt(Self));
+  L.TimerPending := Integer(NativeUInt(@FTimerPendingCycles) - NativeUInt(Self));
+  L.LineCycle := Integer(NativeUInt(@FLineCycle) - NativeUInt(Self));
+  L.VideoPending := Integer(NativeUInt(@FVideoPendingCycles) - NativeUInt(Self));
+  L.Video := Integer(NativeUInt(@FVideo) - NativeUInt(Self));
+  L.WaitControl := Integer(NativeUInt(@FWaitControl) - NativeUInt(Self));
+  L.WaitSequential := Integer(NativeUInt(@FWaitSequential) - NativeUInt(Self));
+  L.PrefetchNext := Integer(NativeUInt(@FPrefetchNext) - NativeUInt(Self));
+  L.PrefetchPhase := Integer(NativeUInt(@FPrefetchPhase) - NativeUInt(Self));
+  L.PrefetchCount := Integer(NativeUInt(@FPrefetchCount) - NativeUInt(Self));
+  L.WaitPort := Integer(NativeUInt(@FVideo.IO[$204]) - NativeUInt(FVideo));
+  FSound.NativeQuietOffsets(L.SoundPending, L.SoundEvent);
+  FCartridge.NativeQuietOffsets(L.Hardware, L.TickRequired);
   L.IRQPending := FCartridge.Hardware.NativeQuietIRQOffset;
   FNativeQuiet := TGBANativeQuiet.Create(L);
 end;
@@ -450,10 +461,11 @@ begin
     not (FFrameBoundaryActive and (FFrameNumber >= FFrameTarget)) and
     not (FInDMA and FCPUResuming and FCPUYieldIdle and not FHalted);
   {$ENDIF}
-  if (FNativeQuiet <> nil) and FNativeQuiet.TryTick(Self,Cycles) then
+  if (FNativeQuiet <> nil) and FNativeQuiet.TryTick(Self, Cycles) then
   begin
     {$IFDEF RETROMUL_VERIFY_QUIET_CACHE}
-    if not NativeAllowed then raise EInvalidOp.Create('Stale native GBA quiet window');
+    if not NativeAllowed then
+      raise EInvalidOp.Create('Stale native GBA quiet window');
     {$ENDIF}
     Exit(True);
   end;
@@ -486,13 +498,13 @@ begin
     {$IFDEF RETROMUL_VERIFY_QUIET_CACHE}
     // Diagnostic builds verify the cached decision against the original guard.
     if not ((Cycles > 0) and ((FTimerWorkMask = 0) or (Cycles < FTimerEventCycles)) and
-    (FIRQDelay = 0) and (FHaltIRQDelay = 0) and (FIRQReadDelay = 0) and
-    (FNextIRQDue = 0) and not FSerialActive and
-    not FCartridge.Hardware.HasRTC and not FCartridge.Hardware.IRQPending and
-    (Cycles < 1232 - FLineCycle) and
-    ((FLineCycle >= 1007) or (Cycles < 1006 - FLineCycle)) and
-    not (FFrameBoundaryActive and (FFrameNumber >= FFrameTarget)) and
-    not (FInDMA and FCPUResuming and FCPUYieldIdle and not FHalted)) then
+      (FIRQDelay = 0) and (FHaltIRQDelay = 0) and (FIRQReadDelay = 0) and
+      (FNextIRQDue = 0) and not FSerialActive and
+      not FCartridge.Hardware.HasRTC and not FCartridge.Hardware.IRQPending and
+      (Cycles < 1232 - FLineCycle) and
+      ((FLineCycle >= 1007) or (Cycles < 1006 - FLineCycle)) and
+      not (FFrameBoundaryActive and (FFrameNumber >= FFrameTarget)) and
+      not (FInDMA and FCPUResuming and FCPUYieldIdle and not FHalted)) then
       raise EInvalidOp.Create('Stale GBA quiet timing window');
     {$ENDIF}
     Dec(FQuietCycles, Cycles);
@@ -2196,6 +2208,13 @@ end;
 procedure TGBAConsole.MarkBatteryDirty;
 begin
   FCartridge.MarkBatteryDirty;
+end;
+
+procedure TGBAConsole.GetAchievementMemory(out InternalRAM, ExternalRAM, SaveRAM: PByte; out SaveSize: Cardinal);
+begin
+  InternalRAM := @FIWRAM[0];
+  ExternalRAM := @FEWRAM[0];
+  SaveRAM := FCartridge.SaveMemory(SaveSize);
 end;
 
 function TGBAConsole.GetBatteryDirty: Boolean;

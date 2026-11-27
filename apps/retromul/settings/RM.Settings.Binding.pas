@@ -191,10 +191,15 @@ procedure TSliderSettingsBinding.UpdateValueLabel;
 begin
   if (RowView = nil) or (RowView.ValueLabel = nil) then
     Exit;
-  var UnitText := TSliderSetting(Definition).UnitCaption;
+  var Field := TSliderSetting(Definition);
+  var UnitText := Field.UnitCaption;
   if (UnitText <> '') and (UnitText <> '%') then
     UnitText := ' ' + Translate(UnitText);
-  RowView.ValueLabel.Text := IntToStr(Round(TTrackBar(Control).Value)) + UnitText;
+  var Value := TTrackBar(Control).Value;
+  if Field.DecimalDigits > 0 then
+    RowView.ValueLabel.Text := FormatFloat('0.' + StringOfChar('#', Field.DecimalDigits), Value) + UnitText
+  else
+    RowView.ValueLabel.Text := IntToStr(Round(Value)) + UnitText;
 end;
 
 function TSliderSettingsBinding.Pull: Boolean;

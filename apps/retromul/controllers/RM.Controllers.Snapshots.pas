@@ -154,11 +154,9 @@ end;
 
 procedure TSnapshotsController.RecordCompletedSnapshot;
 begin
-  var Directory := GameSnapshotDirectory;
-  RecordGameSnapshotDirectory(FState.Session.Storage, FState.Session.RomLocation, Directory);
   if FState.Browser.View <> nil then
   begin
-    FState.Browser.View.RecordSnapshotDirectory(FState.Session.RomLocation, Directory);
+    FState.Browser.View.RecordSnapshotDirectory(FState.Session.RomLocation, GameSnapshotDirectory);
     FState.Browser.View.RefreshSnapshots;
   end;
 end;

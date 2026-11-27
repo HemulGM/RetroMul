@@ -16,7 +16,7 @@ type
   public
     FileInfo: TStorageFile;
     SystemId, Title, Cover, BoxCover, Description, Developer, Genre, Players: string;
-    Favorite: Boolean;
+    Favorite, HasAchievements: Boolean;
     InLibrary: Boolean;
     LastPlayed: TDateTime;
     function Key: string;
@@ -41,9 +41,9 @@ type
 
   TLibraryCard = class(TPanel)
     Cover: TImage;
-    Title, platform: TLabel;
+    platform: TLabel;
     Selection: TRectangle;
-    TextLayout: TLayout;
+    TextLayout, TitleLayout: TLayout;
   end;
 
   TLibraryView = class(TFrame)
@@ -54,6 +54,8 @@ type
     ComboBoxPlatform: TComboBox;
     VertScrollBoxScroll: TVertScrollBox;
     LayoutGrid: TLayout;
+    VertScrollBoxDetailScroll: TVertScrollBox;
+    LayoutInspectorColumns, LayoutInspectorOverview, LayoutInspectorDetails: TLayout;
     LabelTitle, LabelCount, LabelDetails, LabelDescription, LabelGameInfo, LabelSavesEmpty, LabelEmpty, LabelContinueTitle: TLabel;
     EditRomPath: TEdit;
     ImageCover: TImage;
@@ -63,6 +65,8 @@ type
     PathPlayIcon: TPath;
     VertScrollBoxPlatforms: TVertScrollBox;
     Path2: TPath;
+    PathSidebarBackIcon: TPath;
+    LayoutCardStatusTemplate: TLayout;
   private
     FPadMode, FPadStartPending: Boolean;
     FPadPageOpen: Boolean;
@@ -171,6 +175,8 @@ type
     procedure ChangePadPlatform(Delta: Integer);
   private
     FLoadThread: TLibraryLoader;
+    FStopAchievementScan: TProc;
+    FScanAchievementROMs: Boolean;
     FReloadPending, FClosing: Boolean;
     ButtonReloadLibrary: TButton;
     LayoutLibraryLoading: TLayout;
@@ -202,13 +208,18 @@ type
     FContinueGamePreview: TImage;
     FCards: TList<TLibraryCard>;
     FListMode, FBuilding, FArranging, FLayouting, FShowPlatform, FShowLetters: Boolean;
-    FInspectorOpen: Boolean;
+    FInspectorOpen, FArrangingInspector: Boolean;
+    FInspectorLayoutWidth: Single;
     FCardWidth: Integer;
     FContinueCollapse, FContinueExtent: Single;
     FOnPlay, FOnSettings, FOnOpen, FOnPresentationChanged: TNotifyEvent;
     FOnOpenOpticalDisc: TNotifyEvent;
     procedure OpenOpticalDiscClick(Sender: TObject);
     procedure ClearCards;
+    procedure StartAchievementScan;
+    procedure ApplyAchievementStatus(const Supported: TArray<string>);
+    procedure UpdateCardStatus(Host: TLayout; Game: TLibraryGame);
+    procedure UpdatePadCardStatus(Slot: TRectangle);
     procedure SaveState;
     function FindGame(const Location: string): TLibraryGame;
     procedure FinishReload;
@@ -228,6 +239,8 @@ type
     {$IFDEF ISMOBILE}
     procedure ScrollViewportChanged(Sender: TObject; const OldPosition, NewPosition: TPointF; const ContentSizeChanged: Boolean);
     {$ENDIF}
+    procedure InspectorColumnsResized(Sender: TObject);
+    procedure ArrangeInspector;
     procedure UpdateInspector;
     procedure SelectContinueGame;
     procedure UpdateContinue;
@@ -266,6 +279,7 @@ type
     procedure ApplyOrientationPresentation(Landscape: Boolean);
     procedure Reload;
     procedure ApplyPreferences;
+    procedure RefreshAchievementScanPreference;
     procedure ApplyLanguage(const PreviousLanguage: string);
     procedure RecordSession(const FileName, SnapshotDirectory: string; const SystemId: string = ''; const DisplayName: string = ''; const Metadata: IRomMetadata = nil);
     procedure RefreshSnapshots;
@@ -294,8 +308,10 @@ uses
   {$ENDIF}
   System.IOUtils, System.Math, System.Math.Vectors, System.Hash,
   System.Character, System.Generics.Defaults, FMX.Graphics, FMX.BehaviorManager,
-  Core.GameList, FMX.Image, Core.Platforms, Core.SavePaths, Core.CD.Physical,
-  RM.Icons, RM.SearchEdit, RM.Styles, RM.Controls.Lifetime;
+  Core.GameList, FMX.Image, FMX.TextLayout, Core.Platforms, Core.SavePaths,
+  Core.CD.Physical, RM.Icons, RM.SearchEdit, RM.Styles, RM.Controls.Lifetime,
+  System.JSON, System.SyncObjs, Core.Emulation.Types, Core.PlatformServices,
+  RA.Account, RA.Connection, RA.Hash, RA.Http, RA.Info, RA.Protocol;
 
 {$IFDEF ISMOBILE}
 type
@@ -574,8 +590,12 @@ begin
   var Order := 0;
   for var platform in TPlatformRegistry.All do
   begin
+    var ComponentSuffix := '';
+    for var Part in platform.Id.Split(['-', '_']) do
+      if Part <> '' then
+        ComponentSuffix := ComponentSuffix + Part.Substring(0, 1).ToUpper + Part.Substring(1);
     var Filter := ActionButton(Self, FirstRow, platform.ShortName, FilterClick);
-    Filter.Name := 'ButtonFilter' + platform.Id;
+    Filter.Name := 'ButtonFilter' + ComponentSuffix;
     Filter.TagString := platform.Id;
     Filter.Height := 31;
     FPlatformButtons.Add(Filter);
@@ -600,7 +620,7 @@ begin
       Inc(Order);
     end;
     var Button := ActionButton(Self, Group, platform.Name, FilterClick);
-    Button.Name := 'ButtonSidebar' + platform.Id;
+    Button.Name := 'ButtonSidebar' + ComponentSuffix;
     Button.TagString := platform.Id;
     Button.Position.Y := Group.Height;
     Button.Align := TAlignLayout.Top;
@@ -663,6 +683,7 @@ begin
   ButtonMore.OnClick := MoreClick;
   LayoutBody.OnResize := BodyResize;
   LayoutGrid.OnResize := GridResize;
+  LayoutInspectorColumns.OnResized := InspectorColumnsResized;
   {$IFDEF ISMOBILE}
   FContinue.ClipChildren := True;
   VertScrollBoxScroll.OnViewportPositionChange := ScrollViewportChanged;
@@ -691,6 +712,8 @@ destructor TLibraryView.Destroy;
 
 begin
   FClosing := True;
+  if Assigned(FStopAchievementScan) then
+    FStopAchievementScan();
   FBuilding := True;
   for var Timer in [TimerPadTransition, TimerPadPlatforms, TimerPadLayout, TimerPadBackdrop] do
     if Timer <> nil then
@@ -1067,6 +1090,8 @@ begin
     FReloadPending := True;
     Exit;
   end;
+  if Assigned(FStopAchievementScan) then
+    FStopAchievementScan();
   FInspectorOpen := False;
   FLoadThread := TLibraryLoader.Create(FStorage, FState, FinishReload);
   FNavigation.Reset;
@@ -1113,6 +1138,7 @@ begin
   UpdateContinue;
   BuildCards;
   Resize;
+  StartAchievementScan;
   {$IFDEF RETROMUL_LIBRARY_TRACE}
   TFile.AppendAllText(TPath.Combine(FStorage.Root, 'library-load-timing.txt'),
     Format('UI total: %d ms', [TThread.GetTickCount64 - FinishStarted]) + sLineBreak, TEncoding.UTF8);
@@ -1132,6 +1158,7 @@ procedure TLibraryView.ApplyPreferences;
 begin
   var Ini := FStorage.ReadConfig(FStorage.ConfigFile('config'));
   try
+    FScanAchievementROMs := Ini.ReadBool(RAAchievementsSection, RAScanLibraryROMsKey, RAScanLibraryROMsDefault);
     FListMode := Ini.ReadString('Library', 'View', 'grid') = 'list';
     FShowPlatform := Ini.ReadBool('Library', 'ShowPlatform', True);
     FShowLetters := Ini.ReadBool('Library', 'ShowLetters', False);
@@ -1145,6 +1172,21 @@ begin
   (FindComponent('ButtonGamepadView') as TButton).Hint := Translate('Gamepad');
   if FCards <> nil then
     BuildCards;
+end;
+
+procedure TLibraryView.RefreshAchievementScanPreference;
+begin
+  var Ini := FStorage.ReadConfig(FStorage.ConfigFile('config'));
+  try
+    var Enabled := Ini.ReadBool(RAAchievementsSection, RAScanLibraryROMsKey, RAScanLibraryROMsDefault);
+    if Enabled = FScanAchievementROMs then
+      Exit;
+    FScanAchievementROMs := Enabled;
+  finally
+    Ini.Free;
+  end;
+  if FLoadThread = nil then
+    StartAchievementScan;
 end;
 
 procedure TLibraryView.ApplyLanguage(const PreviousLanguage: string);
@@ -1225,7 +1267,8 @@ end;
 procedure TLibraryView.RecordSession(const FileName, SnapshotDirectory, SystemId, DisplayName: string; const Metadata: IRomMetadata);
 begin
   var Game := FindGame(FileName);
-  if Game = nil then
+  var NewGame := Game = nil;
+  if NewGame then
   begin
     var platform: TPlatformInfo;
     if not TPlatformRegistry.Find(SystemId, platform) then
@@ -1258,7 +1301,9 @@ begin
     FState.DeleteKey('Snapshots', Key);
   SaveState;
   if FLoadThread <> nil then
-    FReloadPending := True;
+    FReloadPending := True
+  else if NewGame and (PlatformAchievementMedia(Game.SystemId) <> nil) then
+    StartAchievementScan;
   UpdateContinue;
   BuildCards;
 end;
@@ -1371,6 +1416,301 @@ begin
   SaveState;
 end;
 
+type
+  TLibraryAchievementROM = record
+    Location, SystemId, Digest: string;
+    Media: IEmulationAchievementMedia;
+    ConsoleId: Cardinal;
+  end;
+
+const
+  LegacyGBAConsoleId: Cardinal = Ord(TRARomConsole.GameBoyAdvance);
+
+function LibraryAchievementStatusSection(ConsoleId: Cardinal): string;
+begin
+  // Retain the section read by existing GBA profiles.
+  if ConsoleId = LegacyGBAConsoleId then
+    Exit('GBA achievements');
+  Result := 'Achievements ' + UIntToStr(ConsoleId);
+end;
+
+function LibraryAchievementStamp(const Storage: IStorage; const Location: string): string;
+begin
+  Result := '';
+  try
+    var Modified := Storage.ModifiedTime(Location);
+    if Modified <= 0 then
+      Exit;
+    var Size := Storage.Describe(Location).Size;
+    if Size > 0 then
+      Result := IntToStr(Size) + ':' + FloatToStrF(Modified, ffGeneral, 17, 0, TFormatSettings.Invariant) + ':';
+  except
+    // Providers can omit file metadata. In that case use the ROM contents.
+  end;
+end;
+
+function LibraryAchievementHash(const Storage: IStorage; Cache: TMemIniFile; const ROM: TLibraryAchievementROM; ScanROMs: Boolean): string;
+begin
+  Result := '';
+  var Section := 'ROM hashes';
+  if ROM.ConsoleId <> LegacyGBAConsoleId then
+    Section := Section + ' ' + UIntToStr(ROM.ConsoleId);
+  var Key := THashSHA2.GetHashString(ROM.Location);
+  var Stamp := LibraryAchievementStamp(Storage, ROM.Location);
+  if Stamp <> '' then
+  begin
+    var Entry := Cache.ReadString(Section, Key, '');
+    if (Length(Entry) = Length(Stamp) + 32) and Entry.StartsWith(Stamp) then
+      Exit(Entry.Substring(Length(Stamp)));
+  end;
+  if not ScanROMs or not TryHashRAFile(Storage, ROM.SystemId, ROM.Location, ROM.Media, Result) then
+    Exit('');
+  if Stamp = '' then
+    Exit;
+  if Stamp <> LibraryAchievementStamp(Storage, ROM.Location) then
+    Exit('');
+  Cache.WriteString(Section, Key, Stamp + Result);
+end;
+
+function ReadLibraryAchievementCatalog(ConsoleId: Cardinal; Hashes: THashSet<string>): Boolean;
+begin
+  Result := False;
+  try
+    var Client := TRAHttpClient.Create(RARetroMulUserAgent);
+    try
+      var Response := Client.Post(TRARequest.FetchGamesList(ConsoleId));
+      try
+        for var Entry in ReadRAGamesList(Response) do
+          if Entry.NumAchievements > 0 then
+            for var Digest in Entry.SupportedHashes do
+              Hashes.Add(Digest.ToLowerInvariant);
+      finally
+        Response.Free;
+      end;
+    finally
+      Client.Free;
+    end;
+    Result := True;
+  except
+    // Only a successful catalog response can replace cached availability.
+  end;
+end;
+
+procedure TLibraryView.ApplyAchievementStatus(const Supported: TArray<string>);
+begin
+  var SupportedLocations := THashSet<string>.Create(Supported);
+  try
+    for var Game in FGames do
+      Game.HasAchievements := SupportedLocations.Contains(Game.SystemId + ':' + Game.FileInfo.Location);
+  finally
+    SupportedLocations.Free;
+  end;
+  for var Card in FCards do
+    UpdateCardStatus(Card.TitleLayout, TLibraryGame(Card.TagObject));
+  for var Slot in FPadSlots do
+    UpdatePadCardStatus(Slot);
+end;
+
+procedure TLibraryView.StartAchievementScan;
+begin
+  if Assigned(FStopAchievementScan) then
+    FStopAchievementScan();
+  FStopAchievementScan := nil;
+
+  var Candidates := TList<TLibraryAchievementROM>.Create;
+  var ROMs: TArray<TLibraryAchievementROM>;
+  try
+    for var Game in FGames do
+    begin
+      var ROM: TLibraryAchievementROM;
+      ROM.Media := PlatformAchievementMedia(Game.SystemId);
+      if ROM.Media = nil then
+        Continue;
+      ROM.ConsoleId := ROM.Media.ConsoleId;
+      ROM.Location := Game.FileInfo.Location;
+      ROM.SystemId := Game.SystemId;
+      ROM.Digest := '';
+      Candidates.Add(ROM);
+    end;
+    ROMs := Candidates.ToArray;
+  finally
+    Candidates.Free;
+  end;
+  if Length(ROMs) = 0 then
+    Exit;
+
+  var Storage := FStorage;
+  var ScanROMs := FScanAchievementROMs;
+  var Cancelled: Integer := 0;
+  FStopAchievementScan :=
+    procedure
+    begin
+      TInterlocked.Exchange(Cancelled, 1);
+    end;
+  TThread.CreateAnonymousThread(
+    procedure
+    begin
+      var CacheLocation := Storage.ConfigFile('library-retroachievements-v1');
+      var Cache: TMemIniFile;
+      try
+        Cache := Storage.ReadConfig(CacheLocation);
+      except
+        Cache := TMemIniFile.Create('');
+      end;
+      try
+        var Consoles := THashSet<Cardinal>.Create;
+        var Available := TList<string>.Create;
+        try
+          var Cancellation := TStorage.BeginReadCancellation(
+            procedure
+            begin
+              if TInterlocked.CompareExchange(Cancelled, 0, 0) <> 0 then
+                Abort;
+            end);
+          for var Index := 0 to High(ROMs) do
+          begin
+            if TInterlocked.CompareExchange(Cancelled, 0, 0) <> 0 then
+              Exit;
+            try
+              var Digest := LibraryAchievementHash(Storage, Cache, ROMs[Index], ScanROMs);
+              if Digest = '' then
+                Continue;
+              ROMs[Index].Digest := Digest;
+              var ConsoleId := ROMs[Index].ConsoleId;
+              Consoles.Add(ConsoleId);
+              if Cache.ReadBool(LibraryAchievementStatusSection(ConsoleId), Digest, False) then
+                Available.Add(ROMs[Index].SystemId + ':' + ROMs[Index].Location);
+            except
+              // Individual ROMs may be unavailable or unreadable.
+            end;
+          end;
+
+          var Cached := Available.ToArray;
+          var RefreshCatalog := ScanROMs and (Consoles.Count > 0);
+          TThread.Queue(nil,
+            procedure
+            begin
+              if TInterlocked.CompareExchange(Cancelled, 0, 0) <> 0 then
+                Exit;
+              if not RefreshCatalog then
+                FStopAchievementScan := nil;
+              ApplyAchievementStatus(Cached);
+            end);
+          if not RefreshCatalog or (TInterlocked.CompareExchange(Cancelled, 0, 0) <> 0) then
+            Exit;
+
+          var Hashes := THashSet<string>.Create;
+          var CacheData: TBytes := nil;
+          var Supported: TArray<string>;
+          try
+            var Updated := False;
+            for var ConsoleId in Consoles do
+            begin
+              if TInterlocked.CompareExchange(Cancelled, 0, 0) <> 0 then
+                Exit;
+              Hashes.Clear;
+              if not ReadLibraryAchievementCatalog(ConsoleId, Hashes) then
+                Continue;
+              var Section := LibraryAchievementStatusSection(ConsoleId);
+              for var ROM in ROMs do
+                if (ROM.ConsoleId = ConsoleId) and (ROM.Digest <> '') then
+                  Cache.WriteBool(Section, ROM.Digest, Hashes.Contains(ROM.Digest));
+              Updated := True;
+            end;
+            if Updated then
+            begin
+              Available.Clear;
+              for var ROM in ROMs do
+                if (ROM.Digest <> '') and
+                  Cache.ReadBool(LibraryAchievementStatusSection(ROM.ConsoleId), ROM.Digest, False) then
+                  Available.Add(ROM.SystemId + ':' + ROM.Location);
+              Supported := Available.ToArray;
+              var Lines := TStringList.Create;
+              try
+                Cache.GetStrings(Lines);
+                CacheData := TEncoding.UTF8.GetBytes(Lines.Text);
+              finally
+                Lines.Free;
+              end;
+            end;
+          finally
+            Hashes.Free;
+          end;
+          TThread.Queue(nil,
+            procedure
+            begin
+              if TInterlocked.CompareExchange(Cancelled, 0, 0) <> 0 then
+                Exit;
+              FStopAchievementScan := nil;
+              if CacheData = nil then
+                Exit;
+              try
+                Storage.WriteBytes(CacheLocation, CacheData);
+              except
+                // A read-only profile still supports current-session results.
+              end;
+              ApplyAchievementStatus(Supported);
+            end);
+        finally
+          Available.Free;
+          Consoles.Free;
+        end;
+      finally
+        Cache.Free;
+      end;
+    end).Start;
+end;
+
+procedure TLibraryView.UpdateCardStatus(Host: TLayout; Game: TLibraryGame);
+begin
+  var Status := Host.FindComponent('LayoutCardStatus') as TLayout;
+  var Favorite := (Game <> nil) and Game.Favorite;
+  var Achievements := (Game <> nil) and Game.HasAchievements;
+  if not (Favorite or Achievements) then
+  begin
+    if Status <> nil then
+      Status.Visible := False;
+    Exit;
+  end;
+  if Status = nil then
+  begin
+    Status := LayoutCardStatusTemplate.Clone(Host) as TLayout;
+    Status.Name := 'LayoutCardStatus';
+    Status.Parent := Host;
+  end;
+  (Status.Children[0] as TLayout).Visible := Favorite;
+  (Status.Children[1] as TLayout).Visible := Achievements;
+  Status.Width := 20 * (Ord(Favorite) + Ord(Achievements));
+  Status.Visible := True;
+end;
+
+procedure TLibraryView.UpdatePadCardStatus(Slot: TRectangle);
+begin
+  if not string(Slot.Name).StartsWith('RectanglePadCover') or
+    (Slot.Tag < 0) or (Slot.Tag >= FPadGames.Count) then
+    Exit;
+  var Host := Slot.FindComponent('LayoutPadCardStatusHost') as TLayout;
+  var Game := FPadGames[Slot.Tag];
+  if Host = nil then
+  begin
+    if not (Game.Favorite or Game.HasAchievements) then
+      Exit;
+    var Overlay := TLayout.Create(Slot);
+    Overlay.Name := 'LayoutPadCardStatusOverlay';
+    Overlay.Align := TAlignLayout.Contents;
+    Overlay.HitTest := False;
+    Overlay.Parent := Slot;
+    Host := TLayout.Create(Slot);
+    Host.Name := 'LayoutPadCardStatusHost';
+    Host.Align := TAlignLayout.Top;
+    Host.Height := 20;
+    Host.Margins.Rect := RectF(4, 4, 4, 0);
+    Host.HitTest := False;
+    Host.Parent := Overlay;
+  end;
+  UpdateCardStatus(Host, Game);
+end;
+
 procedure TLibraryView.BuildCards(AppendOnly: Boolean);
 begin
   if FBuilding or (FLoadThread <> nil) or (LayoutGrid = nil) then
@@ -1464,8 +1804,14 @@ begin
         Card.TextLayout.Parent := Card;
         Card.TextLayout.Align := TAlignLayout.Bottom;
         Card.TextLayout.Height := 58;
-        var Title := TextLabel(Card, Card.TextLayout, Game.Title, 14);
-        Card.Title := Title;
+        Card.TitleLayout := TLayout.Create(Card);
+        Card.TitleLayout.Parent := Card.TextLayout;
+        Card.TitleLayout.Align := TAlignLayout.MostTop;
+        Card.TitleLayout.Height := 28;
+        Card.TitleLayout.HitTest := False;
+        UpdateCardStatus(Card.TitleLayout, Game);
+        var Title := TextLabel(Card, Card.TitleLayout, Game.Title, 14);
+        Title.Align := TAlignLayout.Client;
         Title.TextSettings.Font.Style := [TFontStyle.fsBold];
         var platform := TextLabel(Card, Card.TextLayout, LibrarySystemName(Game.SystemId), 12);
         Card.platform := platform;
@@ -1660,8 +2006,7 @@ begin
         Card.Margins.Right := IfThen(i mod Columns = Columns - 1, 0, 14);
         Card.Position.X := (i mod Columns) * (W + 14); // Alignment order within this row.
         Card.Padding.Rect := RectF(8, 8, 8, 8);
-        Card.Title.Align := TAlignLayout.Top;
-        Card.Title.Height := 28;
+        Card.TitleLayout.Height := 28;
         Card.platform.Align := TAlignLayout.Top;
         Card.platform.Height := 22;
         if FListMode then
@@ -1671,7 +2016,7 @@ begin
           Card.Cover.Margins.Rect := RectF(0, 0, 16, 0);
           Card.TextLayout.Align := TAlignLayout.Client;
           Card.TextLayout.Padding.Rect := RectF(0, 0, 12, 0);
-          Card.Title.Height := 24;
+          Card.TitleLayout.Height := 24;
           Card.platform.Height := 18;
           Card.platform.Margins.Top := 0;
         end
@@ -1751,6 +2096,8 @@ begin
     // Restoring the side panes changes the client area. Resolve that alignment
     // before wrapping filters and sizing cards against LayoutBody.Width.
     Realign;
+    if PanelInspector.Visible then
+      ArrangeInspector;
     for var i := 0 to High(FNavButtons) do
     begin
       FNavIcons[i].Visible := not CompactNav.Visible;
@@ -1935,8 +2282,7 @@ procedure TLibraryView.UpdateInspector;
 begin
   if FLoadThread <> nil then
     Exit;
-  var Content := TControl(ImageCover.Parent);
-  Content.BeginUpdate;
+  LayoutInspectorColumns.BeginUpdate;
   try
     ButtonPlay.Enabled := FSelected <> nil;
     ButtonFavorite.Enabled := FSelected <> nil;
@@ -1996,19 +2342,108 @@ begin
     end;
     // Hidden Top-aligned controls retain old positions. Restore the logical
     // order before FMX sorts them when the selected game's content changes.
-    var Items: TArray<TControl> := [ImageCover, LabelTitle, LabelDetails, EditRomPath,
-        ButtonPlay, ButtonFavorite, LabelDescription, LabelGameInfo,
-        FindComponent('LabelSnapshots') as TControl, LabelSavesEmpty,
-        TControl(FSaveButtons[0].Parent), TControl(FSaveButtons[1].Parent),
-        TControl(FSaveButtons[2].Parent)];
-    var OrderY: Single := 0;
-    for var Item in Items do
+    for var Column in [LayoutInspectorOverview, LayoutInspectorDetails] do
     begin
-      Item.Position.Y := OrderY + Item.Margins.Top;
-      OrderY := OrderY + Item.Margins.Top + Item.Height + Item.Margins.Bottom;
+      var OrderY: Single := 0;
+      for var i := 0 to Column.ControlsCount - 1 do
+      begin
+        var Item := Column.Controls[i];
+        Item.Position.Y := OrderY + Item.Margins.Top;
+        OrderY := OrderY + Item.Margins.Top + Item.Height + Item.Margins.Bottom;
+      end;
     end;
   finally
-    Content.EndUpdate;
+    LayoutInspectorColumns.EndUpdate;
+  end;
+  ArrangeInspector;
+end;
+
+procedure TLibraryView.InspectorColumnsResized(Sender: TObject);
+begin
+  if not FBuilding and not FClosing and PanelInspector.Visible and
+    not SameValue(FInspectorLayoutWidth, LayoutInspectorColumns.Width, 0.1) then
+    ArrangeInspector;
+end;
+
+procedure TLibraryView.ArrangeInspector;
+const
+  MinimumTwoColumnWidth = 600;
+  ColumnGap = 24;
+
+  function ColumnHeight(const Column: TLayout): Single;
+  begin
+    Result := 0;
+    for var i := 0 to Column.ControlsCount - 1 do
+    begin
+      var Item := Column.Controls[i];
+      if Item.Visible then
+        Result := Result + Item.Margins.Top + Item.Height + Item.Margins.Bottom;
+    end;
+  end;
+
+begin
+  if FArrangingInspector then
+    Exit;
+  FArrangingInspector := True;
+  try
+    var SideBySide := VertScrollBoxDetailScroll.Width >= MinimumTwoColumnWidth;
+    // The scrollbar can change the available width after the content height is set.
+    for var Pass := 1 to 2 do
+    begin
+      var AvailableWidth := LayoutInspectorColumns.Width;
+      FInspectorLayoutWidth := AvailableWidth;
+      var DescriptionWidth := AvailableWidth;
+      LayoutInspectorColumns.BeginUpdate;
+      try
+        if SideBySide then
+        begin
+          LayoutInspectorOverview.Align := TAlignLayout.Left;
+          LayoutInspectorOverview.Width := (AvailableWidth - ColumnGap) * 0.42;
+          LayoutInspectorDetails.Margins.Left := ColumnGap;
+          LayoutInspectorDetails.Align := TAlignLayout.Client;
+          DescriptionWidth := AvailableWidth - LayoutInspectorOverview.Width - ColumnGap;
+        end
+        else
+        begin
+          LayoutInspectorOverview.Align := TAlignLayout.MostTop;
+          LayoutInspectorDetails.Margins.Left := 0;
+          LayoutInspectorDetails.Align := TAlignLayout.Top;
+        end;
+        if LabelDescription.Visible then
+        begin
+          var TextLayout := TTextLayoutManager.DefaultTextLayout.Create;
+          try
+            TextLayout.BeginUpdate;
+            TextLayout.Font.Assign(LabelDescription.TextSettings.Font);
+            TextLayout.MaxSize := PointF(Max(1, DescriptionWidth - 4), TTextLayout.MaxLayoutSize.Y);
+            TextLayout.WordWrap := True;
+            TextLayout.Text := LabelDescription.Text;
+            TextLayout.EndUpdate;
+            LabelDescription.Height := Ceil(TextLayout.TextHeight) + 4;
+          finally
+            TextLayout.Free;
+          end;
+        end;
+
+        var OverviewHeight := ColumnHeight(LayoutInspectorOverview);
+        var DetailsHeight := ColumnHeight(LayoutInspectorDetails);
+        if SideBySide then
+          LayoutInspectorColumns.Height := Max(OverviewHeight, DetailsHeight)
+        else
+        begin
+          LayoutInspectorOverview.Height := OverviewHeight;
+          LayoutInspectorDetails.Height := DetailsHeight;
+          LayoutInspectorColumns.Height := OverviewHeight + DetailsHeight;
+        end;
+      finally
+        LayoutInspectorColumns.EndUpdate;
+      end;
+      VertScrollBoxDetailScroll.RealignContent;
+      if SameValue(AvailableWidth, LayoutInspectorColumns.Width, 0.1) then
+        Break;
+    end;
+  finally
+    FArrangingInspector := False;
   end;
 end;
 
@@ -3106,6 +3541,7 @@ begin
       FPadLabels[i] := FPadLabels[Reuse];
       FPadLabels[Reuse] := Caption;
       FPadSlots[i].Tag := Index;
+      UpdatePadCardStatus(FPadSlots[i]);
       if (FPadCovers[i].TagString <> Cover) and
         (ImagePadPrevious.TagString = Cover) and not ImagePadPrevious.Bitmap.IsEmpty then
       begin
@@ -4047,6 +4483,8 @@ begin
     FSelected.Favorite := not FSelected.Favorite;
     FState.WriteBool('Favorites', FSelected.Key, FSelected.Favorite);
     SaveState;
+    for var Slot in FPadSlots do
+      UpdatePadCardStatus(Slot);
     UpdatePadGamePage;
     UpdatePadHints;
   end;

@@ -12,17 +12,19 @@ type
   TA2600Platform = class
   strict private
     class var
-      FRegistered: Boolean;
+      FRegistered, FSystemChangerRegistered: Boolean;
     class function Recognize(Context: TCoreLoadContext): TCoreMatch; static;
     class function RecognizeArchive(Context: TCoreLoadContext): TCoreMatch; static;
+    class function RecognizeSystemChanger(Context: TCoreLoadContext): TCoreMatch; static;
     class procedure RegisterPlatforms; static;
     class procedure RegisterCore; static;
     class procedure LoadLegacyKeys(var Keys: TPlatformInputKeyMap); static;
-    class procedure RegisterInput; static;
-    class procedure RegisterClient; static;
+    class procedure RegisterInput(const Id: string); static;
+    class procedure RegisterClient(const Id, HelpText: string); static;
     class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
   public
     class procedure RegisterPlatform; static;
+    class procedure RegisterSystemChanger; static;
   end;
 
 implementation
@@ -35,7 +37,7 @@ uses
   RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
   RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
   System.Classes, System.UITypes, Core.Archive.Container, System.IOUtils,
-  Core.Snapshots, Core.InputConfig, System.IniFiles;
+  Core.Snapshots, Core.InputConfig, Core.PlatformServices, System.IniFiles;
 
 const
   PlatformIcon =
@@ -150,6 +152,29 @@ begin
       end);
 end;
 
+class function TA2600Platform.RecognizeSystemChanger(Context: TCoreLoadContext): TCoreMatch;
+begin
+  Result := nil;
+  var Hint := ('/' + Context.RomName + ' /' + Context.SourceName).ToLower.Replace('\', '/');
+  if not Context.HasExtension(['.systemchanger']) and
+    (not Context.HasExtension(['.a26', '.bin', '.rom']) or
+    ((Context.SelectedPlatform <> IntvSystemChangerId) and
+    not Hint.Contains('/systemchanger/') and not Hint.Contains('/intv-system-changer/'))) then
+    Exit;
+  Result := TCoreMatch.Create(IntvSystemChangerCoreId,
+    function: IEmulationCore
+    begin
+      try
+        Result := TA2600CoreAdapter.Create(Context.Stream, Context.EffectiveStorage, Context.RomName,
+          Context.SourceName, True);
+      except
+        on E: EReadError do
+          raise ECoreInvalidMedia.Create('System Changer: ' + E.Message);
+      end;
+    end);
+  Result.Format.SystemId := IntvSystemChangerId;
+end;
+
 class procedure TA2600Platform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('at2600', 'Atari 2600', '2600',
@@ -185,7 +210,7 @@ begin
   end;
 end;
 
-class procedure TA2600Platform.RegisterInput;
+class procedure TA2600Platform.RegisterInput(const Id: string);
 begin
   var JoystickButtons: TEmulatorButtons := [TEmulatorButton.Up, TEmulatorButton.Down,
       TEmulatorButton.Left, TEmulatorButton.Right, TEmulatorButton.A, TEmulatorButton.Start, TEmulatorButton.Select];
@@ -203,26 +228,54 @@ begin
   Definition.UseSharedBindingRules := True;
   Definition.LoadLegacyKeys := LoadLegacyKeys;
   Definition.LoadGamepadPreset := LoadGamepadPreset;
-  RegisterPlatformInput('at2600', Definition);
+  RegisterPlatformInput(Id, Definition);
 end;
 
-class procedure TA2600Platform.RegisterClient;
+class procedure TA2600Platform.RegisterClient(const Id, HelpText: string);
 begin
-  RegisterSettingsPlatform('at2600', TAtari2600Settings,
-    'Start with automatic cartridge detection. With generic .bin or .rom images, the platform ' +
-    'folder identifies the console. Choose the correct TV standard and, for Atari 2600 paddle ' +
-    'games, configure the paddle controller.');
-  RegisterPlatformSettingsDevices('at2600', TAtari2600SettingsDevices);
-  RegisterPlatformDeviceCallouts('at2600', TPlatformDeviceCallouts);
-  RegisterPlatformControlsHelp('at2600', TPlatformControlsHelp);
-  RegisterPlatformSettingsHandler('at2600', TPlatformSettingsHandler);
-  RegisterPlatformWindowLayout('at2600', TPlatformWindowLayout);
-  RegisterPlatformSessionHandler('at2600', TPlatformSessionHandler);
-  RegisterPlatformInputHandler('at2600', TPlatformInputHandler);
-  RegisterInput;
-  RegisterPlatformGamepads('at2600', TGamepadAtari2600Standart,
+  RegisterSettingsPlatform(Id, TAtari2600Settings, HelpText);
+  RegisterPlatformSettingsDevices(Id, TAtari2600SettingsDevices);
+  RegisterPlatformDeviceCallouts(Id, TPlatformDeviceCallouts);
+  RegisterPlatformControlsHelp(Id, TPlatformControlsHelp);
+  RegisterPlatformSettingsHandler(Id, TPlatformSettingsHandler);
+  RegisterPlatformWindowLayout(Id, TPlatformWindowLayout);
+  RegisterPlatformSessionHandler(Id, TPlatformSessionHandler);
+  RegisterPlatformInputHandler(Id, TPlatformInputHandler);
+  RegisterInput(Id);
+  RegisterPlatformGamepads(Id, TGamepadAtari2600Standart,
     [TGamepadDeviceVariant.Create('pad-analog', TGamepadAtari2600Paddles)]);
-  RegisterPlatformPresentation('at2600', 'at2600', PlatformIcon);
+  RegisterPlatformPresentation(Id, Id, PlatformIcon);
+end;
+
+class procedure TA2600Platform.RegisterSystemChanger;
+begin
+  if FSystemChangerRegistered then
+    Exit;
+  TPlatformRegistry.RegisterPlatform(IntvSystemChangerId, 'Intellivision System Changer',
+    'System Changer', 'Mattel', 'Mattel Intellivision II System Changer 4610 Portofino Atari 2600',
+    'systemchanger', ['systemchanger', 'intv-system-changer'],
+    ['.systemchanger', '.a26', '.bin', '.rom'], '', IntvSystemChangerId, 2);
+  RegisterSnapshotPolicy(IntvSystemChangerCoreId, TSnapshotPolicy.Create(3));
+  RegisterInputPortsReader(IntvSystemChangerId, ReadA2600InputPorts);
+  var Service := Default(TPlatformServices);
+  Service.TerminalInput :=
+    function(const Core: IEmulationCore): TTerminalInputPolicy
+    begin
+      Result := Default(TTerminalInputPolicy);
+      Result.AllKeys := True;
+      Result.ExitKey := $1B;
+    end;
+  RegisterPlatformServices(IntvSystemChangerId, Service);
+
+  var Registration := TEmulationCoreRegistration.Create(IntvSystemChangerCoreId,
+    ['.systemchanger', '.a26', '.bin', '.rom']);
+  Registration.MaxArchiveImageSize := 512 * 1024;
+  Registration.Add(TCoreLoadStage.Source, 5, RecognizeSystemChanger);
+  RegisterEmulationCore(Registration);
+  RegisterClient(IntvSystemChangerId,
+    'Run Atari 2600 cartridges through the System Changer external picture and sound path. ' +
+    'Use its Select and Reset switches and configure joysticks or paddle pairs in the controller settings.');
+  FSystemChangerRegistered := True;
 end;
 
 class procedure TA2600Platform.RegisterPlatform;
@@ -230,7 +283,10 @@ begin
   if FRegistered then
     Exit;
   RegisterCore;
-  RegisterClient;
+  RegisterClient(ROM_SYSTEM_A2600,
+    'Start with automatic cartridge detection. With generic .bin or .rom images, the platform ' +
+    'folder identifies the console. Choose the correct TV standard and, for Atari 2600 paddle ' +
+    'games, configure the paddle controller.');
   FRegistered := True;
 end;
 

@@ -1088,6 +1088,8 @@ begin
         Continue;
       if Extensions.IndexOf(ExtractFileExt(Item.Name)) < 0 then
         Continue;
+      if MatchText(Item.Name, Services.FirmwareFiles) then
+        Continue;
       if (Length(Services.CompanionArchives) > 0) and IsMediaArchive(Item.Name) and
         MatchText(ChangeFileExt(Item.Name, ''), Services.CompanionArchives) then
         Continue;

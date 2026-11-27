@@ -13,7 +13,7 @@ uses
   RM.Settings.Catalog, RM.ShaderBitmap, RM.BitmapShaders, RM.Settings.Builder,
   RM.Settings.Binding, RM.Settings.Session, RM.Settings.Rendering,
   RM.Settings.Template.Device, RM.Settings.Callouts, RM.Settings.Devices,
-  RM.Settings.PalettePreview;
+  RM.Settings.PalettePreview, RA.Account, RA.Protocol;
 
 const
   SETTINGS_CATEGORY_GENERAL = RM.Settings.platform.SETTINGS_CATEGORY_GENERAL;
@@ -21,6 +21,7 @@ const
   SETTINGS_CATEGORY_VIDEO_AUDIO = RM.Settings.platform.SETTINGS_CATEGORY_VIDEO_AUDIO;
   SETTINGS_CATEGORY_CONTROLS = RM.Settings.platform.SETTINGS_CATEGORY_CONTROLS;
   SETTINGS_CATEGORY_PERIPHERALS = RM.Settings.platform.SETTINGS_CATEGORY_PERIPHERALS;
+  SETTINGS_CATEGORY_ACHIEVEMENTS = SETTINGS_CATEGORY_PERIPHERALS + 1;
 
 const
   SETTINGS_SWITCH_WIDTH = 48;
@@ -31,8 +32,8 @@ const
   AUDIO_MICROPHONE_DEVICE_KEY = 'MicrophoneDevice';
 
 const
-  SettingsCategoryNames: array[SETTINGS_CATEGORY_GENERAL..SETTINGS_CATEGORY_PERIPHERALS] of string =
-    ('General', 'Library', 'Video and audio', 'Controls', 'Peripherals');
+  SettingsCategoryNames: array[SETTINGS_CATEGORY_GENERAL..SETTINGS_CATEGORY_ACHIEVEMENTS] of string =
+    ('General', 'Library', 'Video and audio', 'Controls', 'Peripherals', 'Achievements');
 
 type
   TSettingsLocationPicker = reference to procedure(Folder: Boolean; const Current: string; const Callback: TStorageSelectionCallback);
@@ -84,11 +85,20 @@ type
     LayoutSettingsHeading, LayoutSettingsCompactSearchSlot: TLayout;
     LayoutSettingsCompactReset, LayoutSettingsActions: TLayout;
     PathCategoryGeneral, PathCategoryLibrary, PathCategoryVideoAudio: TPath;
-    PathCategoryControls, PathCategoryPeripherals: TPath;
+    PathCategoryControls, PathCategoryPeripherals, PathCategoryAchievements: TPath;
+    ListBoxItemAchievements: TListBoxItem;
     LabelBrand: TLabel;
     PathBrandIcon: TPath;
   private
     FStorage: IStorage;
+    FAchievementAccount: IRAAccount;
+    FSigningIn: Boolean;
+    FAchievementStatus: string;
+    FEditAchievementUserName, FEditAchievementPassword: TEdit;
+    FCheckBoxRememberAchievementPassword: TCheckBox;
+    FButtonAchievementSignIn, FButtonAchievementSignOut: TButton;
+    FLabelAchievementAccountStatus: TLabel;
+    FOnAchievementAccountChanged: TNotifyEvent;
     FGameName: string;
     FPicker: TSettingsLocationPicker;
     FTemplatePicker: TSettingsTemplatePicker;
@@ -123,7 +133,7 @@ type
     FCorePage: string;
     FPlatformSearch: TEdit;
     FPlatformPicker: TComboBox;
-    FCategoryIcons: array[SETTINGS_CATEGORY_GENERAL..SETTINGS_CATEGORY_PERIPHERALS] of TControl;
+    FCategoryIcons: array[SETTINGS_CATEGORY_GENERAL..SETTINGS_CATEGORY_ACHIEVEMENTS] of TControl;
     FPage: string;
     FFixedPlatformPage: string;
     FPageBuildError: string;
@@ -146,6 +156,12 @@ type
     FPendingButtonSet: Boolean;
     FPendingDeadline: UInt64;
     FOnApply, FOnClose: TNotifyEvent;
+    procedure BuildAchievementSettings;
+    procedure UpdateAchievementControls;
+    procedure AchievementSignInClick(Sender: TObject);
+    procedure AchievementSignOutClick(Sender: TObject);
+    procedure PersistAchievementAccount(const Settings: TRAAccountSettings; const Credentials: TRACredentials);
+    function IsPlatformCategory(Index: Integer): Boolean;
     procedure UpdateGameSettingsPanel;
     procedure ResetGameSettingsClick(Sender: TObject);
     procedure StoreCapturedBinding(const Binding: TInputBinding);
@@ -231,7 +247,7 @@ type
     procedure PickLocation(Folder: Boolean; const Current: string; const Callback: TStorageSelectionCallback); virtual;
     procedure PickTemplateLocation(const Callback: TStorageSelectionCallback); virtual;
   public
-    constructor CreateSettings(AOwner: TComponent; const Storage: IStorage; Input: TInputManager; const GameName: string = ''; const GameRomName: string = ''; const GameSettingsId: string = ''; const FixedPlatformPage: string = '');
+    constructor CreateSettings(AOwner: TComponent; const Storage: IStorage; Input: TInputManager; const GameName: string = ''; const GameRomName: string = ''; const GameSettingsId: string = ''; const FixedPlatformPage: string = ''; const AchievementAccount: IRAAccount = nil);
     destructor Destroy; override;
     procedure SelectCategory(Index: Integer);
     procedure SelectCore(const PageId: string; PreserveCategory: Boolean = False);
@@ -248,6 +264,7 @@ type
     property InputManager: TInputManager read FInput;
     function HandleCaptureKeyDown(var Key: Word; var KeyChar: WideChar): Boolean;
     procedure ApplyLanguage(const PreviousLanguage: string);
+    property OnAchievementAccountChanged: TNotifyEvent read FOnAchievementAccountChanged write FOnAchievementAccountChanged;
     property OnApply: TNotifyEvent read FOnApply write FOnApply;
     property LocationPicker: TSettingsLocationPicker read FPicker write FPicker;
     property TemplateLocationPicker: TSettingsTemplatePicker read FTemplatePicker write FTemplatePicker;
@@ -264,7 +281,7 @@ uses
   System.StrUtils, RM.Input, FMX.OpenDialog, FMX.BehaviorManager, FMX.Graphics,
   FMX.SpinBox.Style, FMX.Presentation.Style, FMX.Presentation.Factory, RM.Icons,
   RM.SearchEdit, RM.Styles, RM.Dialogs, FMX.TextLayout, PCM.Audio.Backend,
-  PCM.Audio.Factory
+  PCM.Audio.Factory, RA.Http, RA.Session
   {$IFDEF ANDROID}, Core.Storage.Android{$ENDIF};
 
 {$R *.fmx}
@@ -481,7 +498,7 @@ begin
   // TStyledEditBox increments even when Handled is true; bypass that implementation.
 end;
 
-constructor TSettingsView.CreateSettings(AOwner: TComponent; const Storage: IStorage; Input: TInputManager; const GameName, GameRomName, GameSettingsId, FixedPlatformPage: string);
+constructor TSettingsView.CreateSettings(AOwner: TComponent; const Storage: IStorage; Input: TInputManager; const GameName, GameRomName, GameSettingsId, FixedPlatformPage: string; const AchievementAccount: IRAAccount);
 begin
   FBuilding := True;
   inherited Create(AOwner);
@@ -504,6 +521,7 @@ begin
       FCorePage := 'main';
   end;
   FStorage := Storage;
+  FAchievementAccount := AchievementAccount;
   FGameName := GameName;
   FHostInput := Input;
   if Input <> nil then
@@ -567,6 +585,7 @@ begin
     ListBoxNavigation.ListItems[SETTINGS_CATEGORY_GENERAL].Visible := False;
     ListBoxNavigation.ListItems[SETTINGS_CATEGORY_LIBRARY].Visible := False;
   end;
+  ListBoxItemAchievements.Visible := (FFixedPlatformPage = '') and (FAchievementAccount <> nil);
   ButtonSidebarBack.OnClick := BackClick;
   ButtonSidebarBack.StylesData['text.Margins.Left'] := 36;
   ButtonSidebarBack.StylesData['text.Margins.Right'] := 10;
@@ -819,7 +838,9 @@ begin
   FSearch.TextPrompt := Translate('Search this section');
   FPagePicker := TComboBox(CreateInSlot(LayoutSettingsPagePickerSlot, TSettingsComboBox));
   for var Category := Ord(FFixedPlatformPage <> '') * SETTINGS_CATEGORY_VIDEO_AUDIO to High(SettingsCategoryNames) do
-    FPagePicker.Items.Add(Translate(SettingsCategoryNames[Category]));
+    if (Category <> SETTINGS_CATEGORY_ACHIEVEMENTS) or
+      ((FFixedPlatformPage = '') and (FAchievementAccount <> nil)) then
+      FPagePicker.Items.Add(Translate(SettingsCategoryNames[Category]));
   FPlatformSearch := TEdit(CreateInSlot(LayoutPlatformSearchSlot, TSearchEdit));
   FPlatformPicker := TComboBox(CreateInSlot(LayoutPlatformPickerSlot, TSettingsComboBox));
   FCategoryIcons[0] := PathCategoryGeneral;
@@ -827,6 +848,7 @@ begin
   FCategoryIcons[2] := PathCategoryVideoAudio;
   FCategoryIcons[3] := PathCategoryControls;
   FCategoryIcons[4] := PathCategoryPeripherals;
+  FCategoryIcons[SETTINGS_CATEGORY_ACHIEVEMENTS] := PathCategoryAchievements;
 end;
 
 destructor TSettingsView.Destroy;
@@ -1016,6 +1038,8 @@ begin
       FContext.AddInformation('RowCoversanddescriptions', 'Covers and descriptions',
         'Each platform folder lists only formats supported by that platform. Optional gamelist.xml adds descriptions and artwork.', '');
     end
+    else if FCategory = SETTINGS_CATEGORY_ACHIEVEMENTS then
+      BuildAchievementSettings
     else
     begin
       var SettingsPlatform := SettingsPlatforms.Find(FPage);
@@ -1283,6 +1307,8 @@ begin
     Exit;
   for var Field in FFields do
     Field.Pull;
+  if FEditAchievementUserName <> nil then
+    FSession.Drafts['main'].WriteString(RAAchievementsSection, 'UserName', FEditAchievementUserName.Text.Trim);
   if (FPage <> 'main') and (FInput <> nil) then
     SaveInputBindings(FInput, FSession.Drafts[FPage]);
 end;
@@ -1340,6 +1366,14 @@ begin
   FLastRow := nil;
   FNextRow := nil;
   FNextEditor := nil;
+  FEditAchievementUserName := nil;
+  if FEditAchievementPassword <> nil then
+    FEditAchievementPassword.Text := '';
+  FEditAchievementPassword := nil;
+  FCheckBoxRememberAchievementPassword := nil;
+  FButtonAchievementSignIn := nil;
+  FButtonAchievementSignOut := nil;
+  FLabelAchievementAccountStatus := nil;
   FScaling := nil;
   FPalette := nil;
   FVideoGroup := nil;
@@ -1714,7 +1748,7 @@ begin
       PanelSidebar.Visible := ScaledLayoutSettings.OriginalWidth >= 760;
       PanelSidebar.Width := 220;
     end;
-    PanelPlatforms.Visible := (FFixedPlatformPage = '') and (FCategory >= SETTINGS_CATEGORY_VIDEO_AUDIO) and
+    PanelPlatforms.Visible := (FFixedPlatformPage = '') and IsPlatformCategory(FCategory) and
       (ScaledLayoutSettings.OriginalWidth >= 760);
     PanelPlatforms.Width := 216;
     PanelSidebar.Align := TAlignLayout.MostLeft;
@@ -1722,7 +1756,7 @@ begin
     LayoutBody.Align := TAlignLayout.Client;
     ListBoxNavigation.Visible := PanelSidebar.Visible;
     FPagePicker.Visible := not PanelSidebar.Visible;
-    FPlatformPicker.Visible := (FFixedPlatformPage = '') and (FCategory >= SETTINGS_CATEGORY_VIDEO_AUDIO) and
+    FPlatformPicker.Visible := (FFixedPlatformPage = '') and IsPlatformCategory(FCategory) and
       not PanelPlatforms.Visible;
     // Settle the sidebar widths before using the header's available width.
     // During a window-state transition the parent can still be realigning.
@@ -1733,10 +1767,14 @@ begin
     if FCategory = SETTINGS_CATEGORY_GENERAL then
       LabelTitle.Text := Translate('General settings');
     for var i := Low(FCategoryIcons) to High(FCategoryIcons) do
+    begin
+      var Color := ThemeSecondaryTextColor;
       if i = FCategory then
-        TPath(FCategoryIcons[i]).Stroke.Color := ThemeAccentTextColor
-      else
-        TPath(FCategoryIcons[i]).Stroke.Color := ThemeSecondaryTextColor;
+        Color := ThemeAccentTextColor;
+      TPath(FCategoryIcons[i]).Stroke.Color := Color;
+      if i = SETTINGS_CATEGORY_ACHIEVEMENTS then
+        PathCategoryAchievements.Fill.Color := Color;
+    end;
     var CompactSearch := LayoutHeader.Width < 740;
     var HeadingRow := LayoutSettingsHeading;
     var CompactSearchSlot := LayoutSettingsCompactSearchSlot;
@@ -1762,12 +1800,12 @@ begin
 
     var CompactReset := LayoutFooter.Width < 520;
     var ResetRow := LayoutSettingsCompactReset;
-    ResetRow.Visible := CompactReset and (FCaptureButton = nil);
+    ResetRow.Visible := CompactReset and (FCaptureButton = nil) and (FCategory <> SETTINGS_CATEGORY_ACHIEVEMENTS);
     if CompactReset then
       ButtonReset.Parent := ResetRow
     else
       ButtonReset.Parent := LayoutSettingsActions;
-    ButtonReset.Visible := FCaptureButton = nil;
+    ButtonReset.Visible := (FCaptureButton = nil) and (FCategory <> SETTINGS_CATEGORY_ACHIEVEMENTS);
     LayoutFooter.Height := 96 + 44 * Ord(ResetRow.Visible);
     ButtonRefresh.Visible := (FCategory = SETTINGS_CATEGORY_CONTROLS) and (LayoutFooter.Width >= 700);
     ButtonApply.Visible := FCaptureButton = nil;
@@ -2087,15 +2125,202 @@ begin
   end;
 end;
 
+function TSettingsView.IsPlatformCategory(Index: Integer): Boolean;
+begin
+  Result := (Index >= SETTINGS_CATEGORY_VIDEO_AUDIO) and (Index <= SETTINGS_CATEGORY_PERIPHERALS);
+end;
+
+procedure TSettingsView.BuildAchievementSettings;
+begin
+  Heading('GroupAchievementAccount', 'RetroAchievements account');
+  FEditAchievementUserName := EditText('RowAchievementUserName', 'Username', '', RAAchievementsSection, 'UserName', '');
+  FEditAchievementUserName.MaxLength := 64;
+
+  Row('RowAchievementPassword', 'Password', '');
+  FEditAchievementPassword := TEdit.Create(FLastRow.Template);
+  FEditAchievementPassword.Name := 'EditAchievementPassword';
+  FEditAchievementPassword.Parent := TSettingsRowTemplate(FLastRow.Template).LayoutSettingEditorSlot;
+  TControl(FEditAchievementPassword.Parent).Margins.Rect := TRectF.Empty;
+  FEditAchievementPassword.Align := TAlignLayout.Client;
+  FEditAchievementPassword.Password := True;
+  FLastRow.Editor := FEditAchievementPassword;
+
+  var RememberDescription := 'Stores a protected sign-in token.';
+  if not CanRememberRAAccount then
+    RememberDescription := 'Remembering sign-in is unavailable on this platform.';
+  FCheckBoxRememberAchievementPassword := Check('RowRememberAchievementPassword', 'Remember password',
+    RememberDescription, RAAchievementsSection, 'Remember', False);
+  FContext.AddAction('RowAchievementSignIn', 'Sign in to RetroAchievements', '', 'Sign in', AchievementSignInClick);
+  FButtonAchievementSignIn := TButton(FLastRow.Editor);
+  FContext.AddAction('RowAchievementSignOut', 'Sign out of RetroAchievements', '', 'Sign out', AchievementSignOutClick);
+  FButtonAchievementSignOut := TButton(FLastRow.Editor);
+  FContext.AddInformation('RowAchievementAccountStatus', 'Account status', '', 'Not signed in');
+  FLabelAchievementAccountStatus := TLabel(FLastRow.Editor);
+
+  Heading('GroupAchievementOptions', 'Achievement options');
+  Check('RowEnableAchievements', 'Enable RetroAchievements', 'Available for NES and Game Boy Advance in Casual mode.',
+    RAAchievementsSection, 'Enabled', False);
+  Check('RowScanLibraryROMs', 'Scan library ROMs for achievements',
+    'Check for available achievements when loading the game library.',
+    RAAchievementsSection, RAScanLibraryROMsKey, RAScanLibraryROMsDefault);
+  Check('RowAchievementRichPresence', 'Share game status (Rich Presence)', '',
+    RAAchievementsSection, 'RichPresence', True);
+
+  Heading('GroupAchievementNotifications', 'Achievement notifications');
+  var Notifications := FContext.AddBoolean('RowAchievementNotifications', 'Show achievement notifications', '',
+    RAAchievementsSection, 'Notifications', True);
+  var Corners := FContext.AddChoice('RowAchievementNoticeCorner', 'Notification corner', '',
+    RAAchievementsSection, RANotificationCornerKey,
+    SettingChoices(['Top right', 'Top left', 'Bottom right', 'Bottom left'], RANotificationCornerValues),
+    RANotificationCornerValues[TRAAchievementCorner.TopRight]);
+  Corners.EnabledWhen := Notifications.IsTrue();
+  var Duration := FContext.AddSlider('RowAchievementNoticeDuration', 'Notification duration (seconds)', '',
+    RAAchievementsSection, RANotificationDurationKey, RANotificationDefaultDuration,
+    RANotificationMinDuration / 1000, RANotificationMaxDuration / 1000, 0.001, True);
+  Duration.DecimalDigits := 1;
+  Duration.EnabledWhen := Notifications.IsTrue();
+  TTrackBar(FFields.Last.Control).Frequency := 0.5;
+  UpdateAchievementControls;
+end;
+
+procedure TSettingsView.UpdateAchievementControls;
+begin
+  ButtonApply.Enabled := not FSigningIn;
+  if (FAchievementAccount = nil) or (FEditAchievementUserName = nil) then
+    Exit;
+  FEditAchievementUserName.Enabled := not FSigningIn;
+  FEditAchievementPassword.Enabled := not FSigningIn;
+  FButtonAchievementSignIn.Enabled := not FSigningIn;
+  FButtonAchievementSignOut.Enabled := not FSigningIn and (FAchievementAccount.Credentials.Token <> '');
+  FCheckBoxRememberAchievementPassword.Enabled := CanRememberRAAccount and not FSigningIn;
+  if FAchievementStatus <> '' then
+    FLabelAchievementAccountStatus.Text := Translate(FAchievementStatus)
+  else if FAchievementAccount.Credentials.Token <> '' then
+    FLabelAchievementAccountStatus.Text := Format(Translate('Signed in as %s'), [FAchievementAccount.Credentials.UserName])
+  else
+    FLabelAchievementAccountStatus.Text := Translate('Not signed in');
+end;
+
+procedure TSettingsView.PersistAchievementAccount(const Settings: TRAAccountSettings; const Credentials: TRACredentials);
+begin
+  var Ini := FStorage.ReadConfig(FStorage.ConfigFile('config'));
+  try
+    Ini.WriteString(RAAchievementsSection, 'UserName', Settings.UserName);
+    Ini.WriteBool(RAAchievementsSection, 'Remember', Settings.Remember);
+    WriteRAStoredCredentials(Ini, Settings, Credentials);
+    FStorage.WriteConfig(Ini);
+  finally
+    Ini.Free;
+  end;
+  var Draft := FSession.Drafts['main'];
+  Draft.WriteString(RAAchievementsSection, 'UserName', Settings.UserName);
+  Draft.WriteBool(RAAchievementsSection, 'Remember', Settings.Remember);
+  FAchievementAccount.Credentials := Credentials;
+  if Assigned(FOnAchievementAccountChanged) then
+    FOnAchievementAccountChanged(Self);
+end;
+
+procedure TSettingsView.AchievementSignInClick(Sender: TObject);
+begin
+  if FSigningIn or (FAchievementAccount = nil) then
+    Exit;
+  StorePage;
+  var Settings := TRAAccountSettings.Read(FSession.Drafts['main']);
+  var Password := FEditAchievementPassword.Text;
+  if (Settings.UserName = '') or (Password = '') then
+  begin
+    FAchievementStatus := 'Enter your RetroAchievements username and password.';
+    UpdateAchievementControls;
+    Exit;
+  end;
+
+  try
+    var Previous := FAchievementAccount.Credentials;
+    if not SameText(Previous.UserName, Settings.UserName) then
+      Previous := Default(TRACredentials);
+    PersistAchievementAccount(Settings, Previous);
+  except
+    FAchievementStatus := 'Unable to save the RetroAchievements account.';
+    UpdateAchievementControls;
+    Exit;
+  end;
+
+  var Alive: TFunc<Boolean> := FAlive;
+  FEditAchievementPassword.Text := '';
+  FSigningIn := True;
+  FAchievementStatus := 'Signing in to RetroAchievements…';
+  UpdateAchievementControls;
+  TThread.CreateAnonymousThread(
+    procedure
+    var
+      Client: TRAHttpClient;
+      Credentials: TRACredentials;
+      Status: string;
+    begin
+      try
+        Client := TRAHttpClient.Create(RARetroMulUserAgent);
+        try
+          Credentials := TRASession.Login(Client.Post, Settings.UserName, Password);
+        finally
+          Client.Free;
+        end;
+      except
+        on E: ERAServerError do
+          if (E.StatusCode = 401) or SameText(E.Code, 'invalid_credentials') then
+            Status := 'RetroAchievements rejected the username or password.'
+          else
+            Status := 'Could not sign in to RetroAchievements.';
+        on E: Exception do
+          Status := 'Could not sign in to RetroAchievements.';
+      end;
+      Password := '';
+      var CompleteSignIn: TThreadProcedure :=
+        procedure
+        begin
+          if not Alive() then
+            Exit;
+          FSigningIn := False;
+          FAchievementStatus := Status;
+          if Status = '' then
+          try
+            PersistAchievementAccount(Settings, Credentials);
+          except
+            FAchievementStatus := 'Unable to save the RetroAchievements account.';
+          end;
+          UpdateAchievementControls;
+        end;
+      TThread.ForceQueue(nil, CompleteSignIn);
+    end).Start;
+end;
+
+procedure TSettingsView.AchievementSignOutClick(Sender: TObject);
+begin
+  if FSigningIn or (FAchievementAccount = nil) then
+    Exit;
+  StorePage;
+  var Settings := TRAAccountSettings.Read(FSession.Drafts['main']);
+  Settings.Remember := False;
+  try
+    PersistAchievementAccount(Settings, Default(TRACredentials));
+    FAchievementStatus := '';
+    FCheckBoxRememberAchievementPassword.IsChecked := False;
+    FEditAchievementPassword.Text := '';
+  except
+    FAchievementStatus := 'Unable to save the RetroAchievements account.';
+  end;
+  UpdateAchievementControls;
+end;
+
 procedure TSettingsView.SelectCategory(Index: Integer);
 begin
   if FBuilding or (Index < Low(SettingsCategoryNames)) or (Index > High(SettingsCategoryNames)) or (Index = FCategory) or
-    ((FFixedPlatformPage <> '') and (Index < SETTINGS_CATEGORY_VIDEO_AUDIO)) then
+    ((FFixedPlatformPage <> '') and not IsPlatformCategory(Index)) or
+    ((Index = SETTINGS_CATEGORY_ACHIEVEMENTS) and (FAchievementAccount = nil)) then
     Exit;
 
   StorePage;
   FCategory := Index;
-  if Index < SETTINGS_CATEGORY_VIDEO_AUDIO then
+  if not IsPlatformCategory(Index) then
     FPage := 'main'
   else
     FPage := FCorePage;
@@ -2107,6 +2332,7 @@ begin
     FBuilding := False;
   end;
   FSearch.Text := '';
+  UpdateGameSettingsPanel;
   BuildPage;
 end;
 
@@ -2119,9 +2345,9 @@ begin
   StorePage;
   FCorePage := SettingsPlatforms.Require(PageId).PageId;
   FPlayer := 0;
-  if (FCategory < SETTINGS_CATEGORY_VIDEO_AUDIO) and not PreserveCategory then
+  if not IsPlatformCategory(FCategory) and not PreserveCategory then
     FCategory := SETTINGS_CATEGORY_VIDEO_AUDIO;
-  if FCategory < SETTINGS_CATEGORY_VIDEO_AUDIO then
+  if not IsPlatformCategory(FCategory) then
     FPage := 'main'
   else
     FPage := FCorePage;
@@ -2982,10 +3208,17 @@ begin
     end;
 
     // Config writes are per core and retain all settings that this UI does not expose.
+    if FAchievementAccount <> nil then
+    begin
+      var Ini := FSession.Drafts['main'];
+      WriteRAStoredCredentials(Ini, TRAAccountSettings.Read(Ini), FAchievementAccount.Credentials);
+    end;
     FSession.Save(CheckBoxSaveForGame.IsChecked);
     UpdateGameSettingsPanel;
     if Assigned(FOnApply) then
       FOnApply(Self);
+    if FCategory = SETTINGS_CATEGORY_ACHIEVEMENTS then
+      UpdateAchievementControls;
     LabelStatus.Text := Translate('Saved. Runtime settings applied. Hardware and boot options apply when you next open a ROM.');
   except
     on E: Exception do
@@ -2996,7 +3229,7 @@ end;
 
 procedure TSettingsView.UpdateGameSettingsPanel;
 begin
-  PanelGameSettings.Visible := FGameName <> '';
+  PanelGameSettings.Visible := (FGameName <> '') and (FCategory <> SETTINGS_CATEGORY_ACHIEVEMENTS);
   CheckBoxSaveForGame.Text := Format(Translate('Save only for %s'), [FGameName]);
   ButtonResetGameSettings.Text := Format(Translate('Reset for %s'), [FGameName]);
   var Specific := FSession.HasGameSettings;
@@ -3014,6 +3247,8 @@ begin
     BuildPage(True);
     if Assigned(FOnApply) then
       FOnApply(Self);
+    if FCategory = SETTINGS_CATEGORY_ACHIEVEMENTS then
+      UpdateAchievementControls;
     LabelStatus.Text := Translate('Game settings reset. Shared platform settings restored.');
   except
     on E: Exception do
@@ -3026,6 +3261,8 @@ begin
   FBuilding := True;
   try
     FormStyles.RelocalizeUI(Self, PreviousLanguage);
+    for var I := 0 to FPagePicker.Items.Count - 1 do
+      FPagePicker.Items[I] := Translate(SettingsCategoryNames[I + Ord(FFixedPlatformPage <> '') * SETTINGS_CATEGORY_VIDEO_AUDIO]);
   finally
     FBuilding := False;
   end;

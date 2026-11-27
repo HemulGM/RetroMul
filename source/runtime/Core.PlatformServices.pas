@@ -25,15 +25,18 @@ type
 
   TPlatformServices = record
     LibraryFeatures: TLibraryFeatures;
-    CompanionArchives: TArray<string>;
+    CompanionArchives, FirmwareFiles: TArray<string>;
     UnprefixedSaveIdentity: Boolean;
     TerminalInput: TTerminalInputProvider;
+    AchievementMedia: IEmulationAchievementMedia;
     DocumentSelection: TPlatformDocumentSelection;
   end;
 
 procedure RegisterPlatformServices(const Id: string; const Services: TPlatformServices);
 
 function PlatformServices(const Id: string): TPlatformServices;
+
+function PlatformAchievementMedia(const Id: string): IEmulationAchievementMedia;
 
 function PlatformDocumentSelection(const Id: string): TPlatformDocumentSelection;
 
@@ -55,6 +58,7 @@ begin
   var Value := Services;
   Value.DocumentSelection.AllowedExtensions := Copy(Value.DocumentSelection.AllowedExtensions);
   Value.CompanionArchives := Copy(Value.CompanionArchives);
+  Value.FirmwareFiles := Copy(Value.FirmwareFiles);
   Core.PlatformServices.Services.Add(Id.Trim, Value);
 end;
 
@@ -64,6 +68,15 @@ begin
     Result := Default(TPlatformServices);
   Result.DocumentSelection.AllowedExtensions := Copy(Result.DocumentSelection.AllowedExtensions);
   Result.CompanionArchives := Copy(Result.CompanionArchives);
+  Result.FirmwareFiles := Copy(Result.FirmwareFiles);
+end;
+
+function PlatformAchievementMedia(const Id: string): IEmulationAchievementMedia;
+begin
+  var Service: TPlatformServices;
+  if not Services.TryGetValue(TPlatformRegistry.CanonicalId(Id), Service) then
+    Exit(nil);
+  Result := Service.AchievementMedia;
 end;
 
 function TPlatformDocumentSelection.Accepts(const FileName: string): Boolean;

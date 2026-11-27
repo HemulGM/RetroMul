@@ -5,7 +5,7 @@ interface
 uses
   Core.InputConfig, Core.Storage, Core.Snapshots, System.SysUtils,
   System.Classes, System.SyncObjs, Core.Emulation.Types, Core.Emulation.Timing,
-  GBA.Console;
+  GBA.Console, RA.Memory;
 
 const
   GBA_SAMPLE_RATE = 44100;
@@ -20,6 +20,7 @@ type
     procedure SetInputPorts(const Ports: TCoreInputPorts);
   private
     FSnapshots: TSnapshotQueue;
+    FAchievementObserver: IEmulationAchievementObserver;
     FSnapshotDirectory: string;
     FLock: TCriticalSection;
     FWake: TEvent;
@@ -36,6 +37,7 @@ type
     FSaveOverride, FSolarLevel: Integer;
     FMotionX, FMotionY, FRotation: Double;
     FRumbleLevel: Byte;
+    function GetAchievementObserver: IEmulationAchievementObserver;
     procedure SetError(const Value: string);
   protected
     procedure Execute; override;
@@ -43,6 +45,7 @@ type
     constructor Create(const Data: TBytes; const SavePath: string; const Storage: IStorage = nil; const BIOS: TBytes = nil; SaveOverride: Integer = -1; SolarLevel: Integer = 128);
     destructor Destroy; override;
     procedure WakeSetEvent;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     procedure SetSolarLevel(Value: Integer);
     procedure SetMotion(X, Y, Rotation: Double);
     function GetRumbleLevel: Byte;
@@ -263,6 +266,31 @@ begin
   FWake.SetEvent;
 end;
 
+function TGBAWorker.GetAchievementObserver: IEmulationAchievementObserver;
+begin
+  FLock.Acquire;
+  try
+    Result := FAchievementObserver;
+  finally
+    FLock.Release;
+  end;
+end;
+
+procedure TGBAWorker.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+var
+  Previous: IEmulationAchievementObserver;
+begin
+  FLock.Acquire;
+  try
+    Previous := FAchievementObserver;
+    FAchievementObserver := Observer;
+  finally
+    FLock.Release;
+  end;
+  Previous := nil;
+  FWake.SetEvent;
+end;
+
 procedure TGBAWorker.Execute;
 
   procedure SaveBattery(Console: TGBAConsole; var LastBattery: TBytes);
@@ -328,6 +356,13 @@ begin
   var LastBattery: TBytes;
   var AudioFailed := False;
   var Console: TGBAConsole := nil;
+  var Observer: IEmulationAchievementObserver;
+  var AchievementMemory: TRAGBAMemory;
+  var ReadAchievementMemory: TEmulationAchievementRead :=
+    function(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal
+    begin
+      Result := AchievementMemory.Read(Address, Buffer, Count);
+    end;
   var Audio: TPCMAudio := nil;
   var FrameHints: TEmulationPerformanceHints := nil;
   var Rate := Default(TEmulationFrameRate);
@@ -362,19 +397,26 @@ begin
           begin
             Console.ConfigureInputPorts(Ports);
           end);
+        Observer := GetAchievementObserver;
         FSnapshots.Process(
           procedure(const Name: string; Loading: Boolean)
           begin
             FrameHints.Pause;
             var Path := ResolveSnapshotPath(FSnapshotDirectory, Name);
+            var AchievementProgress: TBytes;
             var Transfer: TStateTransfer :=
               procedure(State: TStateArchive)
               begin
                 Console.SerializeState(State);
+                if not State.Loading and (Observer <> nil) then
+                  AchievementProgress := Observer.CaptureProgress;
+                State.OptionalBytes(AchievementProgress, 16 * 1024 * 1024);
               end;
             if Loading then
             begin
               LoadCoreSnapshot(Path, ROM_CORE_ID_GBA, FData, Transfer, FStorage);
+              if Observer <> nil then
+                Observer.RestoreProgress(AchievementProgress);
               Console.ConfigureInputPorts(InputPorts);
               Console.MarkBatteryDirty;
               if Audio <> nil then
@@ -426,6 +468,8 @@ begin
           FrameHints.Pause;
           SaveBattery(Console, LastBattery);
           Console.Reset;
+          if Observer <> nil then
+            Observer.Reset;
           if Audio <> nil then
             Audio.Clear;
           Deadline := TStopwatch.GetTimeStamp;
@@ -457,6 +501,14 @@ begin
           AppliedRotation := AppliedRotation + Ord(TEmulatorButton.Z in Input) - Ord(TEmulatorButton.C in Input);
         Console.Cartridge.Hardware.SetMotion(MotionX, MotionY, AppliedRotation);
         Console.RunFrame;
+        if (Observer <> nil) and not Terminated then
+        begin
+          var InternalRAM, ExternalRAM, SaveRAM: PByte;
+          var SaveSize: Cardinal;
+          Console.GetAchievementMemory(InternalRAM, ExternalRAM, SaveRAM, SaveSize);
+          AchievementMemory := TRAGBAMemory.Create(InternalRAM, ExternalRAM, SaveRAM, SaveSize);
+          Observer.Frame(ReadAchievementMemory);
+        end;
 
         if Terminated then
           Break;

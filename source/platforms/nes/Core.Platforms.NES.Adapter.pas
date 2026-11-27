@@ -4,9 +4,10 @@ interface
 
 uses
   Core.InputConfig, Core.Microphone, System.Classes, System.IniFiles,
-  System.SysUtils, System.Types, Core.Storage, Core.Emulation, NES.Emulation,
-  NES.Input, NES.Types, NES.Controller, NES.FamicomKeyboardDevice,
-  NES.FamicomDataRecorder, NES.MiraclePianoDevice, NES.Options;
+  System.SysUtils, System.Types, Core.Storage, Core.Emulation,
+  Core.Emulation.Types, NES.Emulation, NES.Input, NES.Types, NES.Controller,
+  NES.FamicomKeyboardDevice, NES.FamicomDataRecorder, NES.MiraclePianoDevice,
+  NES.Options;
 
 type
   TNesZapperMask = NES.Types.TNesZapperMask;
@@ -127,7 +128,7 @@ type
     procedure SetOptions(const Value: TNesOptions);
   end;
 
-  TNesCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, INesSuborKeyboardCore, INesPeripheralCore, INesTapeCore, INesMiraclePianoCore, INesSenarioCore, IEmulationDiscControl, IEmulationMicrophoneInput)
+  TNesCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, INesSuborKeyboardCore, INesPeripheralCore, INesTapeCore, INesMiraclePianoCore, INesSenarioCore, IEmulationDiscControl, IEmulationMicrophoneInput, IEmulationAchievements)
   private
     FThread: TNesEmulationThread;
     FGamepadInput: TEmulatorInput;
@@ -145,6 +146,8 @@ type
     function GetSupportsSnapshots: Boolean;
     function GetUsesSuborKeyboard: Boolean;
   public
+    function AchievementROM: TBytes;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     procedure SetMicrophoneSource(const Source: IMicrophoneSource);
     procedure ApplyLiveSettings;
     function GetDiscCount: Integer;
@@ -534,6 +537,16 @@ end;
 procedure TNesCoreAdapter.SetPowerPadButtons(const Buttons: TPowerPadButtons);
 begin
   FThread.SetPowerPadButtons(Buttons);
+end;
+
+function TNesCoreAdapter.AchievementROM: TBytes;
+begin
+  Result := FThread.Console.AchievementROM;
+end;
+
+procedure TNesCoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  FThread.SetAchievementObserver(Observer);
 end;
 
 procedure TNesCoreAdapter.Start;

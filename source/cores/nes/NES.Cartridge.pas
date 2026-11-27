@@ -48,6 +48,7 @@ type
     FRomFileName: string;
     FSaveSize: Integer;
     FLastSaveMemory: TByteArray;
+    FAchievementROM: TBytes;
     FStorage: IStorage;
     FFdsBiosFile: string;
     FFdsBiosConfigured: Boolean;
@@ -74,6 +75,7 @@ type
     function MatchesSnapshotIdentity(const Identity: string; Version: Integer): Boolean;
     function MatchesSnapshotSubmapper(Submapper, Version: Integer): Boolean;
     function CanMigrateSnapshotMapper(MapperId: Integer): Boolean;
+    property AchievementROM: TBytes read FAchievementROM;
     property RomIdentity: string read FRomIdentity;
     property SaveFileName: string read FSaveFileName;
     property Mapper: TMapper read FMapper;
@@ -393,6 +395,7 @@ end;
 
 procedure TCartridge.LoadFromStream(Stream: TStream; const RomName: string; Mmc3IrqRevision: TMmc3IrqRevision);
 begin
+  FAchievementROM := nil;
   // Large images can be parsed directly from a seekable stream.
   var FileSize: Int64 := -1;
   if Stream <> nil then
@@ -412,12 +415,29 @@ begin
       HasLargeNesHeader(Header, FileSize) then
     begin
       LoadBufferedRom(Stream, RomName, Mmc3IrqRevision);
+      if (FMetadata.Format in [TRomFormat.INES, TRomFormat.NES20]) and (DiskSystem = nil) then
+      begin
+        // RA hashes at most 64 MiB after the iNES header.
+        var Position := Stream.Position;
+        try
+          Stream.Position := 0;
+          SetLength(FAchievementROM, 64 * 1024 * 1024 + NES_ROM_HEADER_SIZE);
+          ReadExact(Stream, FAchievementROM[0], Length(FAchievementROM));
+        finally
+          Stream.Position := Position;
+        end;
+      end;
       Exit;
     end;
   end;
-  var Input := TBytesStream.Create(ReadRomData(Stream, NES_ROM_FILE_MAX_SIZE));
+  var Data := ReadRomData(Stream, NES_ROM_FILE_MAX_SIZE);
+  var Input := TBytesStream.Create(Data);
   try
     LoadBufferedRom(Input, RomName, Mmc3IrqRevision);
+    if (FMetadata.Format in [TRomFormat.INES, TRomFormat.NES20]) and (DiskSystem = nil) and
+      (Length(Data) >= NES_ROM_HEADER_SIZE) and
+      CompareMem(@Data[0], PAnsiChar(NES_ROM_SIGNATURE), Length(NES_ROM_SIGNATURE)) then
+      FAchievementROM := Data;
   finally
     Input.Free;
   end;

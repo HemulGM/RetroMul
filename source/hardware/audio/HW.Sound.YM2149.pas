@@ -15,13 +15,16 @@ type
   TYM2149PortRead = function(Port: Integer): Byte of object;
 
   TYM2149PortWrite = procedure(Port: Integer; Value: Byte) of object;
-  // Independent of CPU/memory. Clock is the input clock; SEL low divides it by 2.
 
+  // Independent of CPU/memory. Clock is the input clock; SEL low divides it by 2.
   TYM2149F = class
   private
     FRegisters: array[0..15] of Byte;
     FAddress: Byte;
     FAYModel: Boolean;
+    FEnvelopeShift: array[0..2] of Byte;
+    FEnvelopePulse: Byte;
+    FMaxZeroTonePeriod: Boolean;
     FDACOverride: array[0..2] of Double;
     FOnNativeTick: TYM2149NativeTick;
     FClock, FSampleRate, FDivider: Integer;
@@ -51,12 +54,16 @@ type
     // Negative amplitude releases the sample DAC override.
     procedure SetDACOverride(Channel: Integer; Amplitude: Double);
     procedure SetPan(Channel: Integer; Left, Right: Double);
+    procedure SetEnvelopeShift(Channel, Bits: Integer);
+    procedure TriggerEnvelopePulse(Channel: Integer);
+    procedure SerializeEnvelopePulse(const Field: TYM2149StateField);
     procedure Step(out Levels: TYM2149Levels);
     procedure GenerateNative(out Left, Right: Double);
     procedure Sample(out Left, Right: SmallInt);
     procedure Render(var PCM: array of SmallInt; Frames: Integer);
     procedure SerializeState(const Field: TYM2149StateField);
     property AYModel: Boolean read FAYModel write FAYModel;
+    property MaxZeroTonePeriod: Boolean read FMaxZeroTonePeriod write FMaxZeroTonePeriod;
     property OnNativeTick: TYM2149NativeTick read FOnNativeTick write FOnNativeTick;
     property Clock: Integer read FClock;
     property SampleRate: Integer read FSampleRate;
@@ -154,6 +161,7 @@ begin
   FNoise := 1;
   FNoiseCounter := 0;
   FEnvelopeCounter := 0;
+  FEnvelopePulse := 0;
   FSegment := 0;
   ResetEnvelopeSegment;
   FPhase := 0;
@@ -190,6 +198,8 @@ begin
     raise EArgumentOutOfRangeException.Create('Invalid YM2149 register');
 
   var Previous := FRegisters[RegisterID];
+  if (FEnvelopePulse <> 0) and (RegisterID >= 8) and (RegisterID <= 10) then
+    FEnvelopePulse := FEnvelopePulse and not (1 shl (RegisterID - 8));
   FRegisters[RegisterID] := Value and RegisterMasks[RegisterID];
   if RegisterID = 13 then
   begin
@@ -233,6 +243,21 @@ begin
     raise EArgumentOutOfRangeException.Create('Invalid AY/YM sample DAC');
 
   FDACOverride[Channel] := Amplitude;
+end;
+
+procedure TYM2149F.SetEnvelopeShift(Channel, Bits: Integer);
+begin
+  FEnvelopeShift[Channel] := Bits;
+end;
+
+procedure TYM2149F.TriggerEnvelopePulse(Channel: Integer);
+begin
+  FEnvelopePulse := FEnvelopePulse or (1 shl Channel);
+end;
+
+procedure TYM2149F.SerializeEnvelopePulse(const Field: TYM2149StateField);
+begin
+  Field(FEnvelopePulse, SizeOf(FEnvelopePulse));
 end;
 
 procedure TYM2149F.SetPan(Channel: Integer; Left, Right: Double);
@@ -283,11 +308,23 @@ begin
   begin
     FEnvelopeCounter := 0;
     StepEnvelope;
+    if FEnvelopePulse <> 0 then
+    begin
+      for var Channel := 0 to 2 do
+        if FEnvelopePulse and (1 shl Channel) <> 0 then
+          FRegisters[8 + Channel] := 0;
+      FEnvelopePulse := 0;
+    end;
   end;
   for var i := 0 to 2 do
   begin
     Inc(FToneCounter[i]);
-    var Period := Max(1, Integer(FRegisters[i * 2]) + Integer(FRegisters[i * 2 + 1]) * 256);
+    var Period := Integer(FRegisters[i * 2]) + Integer(FRegisters[i * 2 + 1]) * 256;
+    if Period = 0 then
+      if FMaxZeroTonePeriod then
+        Period := $1000
+      else
+        Period := 1;
     if FToneCounter[i] >= Period then
     begin
       FToneCounter[i] := 0;
@@ -297,7 +334,7 @@ begin
     if (FTone[i] or ((FRegisters[7] and (1 shl i)) <> 0)) and
       (((FNoise and 1) <> 0) or ((FRegisters[7] and (8 shl i)) <> 0)) then
       if (FRegisters[8 + i] and 16) <> 0 then
-        Levels[i] := FEnvelope
+        Levels[i] := FEnvelope shr FEnvelopeShift[i]
       else
         Levels[i] := (FRegisters[8 + i] and 15) * 2 + 1;
   end;

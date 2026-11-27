@@ -16,7 +16,7 @@ type
     FStorage: IStorage;
     FCartridge: TBytes;
     FPAL: Boolean;
-    FMapper: string;
+    FMapper, FCoreId: string;
     FInput: TEmulatorInput;
     FControlButtons: TEmulatorButtons;
     FPause, FReset, FAudioEnabled, FAvailable: Boolean;
@@ -34,7 +34,7 @@ type
   public
     SnapshotDirectory: string;
     property InputPorts: TCoreInputPorts read GetInputPorts write SetInputPorts;
-    constructor Create(const Cartridge: TBytes; PAL: Boolean; const Mapper: string; const Storage: IStorage);
+    constructor Create(const Cartridge: TBytes; PAL: Boolean; const Mapper: string; const Storage: IStorage; const CoreId: string = 'A2600');
     destructor Destroy; override;
     procedure Configure(const Input: TEmulatorInput; Paused, AudioEnabled: Boolean; Volume: Single; Switches: Byte);
     procedure RequestReset;
@@ -65,7 +65,7 @@ begin
   FInputPortsCommand.Apply(Self, Ports, FWake);
 end;
 
-constructor TA2600Worker.Create(const Cartridge: TBytes; PAL: Boolean; const Mapper: string; const Storage: IStorage);
+constructor TA2600Worker.Create(const Cartridge: TBytes; PAL: Boolean; const Mapper: string; const Storage: IStorage; const CoreId: string);
 begin
   inherited Create(True);
   FInputPortsCommand := TInputPortsCommand.Create;
@@ -76,6 +76,7 @@ begin
   FCartridge := Copy(Cartridge);
   FPAL := PAL;
   FMapper := Mapper;
+  FCoreId := CoreId;
   FControlButtons := [TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left, TEmulatorButton.Right, TEmulatorButton.A, TEmulatorButton.Start, TEmulatorButton.Select];
   FStorage := Storage;
 end;
@@ -243,18 +244,16 @@ var
   MouseDX, MouseDY: Integer;
   MouseButtons: Byte;
   Deadline: Double;
-  CoreId: string;
 begin
   Console := nil;
   Audio := nil;
   Hints := nil;
-  CoreId := 'A2600';
   try
     try
       Console := TA2600Console.Create(FCartridge, FPAL, FMapper);
       Console.ConfigureInputPorts(GetInputPorts);
       Publish(Console); // Also expose the keymap when starting paused.
-      Hints := TEmulationPerformanceHints.Create(Round(1000000000.0 / Console.Rate), CoreId);
+      Hints := TEmulationPerformanceHints.Create(Round(1000000000.0 / Console.Rate), FCoreId);
       var Format: TPCMAudioFormat;
       Format.SampleRate := 44100;
       Format.Channels := 2;
@@ -284,14 +283,14 @@ begin
               end;
             if Loading then
             begin
-              LoadCoreSnapshot(Path, CoreId, FCartridge, Transfer, FStorage);
+              LoadCoreSnapshot(Path, FCoreId, FCartridge, Transfer, FStorage);
               if Audio <> nil then
                 Audio.Clear;
               Publish(Console);
             end
             else
             begin
-              SaveCoreSnapshot(Path, CoreId, FCartridge, Transfer, FStorage);
+              SaveCoreSnapshot(Path, FCoreId, FCartridge, Transfer, FStorage);
               var Frame := Console.Frame;
               SaveSnapshotPreview(Path, Frame.Width, Frame.Height, Frame.Width, @Frame.Pixels[0], FStorage);
             end;
@@ -370,7 +369,7 @@ begin
           begin
             FLock.Acquire;
             try
-              FAudioError := CoreId + ' audio: ' + E.Message;
+              FAudioError := FCoreId + ' audio: ' + E.Message;
             finally
               FLock.Release;
             end;
@@ -396,7 +395,7 @@ begin
       begin
         FLock.Acquire;
         try
-          FError := CoreId + ': ' + E.Message;
+          FError := FCoreId + ': ' + E.Message;
         finally
           FLock.Release;
         end;

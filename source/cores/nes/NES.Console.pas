@@ -70,8 +70,11 @@ type
     procedure SetDiskWriteProtection(Value: Boolean);
     procedure ConfigureOptions(const Options: TNesOptions);
     procedure OpenDisk(const FileName, SaveDirectory: string);
-    procedure SaveSnapshot(const FileName: string);
-    procedure LoadSnapshot(const FileName: string);
+    procedure SaveSnapshot(const FileName: string; const AchievementProgress: TBytes = nil);
+    procedure LoadSnapshot(const FileName: string); overload;
+    procedure LoadSnapshot(const FileName: string; out AchievementProgress: TBytes); overload;
+    function AchievementROM: TBytes;
+    function ReadAchievementMemory(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     property RomIdentity: string read GetRomIdentity;
     property UsesPowerPad: Boolean read GetUsesPowerPad;
     property HasCoinAcceptor: Boolean read GetHasCoinAcceptor;
@@ -234,7 +237,17 @@ begin
   end;
 end;
 
-procedure TNesConsole.SaveSnapshot(const FileName: string);
+procedure TransferAchievementProgress(Stream: TStream; Loading: Boolean; var Progress: TBytes);
+begin
+  var State := TStateArchive.Create(Stream, Loading);
+  try
+    State.OptionalBytes(Progress, 16 * 1024 * 1024);
+  finally
+    State.Free;
+  end;
+end;
+
+procedure TNesConsole.SaveSnapshot(const FileName: string; const AchievementProgress: TBytes);
 begin
   if not HasCartridge then
     raise ENesException.Create('No game loaded');
@@ -242,10 +255,18 @@ begin
   var Payload := TMemoryStream.Create;
   var Output := TMemoryStream.Create;
   try
-    SerializeState(Payload, False);
     var Header := Default(TSnapshotHeader);
     Move(SNAPSHOT_MAGIC, Header.Magic, SizeOf(Header.Magic));
     Header.Version := NES_SNAPSHOT_VERSION;
+    // Keep snapshots without RA progress readable by older RetroMul versions.
+    if (Header.Version = NES_ACHIEVEMENT_STATE_VERSION) and (Length(AchievementProgress) = 0) then
+      Header.Version := MMC3_FCEUX_STATE_VERSION;
+    SerializeState(Payload, False, Header.Version);
+    if Length(AchievementProgress) <> 0 then
+    begin
+      var Progress := AchievementProgress;
+      TransferAchievementProgress(Payload, False, Progress);
+    end;
     Header.MapperId := FCartridge.MapperId;
     Header.PayloadSize := Payload.Size;
     Header.Region := Ord(FRegion);
@@ -289,6 +310,13 @@ end;
 
 procedure TNesConsole.LoadSnapshot(const FileName: string);
 begin
+  var AchievementProgress: TBytes;
+  LoadSnapshot(FileName, AchievementProgress);
+end;
+
+procedure TNesConsole.LoadSnapshot(const FileName: string; out AchievementProgress: TBytes);
+begin
+  AchievementProgress := nil;
   if not HasCartridge then
     raise ENesException.Create('No game loaded');
 
@@ -325,6 +353,8 @@ begin
     try
       Payload.Position := 0;
       SerializeState(Payload, True, Header.Version, LegacyMapper);
+      if Header.Version >= NES_ACHIEVEMENT_STATE_VERSION then
+        TransferAchievementProgress(Payload, True, AchievementProgress);
       if Payload.Position <> Payload.Size then
         raise ENesException.Create('Unexpected snapshot data');
       // Explicit host connections take priority over devices in older saves.
@@ -987,6 +1017,28 @@ end;
 function TNesConsole.HasCartridge: Boolean;
 begin
   Result := FCartridge.Valid;
+end;
+
+function TNesConsole.AchievementROM: TBytes;
+begin
+  Result := Copy(FCartridge.AchievementROM);
+end;
+
+function TNesConsole.ReadAchievementMemory(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  Result := 0;
+  if (Buffer = nil) or (Address > $FFFF) then
+    Exit;
+  Count := Min(Count, $10000 - Address);
+  while Result < Count do
+  begin
+    var Value: Byte;
+    if not FBus.PeekAchievementByte(Word(Address + Result), Value) then
+      Break;
+    Buffer^ := Value;
+    Inc(Buffer);
+    Inc(Result);
+  end;
 end;
 
 function TNesConsole.DebugCpuRead(Address: UInt16): UInt8;

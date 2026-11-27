@@ -6,7 +6,8 @@ interface
 
 uses
   RM.BitmapShaders, RM.Platforms.Presentation, System.SysUtils, FMX.Types,
-  Core.Emulation, Core.EmulatorRegistry, RM.Controllers.Base, RM.Session.Runtime;
+  Core.Emulation, Core.EmulatorRegistry, RM.Controllers.Base, RM.Session.Runtime,
+  RA.Connection, RA.Protocol;
 
 type
   TSessionController = class(TMainController)
@@ -17,17 +18,30 @@ type
     FLaunchPlatform: string;
     FLoadGeneration: Integer;
     FCancelLoad: TProc;
+    FAchievementConnection: IRAConnection;
+    FAchievementCredentials: TRACredentials;
+    FAchievementGeneration: UInt64;
+    FAchievementRichPresence, FAchievementNotifications: Boolean;
+    FAchievementNoticeDuration: Integer;
+    procedure DisconnectAchievements;
+    procedure PollAchievements;
+    procedure OpenAchievementSession;
+    procedure ShowAchievementSessionError(const ReasonKey: string);
+    procedure ShowAchievementNotice(const Text: string; const Caption: string = 'RetroAchievements');
     function RuntimeContext: TSessionRuntimeContext;
     procedure UpdateVirtualButtons;
     procedure EndCoreLoading;
     procedure CancelCoreLoading;
-    procedure BeginGameLoading(const FileName, DisplayName: string; StartPaused: Boolean; const SnapshotName: string; const PlatformId: string = ''; const PreferredPlatformId: string = '');
-    procedure ChoosePlatform(const FileName, DisplayName: string; StartPaused: Boolean; const SnapshotName: string; const Platforms: TArray<TCorePlatformOption>; const FailedPlatformId, LoadError: string);
+    procedure BeginGameLoading(const FileName, DisplayName: string; StartPaused: Boolean; const SnapshotName: string; const PlatformId: string = ''; const PreferredPlatformId: string = ''; OfferAutosave: Boolean = False);
+    procedure OfferAutosaveChoice(Core: IEmulationCore; FileName, DisplayName, Path, PlatformId: string; StartPaused: Boolean);
+    procedure LaunchLoadedCore(const Core: IEmulationCore; const FileName, DisplayName, Snapshot, PlatformId: string; StartPaused: Boolean);
+    procedure ChoosePlatform(const FileName, DisplayName: string; StartPaused: Boolean; const SnapshotName: string; const Platforms: TArray<TCorePlatformOption>; const FailedPlatformId, LoadError: string; OfferAutosave: Boolean);
     procedure InstallCore(const NewEmulation: IEmulationCore; const FileName, DisplayName: string; StartPaused: Boolean);
     procedure StopCurrentCore;
   public
     destructor Destroy; override;
     procedure DisconnectSession;
+    procedure RefreshAchievements;
     procedure FormActivate(Sender: TObject);
     procedure FormDeactivate(Sender: TObject);
     procedure ApplicationException(Sender: TObject; E: Exception);
@@ -59,10 +73,11 @@ implementation
 
 uses
   System.Classes, System.SyncObjs, System.UITypes, System.Math, RM.Input,
-  System.IOUtils, FMX.Forms, FMX.Objects, FMX.Graphics, FMX.OpenDialog,
-  Core.Storage, Core.EmulatorFactory, Core.InputConfig, Core.Platforms,
-  Core.CD.Physical, RM.Gamepad, RM.FrameUpload, RM.Dialogs, RM.Styles,
-  Core.SavePaths;
+  System.IOUtils, System.Net.URLClient, FMX.Forms, FMX.Objects, FMX.Graphics,
+  FMX.OpenDialog, Core.Storage, Core.EmulatorFactory, Core.InputConfig,
+  Core.Platforms, Core.CD.Physical, RM.Gamepad, RM.FrameUpload, RM.Dialogs,
+  RM.Styles, Core.SavePaths, Core.Emulation.Types, Core.PlatformServices,
+  NES.Types, RA.Account, RA.Hash, RA.Runtime, RA.Session;
 
 function NewLoadCancellation(out CancelLoad: TProc): TProc;
 begin
@@ -95,8 +110,193 @@ begin
   Result.Host := FPlatformHost;
 end;
 
+procedure ReleaseAchievementConnection(var Connection: IRAConnection);
+begin
+  if Connection = nil then
+    Exit;
+  var WorkerConnection := Connection;
+  Connection := nil;
+  TThread.CreateAnonymousThread(
+    procedure
+    begin
+      // The observer may be waiting for an in-flight HTTP request.
+      WorkerConnection := nil;
+    end).Start;
+end;
+
+procedure TSessionController.DisconnectAchievements;
+begin
+  Inc(FAchievementGeneration);
+  FView.HideAchievementNotice;
+  FAchievementCredentials := Default(TRACredentials);
+  if FAchievementConnection <> nil then
+  begin
+    var Core: IEmulationAchievements;
+    if Supports(FState.Session.Emulation, IEmulationAchievements, Core) then
+      Core.SetAchievementObserver(nil);
+    ReleaseAchievementConnection(FAchievementConnection);
+  end;
+end;
+
+function AchievementSessionErrorReason(Error: Exception): string;
+begin
+  if Error is ERARomNotRecognized then
+    Exit('ROM not recognized.');
+  if Error is ERANoAchievementSets then
+    Exit('No achievement sets found.');
+  if Error is ENetException then
+    Exit('Could not connect to RetroAchievements.');
+  if Error is ERAServerError then
+  begin
+    var ServerError := ERAServerError(Error);
+    if (ServerError.StatusCode = 401) or SameText(ServerError.Code, 'invalid_credentials') or
+      SameText(ServerError.Code, 'expired_token') then
+      Exit('Sign in to RetroAchievements again.');
+    if ServerError.StatusCode >= 500 then
+      Exit('RetroAchievements is temporarily unavailable.');
+    Exit('Unexpected response from RetroAchievements.');
+  end;
+  if Error is ERAProtocolError then
+    Exit('Unexpected response from RetroAchievements.');
+  Result := 'Unexpected error.';
+end;
+
+procedure TSessionController.RefreshAchievements;
+begin
+  try
+    OpenAchievementSession;
+  except
+    on E: Exception do
+      ShowAchievementSessionError(AchievementSessionErrorReason(E));
+  end;
+end;
+
+procedure TSessionController.OpenAchievementSession;
+begin
+  var Core: IEmulationAchievements;
+  if (FState.Session.Emulation = nil) or FState.Session.EmulationFaulted or
+    not Supports(FState.Session.Emulation, IEmulationAchievements, Core) then
+    Exit;
+
+  var Ini := FState.Session.Storage.ReadConfig(FState.Session.Storage.ConfigFile('config'));
+  var Settings: TRAAccountSettings;
+  try
+    Settings := TRAAccountSettings.Read(Ini);
+  finally
+    Ini.Free;
+  end;
+  FAchievementNotifications := Settings.Notifications;
+  FAchievementNoticeDuration := Settings.NotificationDuration;
+  FView.SetAchievementNoticeCorner(Settings.NotificationCorner);
+  if not FAchievementNotifications then
+    FView.HideAchievementNotice;
+
+  var Credentials := FState.AchievementAccount.Credentials;
+  if not Settings.Enabled or (Credentials.Token = '') or
+    not SameText(Settings.UserName, Credentials.UserName) then
+  begin
+    DisconnectAchievements;
+    Exit;
+  end;
+  FAchievementRichPresence := Settings.RichPresence;
+  if SameText(FAchievementCredentials.UserName, Credentials.UserName) and
+    (FAchievementCredentials.Token = Credentials.Token) then
+  begin
+    if FAchievementConnection <> nil then
+      FAchievementConnection.SetShareRichPresence(FAchievementRichPresence);
+    Exit;
+  end;
+
+  var Media := PlatformAchievementMedia(FState.Session.Emulation.SystemId);
+  if Media = nil then
+    Exit;
+  var Console := TRARomConsole(Media.ConsoleId);
+
+  DisconnectAchievements;
+  FAchievementCredentials := Credentials;
+  var ROM := Core.AchievementROM;
+  if Length(ROM) = 0 then
+    Exit;
+  var Alive: TFunc<Boolean> := FState.Session.CallbackAlive;
+  var Generation := FAchievementGeneration;
+  var SharePresence := FAchievementRichPresence;
+
+  TThread.CreateAnonymousThread(
+    procedure
+    var
+      Connection: IRAConnection;
+      ReasonKey: string;
+    begin
+      try
+        Connection := OpenRAConnection(Console, ROM, Credentials, RARetroMulUserAgent, SharePresence);
+      except
+        on E: Exception do
+          ReasonKey := AchievementSessionErrorReason(E);
+      end;
+      TThread.ForceQueue(nil,
+        procedure
+        begin
+          if not Alive() or (Generation <> FAchievementGeneration) then
+          begin
+            ReleaseAchievementConnection(Connection);
+            Exit;
+          end;
+          if Connection = nil then
+          begin
+            ShowAchievementSessionError(ReasonKey);
+            Exit;
+          end;
+          var CurrentCore: IEmulationAchievements;
+          if Supports(FState.Session.Emulation, IEmulationAchievements, CurrentCore) then
+          begin
+            Connection.SetShareRichPresence(FAchievementRichPresence);
+            FAchievementConnection := Connection;
+            CurrentCore.SetAchievementObserver(Connection);
+            Connection := nil;
+          end
+          else
+            ReleaseAchievementConnection(Connection);
+        end);
+    end).Start;
+end;
+
+procedure TSessionController.ShowAchievementSessionError(const ReasonKey: string);
+begin
+  ShowAchievementNotice(Translate('Could not start the session.') + sLineBreak +
+    Translate(ReasonKey));
+end;
+
+procedure TSessionController.ShowAchievementNotice(const Text, Caption: string);
+begin
+  if not FAchievementNotifications then
+    Exit;
+  FView.PresentAchievementNotice(Caption, Text, FAchievementNoticeDuration);
+end;
+
+procedure TSessionController.PollAchievements;
+begin
+  if FAchievementConnection = nil then
+    Exit;
+
+  FAchievementConnection.TakeRuntimeEvents;
+  FAchievementConnection.TakeError;
+  var Submissions := FAchievementConnection.TakeSubmissions;
+  if not FAchievementNotifications then
+    Exit;
+  for var Submission in Submissions do
+    if (Submission.State = TRASubmissionState.Rejected) and
+      ((Submission.HTTPStatus = 401) or SameText(Submission.ServerCode, 'expired_token')) then
+      ShowAchievementNotice(Translate('Sign in to RetroAchievements again.'))
+    else if (Submission.State = TRASubmissionState.Confirmed) and not Submission.Award.AlreadyAwarded then
+      for var GameSet in FAchievementConnection.GameData.Sets do
+        for var Achievement in GameSet.Achievements do
+          if Achievement.ID = Submission.Event.ID then
+            ShowAchievementNotice(Achievement.Title, Translate('Achievement unlocked'));
+end;
+
 procedure TSessionController.DisconnectSession;
 begin
+  DisconnectAchievements;
   DetachSessionTouch(RuntimeContext);
   PlatformSessionHandler(FState.Input.SystemId).Disconnect(RuntimeContext);
 end;
@@ -518,17 +718,11 @@ begin
   if FLoadingCore or FSelectingPlatform or FState.Session.PendingAutosaveChoice then
     Exit;
   Inc(FLoadGeneration);
-  // The explicit snapshot is already a launch choice. Otherwise consult only
-  // the persisted association; never open ROM streams or instantiate a core here.
-  var Path := '';
-  if SnapshotName = '' then
-    Path := FindRecordedAutosave(FState.Session.Storage, FileName);
-  if Path = '' then
-  begin
-    BeginGameLoading(FileName, DisplayName, StartPaused, SnapshotName, '', LibraryPlatformId);
-    Exit;
-  end;
+  BeginGameLoading(FileName, DisplayName, StartPaused, SnapshotName, '', LibraryPlatformId, SnapshotName = '');
+end;
 
+procedure TSessionController.OfferAutosaveChoice(Core: IEmulationCore; FileName, DisplayName, Path, PlatformId: string; StartPaused: Boolean);
+begin
   var Text := Translate('An autosave was found for this game. Load it?') + sLineBreak + sLineBreak;
   if FState.Autosave.OnExit then
     Text := Text + Translate('The autosave will be overwritten when you exit the game.')
@@ -541,41 +735,58 @@ begin
   var Generation := FLoadGeneration;
   FState.Session.PendingAutosaveChoice := True;
   FState.Session.OpeningRom := True;
-  ShowRetroChoice(FView, Text,
-    procedure(Choice: TRetroDialogChoice)
-    begin
-      if not IsAlive() then
-        Exit;
-      if Generation <> FLoadGeneration then
-        Exit;
-      try
-        if Choice <> TRetroDialogChoice.Cancel then
-        begin
-          // Preserve the chosen snapshot when replacing the same running game;
-          // save a different game's progress normally before switching.
-          var PreviousDirectory := FView.GameSnapshotDirectory;
-          FState.Session.PreserveOpeningAutosave := (Choice = TRetroDialogChoice.Accept) and
-            SameText(ExcludeTrailingPathDelimiter(PreviousDirectory), ExcludeTrailingPathDelimiter(ExtractFilePath(Path)));
-          FState.Session.PendingAutosaveChoice := False;
-          try
+  // Queue the choice before closing loading so the previous game stays paused
+  // until the whole modal sequence ends.
+  try
+    ShowRetroChoice(FView, Text,
+      procedure(Choice: TRetroDialogChoice)
+      begin
+        if not IsAlive() or (Generation <> FLoadGeneration) then
+          Exit;
+        FState.Session.PendingAutosaveChoice := False;
+        try
+          if Choice <> TRetroDialogChoice.Cancel then
+          begin
             var Snapshot := '';
             if Choice = TRetroDialogChoice.Accept then
+            begin
               Snapshot := Path;
-            // Restored games wait for an explicit Resume after the dialog closes.
-            BeginGameLoading(FileName, DisplayName, StartPaused or (Choice = TRetroDialogChoice.Accept), Snapshot, '', LibraryPlatformId);
-          except
-            on E: Exception do
-              ShowRetroMessage(FView, Translate('Unable to open game: ') + TranslateCoreMessage(E.Message));
+              var PreviousDirectory := FView.GameSnapshotDirectory;
+              FState.Session.PreserveOpeningAutosave :=
+                SameFileName(ExcludeTrailingPathDelimiter(PreviousDirectory), ExtractFileDir(Path));
+              FState.Session.LastReportLaunchState := 'snapshot';
+            end;
+            LaunchLoadedCore(Core, FileName, DisplayName, Snapshot, PlatformId,
+              StartPaused or (Choice = TRetroDialogChoice.Accept));
           end;
-        end;
-      finally
-        FState.Session.PendingAutosaveChoice := False;
-        if not FLoadingCore then
+        finally
           FState.Session.PreserveOpeningAutosave := False;
-        FinishFileSelection;
-        FView.SyncActivity;
-      end;
-    end, 'Load autosave', 'Start new game', 'Cancel launch');
+          FinishFileSelection;
+          FView.SyncActivity;
+        end;
+      end, 'Load autosave', 'Start new game', 'Cancel launch');
+  except
+    FState.Session.PendingAutosaveChoice := False;
+    raise;
+  end;
+end;
+
+procedure TSessionController.LaunchLoadedCore(const Core: IEmulationCore; const FileName, DisplayName, Snapshot, PlatformId: string; StartPaused: Boolean);
+begin
+  try
+    InstallCore(Core, FileName, DisplayName, StartPaused);
+    FLaunchPlatform := PlatformId;
+    if FLaunchPlatform = '' then
+      FLaunchPlatform := Core.SystemId;
+    if Snapshot <> '' then
+      FView.LoadSnapshot(Snapshot);
+  except
+    on E: Exception do
+    begin
+      FState.Session.LastReportError := E.Message;
+      ShowRetroMessage(FView, Translate('Unable to open game: ') + TranslateCoreMessage(E.Message));
+    end;
+  end;
 end;
 
 procedure TSessionController.ResetConsole(Hard: Boolean);
@@ -621,7 +832,7 @@ begin
   FState.Input.SuppressInputUntilRelease := True;
 end;
 
-procedure TSessionController.ChoosePlatform(const FileName, DisplayName: string; StartPaused: Boolean; const SnapshotName: string; const Platforms: TArray<TCorePlatformOption>; const FailedPlatformId, LoadError: string);
+procedure TSessionController.ChoosePlatform(const FileName, DisplayName: string; StartPaused: Boolean; const SnapshotName: string; const Platforms: TArray<TCorePlatformOption>; const FailedPlatformId, LoadError: string; OfferAutosave: Boolean);
 begin
   var IsAlive := FState.Session.CallbackAlive;
   var Generation := FLoadGeneration;
@@ -658,7 +869,7 @@ begin
         FSelectingPlatform := False;
         try
           if (Index >= 0) and (Index < Length(Choices)) then
-            BeginGameLoading(FileName, DisplayName, StartPaused, SnapshotName, Choices[Index].Id)
+            BeginGameLoading(FileName, DisplayName, StartPaused, SnapshotName, Choices[Index].Id, '', OfferAutosave)
           else
             FState.Session.PreserveOpeningAutosave := False;
         except
@@ -676,7 +887,7 @@ begin
   end;
 end;
 
-procedure TSessionController.BeginGameLoading(const FileName, DisplayName: string; StartPaused: Boolean; const SnapshotName: string; const PlatformId, PreferredPlatformId: string);
+procedure TSessionController.BeginGameLoading(const FileName, DisplayName: string; StartPaused: Boolean; const SnapshotName: string; const PlatformId, PreferredPlatformId: string; OfferAutosave: Boolean);
 begin
   FState.Session.LastReportRom := FileName;
   FState.Session.LastReportFilename := FState.Session.Storage.Describe(FileName).Name;
@@ -729,9 +940,8 @@ begin
         ErrorText: string;
         Platforms: TArray<TCorePlatformOption>;
         FailedPlatformId, LoadError: string;
-        CheckDiscAutosave: Boolean;
+        Autosave: string;
       begin
-        CheckDiscAutosave := False;
         var Scope := TStorage.BeginReadCancellation(CheckCancelled);
         try
           CheckCancelled();
@@ -745,15 +955,16 @@ begin
                 Path := Source.Location;
                 if Source.DisplayName <> '' then
                   Title := Source.DisplayName;
-                CheckDiscAutosave := (Snapshot = '') and (FindRecordedAutosave(Storage, Path) <> '');
               end;
             end;
-            if not CheckDiscAutosave then
-              Core := CreateEmulationCore(Stream, Storage, Path, TargetPlatform, PreferredPlatform);
+            Core := CreateEmulationCore(Stream, Storage, Path, TargetPlatform, PreferredPlatform);
             CheckCancelled();
           finally
             Stream.Free;
           end;
+          var Info: IEmulationSnapshotLocation;
+          if OfferAutosave and Core.SupportsSnapshots and Supports(Core, IEmulationSnapshotLocation, Info) then
+            Autosave := FindAutosave(Storage, Info.GetSnapshotDirectory);
         except
           on E: ECoreSelectionRequired do
           begin
@@ -785,21 +996,9 @@ begin
               FState.Session.LastReportRom := Path;
               FState.Session.LastReportFilename := Title;
             end;
-            if CheckDiscAutosave and (ErrorText = '') then
-            begin
-              var Launch := FState.Session.LastReportLaunch;
-              EndCoreLoading;
-              FState.Session.ReportLaunchSource := Launch;
-              try
-                LoadRom(Path, Title, Paused, Snapshot, PreferredPlatform);
-              finally
-                FinishFileSelection;
-              end;
-              Exit;
-            end;
             if Length(Platforms) > 0 then
             begin
-              ChoosePlatform(Path, Title, Paused, Snapshot, Platforms, FailedPlatformId, LoadError);
+              ChoosePlatform(Path, Title, Paused, Snapshot, Platforms, FailedPlatformId, LoadError, OfferAutosave);
               Exit;
             end;
             try
@@ -808,21 +1007,10 @@ begin
                 FState.Session.LastReportError := ErrorText;
                 ShowRetroMessage(FView, Translate('Unable to open game: ') + TranslateCoreMessage(ErrorText));
               end
+              else if Autosave <> '' then
+                OfferAutosaveChoice(Core, Path, Title, Autosave, TargetPlatform, Paused)
               else
-              try
-                InstallCore(Core, Path, Title, Paused);
-                FLaunchPlatform := TargetPlatform;
-                if FLaunchPlatform = '' then
-                  FLaunchPlatform := Core.SystemId;
-                if Snapshot <> '' then
-                  FView.LoadSnapshot(Snapshot);
-              except
-                on E: Exception do
-                begin
-                  FState.Session.LastReportError := E.Message;
-                  ShowRetroMessage(FView, Translate('Unable to open game: ') + TranslateCoreMessage(E.Message));
-                end;
-              end;
+                LaunchLoadedCore(Core, Path, Title, Snapshot, TargetPlatform, Paused);
             finally
               EndCoreLoading;
             end;
@@ -894,13 +1082,13 @@ begin
       FState.Session.Emulation.Pause;
     {$ENDIF}
     FState.Session.Emulation.Start;
+    RefreshAchievements;
     FState.Autosave.LastTick := FView.AutosaveClock;
     var Info: IEmulationSnapshotLocation;
     var Directory := '';
     if FState.Session.Emulation.SupportsSnapshots and
       Supports(FState.Session.Emulation, IEmulationSnapshotLocation, Info) then
       Directory := Info.GetSnapshotDirectory;
-    RecordGameSnapshotDirectory(FState.Session.Storage, FileName, Directory);
     if FState.Browser.View <> nil then
     begin
       FState.Browser.View.RecordSession(FileName, Directory, platform.Id, DisplayName, FState.Session.RomMetadata);
@@ -1139,6 +1327,7 @@ begin
       FView.SetStatus(FrameStatus);
     {$ENDIF}
   end;
+  PollAchievements;
   PlatformSessionHandler(FState.Input.SystemId).FrameStatus(RuntimeContext);
   if not NewFrame then
     Exit;

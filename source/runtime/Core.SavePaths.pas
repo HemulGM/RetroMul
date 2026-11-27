@@ -26,86 +26,23 @@ function GetSnapshotDirectory: string;
 
 function ResolveGameSavePath(const Root, RomFileName, Hash, Extension: string): string;
 
-// Resolve a previously recorded game without opening its ROM or constructing a core.
-function FindRecordedAutosave(const Storage: IStorage; const RomLocation: string): string;
-
-procedure RecordGameSnapshotDirectory(const Storage: IStorage; const RomLocation, Directory: string);
+function FindAutosave(const Storage: IStorage; const Directory: string): string;
 
 function SnapshotDirectoryHasFiles(const Storage: IStorage; const Directory: string): Boolean;
 
 implementation
 
 uses
-  System.SysUtils, System.IOUtils, System.StrUtils, System.Hash,
-  Core.CD.Physical;
+  System.SysUtils, System.IOUtils;
 
-function SessionKey(const RomLocation: string): string;
-begin
-  var Location := RomLocation;
-  if IsOpticalCDLocation(Location) then
-    Exit(THashSHA2.GetHashString(Location.ToLower));
-  if not Location.StartsWith('content://', True) then
-  begin
-    Location := ExpandFileName(Location);
-    {$IFDEF MSWINDOWS}
-    Location := LowerCase(Location);
-    {$ENDIF}
-  end;
-  Result := THashSHA2.GetHashString(Location);
-end;
-
-function FindRecordedAutosave(const Storage: IStorage; const RomLocation: string): string;
+function FindAutosave(const Storage: IStorage; const Directory: string): string;
 begin
   Result := '';
-  var Ini := Storage.ReadConfig(Storage.ConfigFile('sessions'));
-  var Directory: string;
-  var Recorded: Boolean;
-  try
-    Recorded := Ini.ValueExists('Snapshots', SessionKey(RomLocation));
-    Directory := Ini.ReadString('Snapshots', SessionKey(RomLocation), '');
-  finally
-    Ini.Free;
-  end;
-  if not Recorded then
-  begin
-    // Existing libraries recorded this association before the session index.
-    Ini := Storage.ReadConfig(Storage.ConfigFile('library'));
-    try
-      Directory := Ini.ReadString('Snapshots', THashSHA2.GetHashString(RomLocation), '');
-    finally
-      Ini.Free;
-    end;
-  end;
   if Directory = '' then
     Exit;
   var Path := ResolveSnapshotPath(Directory, SNAPSHOT_AUTOSAVE);
   if Storage.Exists(Path) then
     Result := Path;
-end;
-
-procedure RecordGameSnapshotDirectory(const Storage: IStorage; const RomLocation, Directory: string);
-begin
-  if RomLocation = '' then
-    Exit;
-  var Ini := Storage.ReadConfig(Storage.ConfigFile('sessions'));
-  try
-    var Key := SessionKey(RomLocation);
-    if SnapshotDirectoryHasFiles(Storage, Directory) then
-    begin
-      if Ini.ReadString('Snapshots', Key, '') = Directory then
-        Exit;
-      Ini.WriteString('Snapshots', Key, Directory);
-    end
-    else
-    begin
-      if not Ini.ValueExists('Snapshots', Key) then
-        Exit;
-      Ini.DeleteKey('Snapshots', Key);
-    end;
-    Storage.WriteConfig(Ini);
-  finally
-    Ini.Free;
-  end;
 end;
 
 function SnapshotDirectoryHasFiles(const Storage: IStorage; const Directory: string): Boolean;

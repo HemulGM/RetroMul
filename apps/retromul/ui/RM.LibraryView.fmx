@@ -2,6 +2,117 @@ object LibraryView: TLibraryView
   Size.Width = 1101.000000000000000000
   Size.Height = 691.000000000000000000
   Size.PlatformDefault = False
+  object LayoutCardStatusTemplate: TLayout
+    Align = Right
+    Size.Width = 40.000000000000000000
+    Size.Height = 28.000000000000000000
+    Size.PlatformDefault = False
+    Visible = False
+    object LayoutCardFavorite: TLayout
+      Align = Left
+      Size.Width = 20.000000000000000000
+      Size.Height = 28.000000000000000000
+      Size.PlatformDefault = False
+      object RectangleCardFavorite: TRectangle
+        Align = Center
+        Fill.Color = xFF30303A
+        HitTest = False
+        Size.Width = 18.000000000000000000
+        Size.Height = 18.000000000000000000
+        Size.PlatformDefault = False
+        Stroke.Kind = None
+        XRadius = 5.000000000000000000
+        YRadius = 5.000000000000000000
+        object PathCardFavorite: TPath
+          Align = Center
+          Data.Path = {
+            0900000000000000000050410000B84101000000000040400000504102000000
+            0000A0C0000040400200000000000041000000C002000000000050410000E040
+            0200000000009041000000C0020000000000F84100004040020000000000B841
+            0000504103000000000050410000B841}
+          Fill.Kind = None
+          HitTest = False
+          Size.Width = 12.000000000000000000
+          Size.Height = 12.000000000000000000
+          Size.PlatformDefault = False
+          Stroke.Color = xFFFF9DB3
+          Stroke.Thickness = 1.399999976158142000
+          WrapMode = Fit
+        end
+      end
+    end
+    object LayoutCardAchievements: TLayout
+      Align = Left
+      Position.X = 20.000000000000000000
+      Size.Width = 20.000000000000000000
+      Size.Height = 28.000000000000000000
+      Size.PlatformDefault = False
+      object RectangleCardAchievements: TRectangle
+        Align = Center
+        Fill.Color = xFF30303A
+        HitTest = False
+        Size.Width = 18.000000000000000000
+        Size.Height = 18.000000000000000000
+        Size.PlatformDefault = False
+        Stroke.Kind = None
+        XRadius = 5.000000000000000000
+        YRadius = 5.000000000000000000
+        object PathCardAchievements: TPath
+          Align = Center
+          Data.Path = {
+            6E00000000000000BF0E74410000004002000000924B83410000004002000000
+            F4EC8A41EF0338400200000051EB8B419B03804001000000910F964100008040
+            020000000A689D4100008040020000002F6EA341A5A0964002000000B003A441
+            3468B34001000000910FA4410000B84001000000910FA44100000C4102000000
+            910FA4415EBA274102000000A835994120633E41020000006C898B411CEB3F41
+            01000000BADA8941DE0240410200000012838441547461410200000002BC6B41
+            81957A4102000000DE0248412A3A7F41010000006900484100008C4101000000
+            BF0E644100008C41020000001DC97F4100008C4102000000EF388B411DDA9641
+            02000000B9FC8B415986A441010000005F078C410000A641010000005F078C41
+            0000AA41020000005F078C41A009AD41020000006DC589414A8CAF4102000000
+            DCD7864113F2AF41010000005F0786410000B041010000009604D8400000B041
+            0200000016DECB400000B0410200000084D3C1400EBEAD4102000000B43CC040
+            7DD0AA41010000009604C0400000AA41010000009604C0400000A64102000000
+            9604C040D122984102000000B56CEB4070CE8C4102000000E90E1141720A8C41
+            010000004B02144100008C41010000006900304100008C4101000000A3013041
+            86387F4102000000704E0C41C58F7A41020000006A13DE40A470614102000000
+            17B7C840DE02404101000000F8DFC7400000404102000000FC6F8E4000004041
+            02000000F0BF3F40E9B7284102000000F0BF3F4000000C4101000000F0BF3F40
+            0000B84002000000F0BF3F406F12994002000000F7E471400000804002000000
+            F8DF97400000804001000000A774C0409B03804002000000DB6DC440EF033840
+            02000000E0F3E24000000040020000004B0204410000004001000000BF0E7441
+            0000004003000000BF0E74410000004000000000BF0E64410000984101000000
+            4B021441000098410200000099BB06410000984102000000BD3AF740B89E9C41
+            020000001878F140ECD1A24101000000C095F0400000A441010000003FC67F41
+            0000A441020000007CF27D41499D9D41020000009D807341849E984102000000
+            1F856641B90D984101000000BF0E64410000984103000000BF0E644100009841
+            00000000BF0E744100006040010000004B020441000060400200000061C3FA40
+            00006040020000009604F040957D7540020000009604F0400000884001000000
+            9604F040DBF92341020000009604F040448B494102000000E876164100006841
+            020000009A083C410000684102000000029A614100006841020000005F078041
+            448B4941020000005F078041DBF92341010000005F0780410000884002000000
+            5F078041957D7540020000004FAF7A410000604002000000BF0E744100006040
+            03000000BF0E74410000604000000000910F96410000B040010000005F078C41
+            0000B040010000005F078C41F5B9274102000000C66D9241C0EC254102000000
+            A470974123781B4102000000D801984166770E4101000000910F984100000C41
+            01000000910F98410000B84002000000910F98417A36B4400200000038679741
+            520AB140020000001F8596411136B04001000000910F96410000B04003000000
+            910F96410000B040000000009604C0400000B04001000000F8DF97400000B040
+            02000000E67493400000B04002000000F8DF8F40EE94B34002000000F8DF8F40
+            0000B84001000000F8DF8F4000000C4102000000F8DF8F4077211A4102000000
+            57CFA440E5D02541020000009604C040F5B92741010000009604C0400000B040
+            030000009604C0400000B040}
+          Fill.Color = xFFFFD479
+          HitTest = False
+          Size.Width = 12.000000000000000000
+          Size.Height = 12.000000000000000000
+          Size.PlatformDefault = False
+          Stroke.Kind = None
+          WrapMode = Fit
+        end
+      end
+    end
+  end
   object PanelBackground: TPanel
     Align = Contents
     HitTest = False
@@ -10,39 +121,6 @@ object LibraryView: TLibraryView
     Size.PlatformDefault = False
     StyleLookup = 'retromul_settings'
     TabOrder = 0
-  end
-  object LayoutInspectorOverlay: TLayout
-    Align = Contents
-    Size.Width = 1224.000000000000000000
-    Size.Height = 818.000000000000000000
-    Size.PlatformDefault = False
-    Visible = False
-    object PanelInspectorHeader: TPanel
-      Align = Top
-      Padding.Left = 12.000000000000000000
-      Padding.Top = 4.000000000000000000
-      Padding.Right = 12.000000000000000000
-      Padding.Bottom = 4.000000000000000000
-      Size.Width = 1224.000000000000000000
-      Size.Height = 52.000000000000000000
-      Size.PlatformDefault = False
-      StyleLookup = 'retromul_panel_top'
-      object ButtonInspectorBack: TButton
-        Align = Left
-        Position.X = 12.000000000000000000
-        Position.Y = 4.000000000000000000
-        Size.Width = 140.000000000000000000
-        Size.Height = 44.000000000000000000
-        Size.PlatformDefault = False
-        Text = 'Back'
-      end
-    end
-    object LayoutInspectorContent: TLayout
-      Align = Client
-      Size.Width = 1224.000000000000000000
-      Size.Height = 766.000000000000000000
-      Size.PlatformDefault = False
-    end
   end
   object PanelSidebar: TPanel
     Align = Left
@@ -500,271 +578,281 @@ object LibraryView: TLibraryView
       ScrollAnimation = True
       Viewport.Width = 244.000000000000000000
       Viewport.Height = 647.000000000000000000
-      object ImageCover: TImage
-        MultiResBitmap = <
-          item
-          end>
+      object LayoutInspectorColumns: TLayout
         Align = Top
         Margins.Right = 12.000000000000000000
-        Margins.Bottom = 8.000000000000000000
         Size.Width = 232.000000000000000000
-        Size.Height = 272.000000000000000000
+        Size.Height = 1060.000000000000000000
         Size.PlatformDefault = False
-      end
-      object LabelTitle: TLabel
-        Align = Top
-        StyledSettings = []
-        Margins.Right = 12.000000000000000000
-        Margins.Bottom = 8.000000000000000000
-        Position.Y = 280.000000000000000000
-        Size.Width = 232.000000000000000000
-        Size.Height = 64.000000000000000000
-        Size.PlatformDefault = False
-        TextSettings.Font.Size = 23.000000000000000000
-        TextSettings.Font.StyleExt = {00070000000000000004000000}
-        TextSettings.FontColor = xFFE9E8F1
-        Text = 'Select a game'
-        TabOrder = 1
-      end
-      object LabelDetails: TLabel
-        Align = Top
-        StyledSettings = []
-        Opacity = 0.649999976158142100
-        Margins.Right = 12.000000000000000000
-        Margins.Bottom = 8.000000000000000000
-        Position.Y = 352.000000000000000000
-        Size.Width = 232.000000000000000000
-        Size.Height = 50.000000000000000000
-        Size.PlatformDefault = False
-        TextSettings.Font.Size = 13.000000000000000000
-        TextSettings.FontColor = xFFE9E8F1
-        Text = 'FDetails'
-        TabOrder = 2
-      end
-      object EditRomPath: TEdit
-        Touch.InteractiveGestures = [LongTap, DoubleTap]
-        Align = Top
-        StyleLookup = 'transparentedit'
-        TabOrder = 3
-        ReadOnly = True
-        TextSettings.Font.Size = 13.000000000000000000
-        TextSettings.FontColor = xFFA9AAB9
-        Position.Y = 410.000000000000000000
-        Margins.Right = 12.000000000000000000
-        Margins.Bottom = 8.000000000000000000
-        Size.Width = 232.000000000000000000
-        Size.Height = 32.000000000000000000
-        Size.PlatformDefault = False
-        StyledSettings = []
-        ParentShowHint = False
-        ShowHint = True
-      end
-      object ButtonPlay: TButton
-        Align = Top
-        Margins.Right = 12.000000000000000000
-        Margins.Bottom = 8.000000000000000000
-        Position.Y = 450.000000000000000000
-        Size.Width = 232.000000000000000000
-        Size.Height = 44.000000000000000000
-        Size.PlatformDefault = False
-        StyleLookup = 'buttonstyle_accent'
-        TabOrder = 4
-        Text = 'Play'
-        TextSettings.Trimming = Character
-        object PathPlayIcon: TPath
-          Align = Left
-          Data.Path = {
-            2800000000000000000000416666894101000000000000416666DA4002000000
-            000000415555D140020000009A9901415EBAC94002000000CDCC04418195C340
-            0200000000000841A470BD4002000000BCBB0B41F160BA400200000000001041
-            6666BA4002000000555511416666BA40020000006BBC12416FCBBA4002000000
-            403514418195BB400200000015AE1541935FBC4002000000CD1317412494BD40
-            02000000676618413333BF400100000066668D41666632410200000099998E41
-            FFFF33410200000057808F41FFFF3541020000009F1A90416666384102000000
-            E7B49041CDCC3A41020000005C01914155553D4102000000FFFF904100004041
-            02000000A2FE9041ABAA4241020000002CB2904133334541020000009F1A9041
-            9A9947410200000012838F4101004A4102000000549C8E4101004C4102000000
-            66668D419A994D4101000000666618413433904102000000111117419B999041
-            0200000059AB1541BFE69041020000003F351441A11A91410200000025BF1241
-            834E91410200000010581141C567914102000000000010416666914102000000
-            BCBB0B41666691410200000000000841CAA1904102000000CDCC044193188F41
-            020000009A9901415C8F8D4102000000000000414DA98B410200000000000041
-            66668941}
-          Fill.Color = claBlack
-          HitTest = False
-          Margins.Left = 16.000000000000000000
-          Margins.Top = 14.000000000000000000
-          Margins.Bottom = 14.000000000000000000
-          Position.X = 16.000000000000000000
-          Position.Y = 14.000000000000000000
-          Size.Width = 16.000000000000000000
-          Size.Height = 16.000000000000000000
+        TabOrder = 0
+        object LayoutInspectorOverview: TLayout
+          Align = MostTop
+          Size.Width = 232.000000000000000000
+          Size.Height = 550.000000000000000000
           Size.PlatformDefault = False
-          Stroke.Kind = None
-          Stroke.Thickness = 1.600000023841858000
-          WrapMode = Fit
+          TabOrder = 0
+          object ImageCover: TImage
+            MultiResBitmap = <
+              item
+              end>
+            Align = Top
+            Margins.Bottom = 8.000000000000000000
+            Size.Width = 232.000000000000000000
+            Size.Height = 272.000000000000000000
+            Size.PlatformDefault = False
+          end
+          object LabelTitle: TLabel
+            Align = Top
+            StyledSettings = []
+            Margins.Bottom = 8.000000000000000000
+            Position.Y = 280.000000000000000000
+            Size.Width = 232.000000000000000000
+            Size.Height = 64.000000000000000000
+            Size.PlatformDefault = False
+            TextSettings.Font.Size = 23.000000000000000000
+            TextSettings.Font.StyleExt = {00070000000000000004000000}
+            TextSettings.FontColor = xFFE9E8F1
+            Text = 'Select a game'
+            TabOrder = 1
+          end
+          object LabelDetails: TLabel
+            Align = Top
+            StyledSettings = []
+            Opacity = 0.649999976158142100
+            Margins.Bottom = 8.000000000000000000
+            Position.Y = 352.000000000000000000
+            Size.Width = 232.000000000000000000
+            Size.Height = 50.000000000000000000
+            Size.PlatformDefault = False
+            TextSettings.Font.Size = 13.000000000000000000
+            TextSettings.FontColor = xFFE9E8F1
+            Text = 'FDetails'
+            TabOrder = 2
+          end
+          object EditRomPath: TEdit
+            Touch.InteractiveGestures = [LongTap, DoubleTap]
+            Align = Top
+            StyleLookup = 'transparentedit'
+            TabOrder = 3
+            ReadOnly = True
+            TextSettings.Font.Size = 13.000000000000000000
+            TextSettings.FontColor = xFFA9AAB9
+            Position.Y = 410.000000000000000000
+            Margins.Bottom = 8.000000000000000000
+            Size.Width = 232.000000000000000000
+            Size.Height = 32.000000000000000000
+            Size.PlatformDefault = False
+            StyledSettings = []
+            ParentShowHint = False
+            ShowHint = True
+          end
+          object ButtonPlay: TButton
+            Align = Top
+            Margins.Bottom = 8.000000000000000000
+            Position.Y = 450.000000000000000000
+            Size.Width = 232.000000000000000000
+            Size.Height = 44.000000000000000000
+            Size.PlatformDefault = False
+            StyleLookup = 'buttonstyle_accent'
+            TabOrder = 4
+            Text = 'Play'
+            TextSettings.Trimming = Character
+            object PathPlayIcon: TPath
+              Align = Left
+              Data.Path = {
+                2800000000000000000000416666894101000000000000416666DA4002000000
+                000000415555D140020000009A9901415EBAC94002000000CDCC04418195C340
+                0200000000000841A470BD4002000000BCBB0B41F160BA400200000000001041
+                6666BA4002000000555511416666BA40020000006BBC12416FCBBA4002000000
+                403514418195BB400200000015AE1541935FBC4002000000CD1317412494BD40
+                02000000676618413333BF400100000066668D41666632410200000099998E41
+                FFFF33410200000057808F41FFFF3541020000009F1A90416666384102000000
+                E7B49041CDCC3A41020000005C01914155553D4102000000FFFF904100004041
+                02000000A2FE9041ABAA4241020000002CB2904133334541020000009F1A9041
+                9A9947410200000012838F4101004A4102000000549C8E4101004C4102000000
+                66668D419A994D4101000000666618413433904102000000111117419B999041
+                0200000059AB1541BFE69041020000003F351441A11A91410200000025BF1241
+                834E91410200000010581141C567914102000000000010416666914102000000
+                BCBB0B41666691410200000000000841CAA1904102000000CDCC044193188F41
+                020000009A9901415C8F8D4102000000000000414DA98B410200000000000041
+                66668941}
+              Fill.Color = claBlack
+              HitTest = False
+              Margins.Left = 16.000000000000000000
+              Margins.Top = 14.000000000000000000
+              Margins.Bottom = 14.000000000000000000
+              Position.X = 16.000000000000000000
+              Position.Y = 14.000000000000000000
+              Size.Width = 16.000000000000000000
+              Size.Height = 16.000000000000000000
+              Size.PlatformDefault = False
+              Stroke.Kind = None
+              Stroke.Thickness = 1.600000023841858000
+              WrapMode = Fit
+            end
+          end
+          object ButtonFavorite: TButton
+            Align = Top
+            Margins.Bottom = 8.000000000000000000
+            Position.Y = 502.000000000000000000
+            Size.Width = 232.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+            TabOrder = 5
+            Text = 'Add to favorites'
+            TextSettings.Trimming = Character
+          end
         end
-      end
-      object ButtonFavorite: TButton
-        Align = Top
-        Margins.Right = 12.000000000000000000
-        Margins.Bottom = 8.000000000000000000
-        Position.Y = 502.000000000000000000
-        Size.Width = 232.000000000000000000
-        Size.Height = 40.000000000000000000
-        Size.PlatformDefault = False
-        TabOrder = 5
-        Text = 'Add to favorites'
-        TextSettings.Trimming = Character
-      end
-      object LabelDescription: TLabel
-        Align = Top
-        StyledSettings = []
-        Opacity = 0.699999988079071000
-        Margins.Right = 12.000000000000000000
-        Margins.Bottom = 8.000000000000000000
-        Position.Y = 550.000000000000000000
-        Size.Width = 232.000000000000000000
-        Size.Height = 92.000000000000000000
-        Size.PlatformDefault = False
-        TextSettings.Font.Size = 13.000000000000000000
-        TextSettings.FontColor = xFFE9E8F1
-        Text = 'FDescription'
-        TabOrder = 6
-      end
-      object LabelGameInfo: TLabel
-        Align = Top
-        StyledSettings = []
-        Opacity = 0.699999988079071000
-        Margins.Right = 12.000000000000000000
-        Margins.Bottom = 8.000000000000000000
-        Position.Y = 650.000000000000000000
-        Size.Width = 232.000000000000000000
-        Size.Height = 48.000000000000000000
-        Size.PlatformDefault = False
-        TextSettings.Font.Size = 13.000000000000000000
-        TextSettings.FontColor = xFFE9E8F1
-        Text = 'FGameInfo'
-        TabOrder = 7
-      end
-      object LabelSnapshots: TLabel
-        Align = Top
-        StyledSettings = []
-        Margins.Right = 12.000000000000000000
-        Margins.Bottom = 8.000000000000000000
-        Position.Y = 706.000000000000000000
-        Size.Width = 232.000000000000000000
-        Size.Height = 32.000000000000000000
-        Size.PlatformDefault = False
-        TextSettings.Font.Size = 19.000000000000000000
-        TextSettings.FontColor = xFFE9E8F1
-        TextSettings.WordWrap = False
-        Text = 'Save states'
-        TabOrder = 8
-      end
-      object LabelSavesEmpty: TLabel
-        Align = Top
-        StyledSettings = []
-        Opacity = 0.600000023841857900
-        Margins.Right = 12.000000000000000000
-        Margins.Bottom = 8.000000000000000000
-        Position.Y = 746.000000000000000000
-        Size.Width = 232.000000000000000000
-        Size.Height = 54.000000000000000000
-        Size.PlatformDefault = False
-        TextSettings.Font.Size = 13.000000000000000000
-        TextSettings.FontColor = xFFE9E8F1
-        Text = 'FSavesEmpty'
-        TabOrder = 9
-      end
-      object LayoutSaveRow0: TLayout
-        Align = Top
-        Margins.Right = 12.000000000000000000
-        Margins.Bottom = 20.000000000000000000
-        Position.Y = 808.000000000000000000
-        Size.Width = 232.000000000000000000
-        Size.Height = 64.000000000000000000
-        Size.PlatformDefault = False
-        TabOrder = 10
-        object ImageSavePreview0: TImage
-          MultiResBitmap = <
-            item
-            end>
-          Align = Left
-          Margins.Right = 8.000000000000000000
-          Size.Width = 76.000000000000000000
-          Size.Height = 64.000000000000000000
+        object LayoutInspectorDetails: TLayout
+          Align = Top
+          Position.Y = 550.000000000000000000
+          Size.Width = 232.000000000000000000
+          Size.Height = 510.000000000000000000
           Size.PlatformDefault = False
-        end
-        object ButtonSaveButton0: TButton
-          Align = Client
-          Size.Width = 164.000000000000000000
-          Size.Height = 64.000000000000000000
-          Size.PlatformDefault = False
-          TabOrder = 10
-          Text = 'No save state'
-          TextSettings.Trimming = Character
-          Visible = False
-        end
-      end
-      object LayoutSaveRow1: TLayout
-        Align = Top
-        Margins.Right = 12.000000000000000000
-        Margins.Bottom = 20.000000000000000000
-        Position.Y = 892.000000000000000000
-        Size.Width = 232.000000000000000000
-        Size.Height = 64.000000000000000000
-        Size.PlatformDefault = False
-        TabOrder = 11
-        object ImageSavePreview1: TImage
-          MultiResBitmap = <
-            item
-            end>
-          Align = Left
-          Margins.Right = 8.000000000000000000
-          Size.Width = 76.000000000000000000
-          Size.Height = 64.000000000000000000
-          Size.PlatformDefault = False
-        end
-        object ButtonSaveButton1: TButton
-          Align = Client
-          Size.Width = 164.000000000000000000
-          Size.Height = 64.000000000000000000
-          Size.PlatformDefault = False
-          TabOrder = 12
-          Text = 'No save state'
-          TextSettings.Trimming = Character
-          Visible = False
-        end
-      end
-      object LayoutSaveRow2: TLayout
-        Align = Top
-        Margins.Right = 12.000000000000000000
-        Margins.Bottom = 20.000000000000000000
-        Position.Y = 976.000000000000000000
-        Size.Width = 232.000000000000000000
-        Size.Height = 64.000000000000000000
-        Size.PlatformDefault = False
-        TabOrder = 12
-        object ImageSavePreview2: TImage
-          MultiResBitmap = <
-            item
-            end>
-          Align = Left
-          Margins.Right = 8.000000000000000000
-          Size.Width = 76.000000000000000000
-          Size.Height = 64.000000000000000000
-          Size.PlatformDefault = False
-        end
-        object ButtonSaveButton2: TButton
-          Align = Client
-          Size.Width = 164.000000000000000000
-          Size.Height = 64.000000000000000000
-          Size.PlatformDefault = False
-          TabOrder = 14
-          Text = 'No save state'
-          TextSettings.Trimming = Character
-          Visible = False
+          TabOrder = 1
+          object LabelDescription: TLabel
+            Align = Top
+            StyledSettings = []
+            Opacity = 0.699999988079071000
+            Margins.Bottom = 8.000000000000000000
+            Size.Width = 232.000000000000000000
+            Size.Height = 92.000000000000000000
+            Size.PlatformDefault = False
+            TextSettings.Font.Size = 13.000000000000000000
+            TextSettings.FontColor = xFFE9E8F1
+            TextSettings.Trimming = None
+            Text = 'FDescription'
+            TabOrder = 6
+          end
+          object LabelGameInfo: TLabel
+            Align = Top
+            StyledSettings = []
+            Opacity = 0.699999988079071000
+            Margins.Bottom = 8.000000000000000000
+            Position.Y = 100.000000000000000000
+            Size.Width = 232.000000000000000000
+            Size.Height = 48.000000000000000000
+            Size.PlatformDefault = False
+            TextSettings.Font.Size = 13.000000000000000000
+            TextSettings.FontColor = xFFE9E8F1
+            Text = 'FGameInfo'
+            TabOrder = 7
+          end
+          object LabelSnapshots: TLabel
+            Align = Top
+            StyledSettings = []
+            Margins.Bottom = 8.000000000000000000
+            Position.Y = 156.000000000000000000
+            Size.Width = 232.000000000000000000
+            Size.Height = 32.000000000000000000
+            Size.PlatformDefault = False
+            TextSettings.Font.Size = 19.000000000000000000
+            TextSettings.FontColor = xFFE9E8F1
+            TextSettings.WordWrap = False
+            Text = 'Save states'
+            TabOrder = 8
+          end
+          object LabelSavesEmpty: TLabel
+            Align = Top
+            StyledSettings = []
+            Opacity = 0.600000023841857900
+            Margins.Bottom = 8.000000000000000000
+            Position.Y = 196.000000000000000000
+            Size.Width = 232.000000000000000000
+            Size.Height = 54.000000000000000000
+            Size.PlatformDefault = False
+            TextSettings.Font.Size = 13.000000000000000000
+            TextSettings.FontColor = xFFE9E8F1
+            Text = 'FSavesEmpty'
+            TabOrder = 9
+          end
+          object LayoutSaveRow0: TLayout
+            Align = Top
+            Margins.Bottom = 20.000000000000000000
+            Position.Y = 258.000000000000000000
+            Size.Width = 232.000000000000000000
+            Size.Height = 64.000000000000000000
+            Size.PlatformDefault = False
+            TabOrder = 10
+            object ImageSavePreview0: TImage
+              MultiResBitmap = <
+                item
+                end>
+              Align = Left
+              Margins.Right = 8.000000000000000000
+              Size.Width = 76.000000000000000000
+              Size.Height = 64.000000000000000000
+              Size.PlatformDefault = False
+            end
+            object ButtonSaveButton0: TButton
+              Align = Client
+              Size.Width = 164.000000000000000000
+              Size.Height = 64.000000000000000000
+              Size.PlatformDefault = False
+              TabOrder = 10
+              Text = 'No save state'
+              TextSettings.Trimming = Character
+              Visible = False
+            end
+          end
+          object LayoutSaveRow1: TLayout
+            Align = Top
+            Margins.Bottom = 20.000000000000000000
+            Position.Y = 342.000000000000000000
+            Size.Width = 232.000000000000000000
+            Size.Height = 64.000000000000000000
+            Size.PlatformDefault = False
+            TabOrder = 11
+            object ImageSavePreview1: TImage
+              MultiResBitmap = <
+                item
+                end>
+              Align = Left
+              Margins.Right = 8.000000000000000000
+              Size.Width = 76.000000000000000000
+              Size.Height = 64.000000000000000000
+              Size.PlatformDefault = False
+            end
+            object ButtonSaveButton1: TButton
+              Align = Client
+              Size.Width = 164.000000000000000000
+              Size.Height = 64.000000000000000000
+              Size.PlatformDefault = False
+              TabOrder = 12
+              Text = 'No save state'
+              TextSettings.Trimming = Character
+              Visible = False
+            end
+          end
+          object LayoutSaveRow2: TLayout
+            Align = Top
+            Margins.Bottom = 20.000000000000000000
+            Position.Y = 426.000000000000000000
+            Size.Width = 232.000000000000000000
+            Size.Height = 64.000000000000000000
+            Size.PlatformDefault = False
+            TabOrder = 12
+            object ImageSavePreview2: TImage
+              MultiResBitmap = <
+                item
+                end>
+              Align = Left
+              Margins.Right = 8.000000000000000000
+              Size.Width = 76.000000000000000000
+              Size.Height = 64.000000000000000000
+              Size.PlatformDefault = False
+            end
+            object ButtonSaveButton2: TButton
+              Align = Client
+              Size.Width = 164.000000000000000000
+              Size.Height = 64.000000000000000000
+              Size.PlatformDefault = False
+              TabOrder = 14
+              Text = 'No save state'
+              TextSettings.Trimming = Character
+              Visible = False
+            end
+          end
         end
       end
     end
@@ -1805,18 +1893,26 @@ object LibraryView: TLibraryView
     object TimerPadTransition: TTimer
       Enabled = False
       Interval = 8
+      Left = 160
+      Top = 280
     end
     object TimerPadPlatforms: TTimer
       Enabled = False
       Interval = 8
+      Left = 360
+      Top = 264
     end
     object TimerPadLayout: TTimer
       Enabled = False
       Interval = 1
+      Left = 160
+      Top = 352
     end
     object TimerPadBackdrop: TTimer
       Enabled = False
       Interval = 16
+      Left = 360
+      Top = 352
     end
     object LayoutPadActionsSection: TLayout
       Align = MostBottom
@@ -3110,6 +3206,58 @@ object LibraryView: TLibraryView
           end
         end
       end
+    end
+  end
+  object LayoutInspectorOverlay: TLayout
+    Align = Contents
+    Size.Width = 1101.000000000000000000
+    Size.Height = 691.000000000000000000
+    Size.PlatformDefault = False
+    object PanelInspectorHeader: TPanel
+      Align = Top
+      Padding.Left = 8.000000000000000000
+      Padding.Top = 8.000000000000000000
+      Padding.Right = 8.000000000000000000
+      Padding.Bottom = 8.000000000000000000
+      Size.Width = 1101.000000000000000000
+      Size.Height = 52.000000000000000000
+      Size.PlatformDefault = False
+      StyleLookup = 'retromul_panel_top'
+      object ButtonInspectorBack: TButton
+        Align = Left
+        Position.X = 8.000000000000000000
+        Position.Y = 8.000000000000000000
+        Size.Width = 140.000000000000000000
+        Size.Height = 36.000000000000000000
+        Size.PlatformDefault = False
+        StyleLookup = 'buttonstyle_subtle'
+        Text = 'Back'
+        object PathSidebarBackIcon: TPath
+          Align = Left
+          Data.Path = {
+            05000000000000000000C0410000504101000000000000400000504100000000
+            000020410000A04001000000000000400000504101000000000020410000A841}
+          Fill.Kind = None
+          HitTest = False
+          Margins.Left = 16.000000000000000000
+          Margins.Top = 11.000000000000000000
+          Margins.Bottom = 11.000000000000000000
+          Position.X = 16.000000000000000000
+          Position.Y = 11.000000000000000000
+          Size.Width = 20.000000000000000000
+          Size.Height = 14.000000000000000000
+          Size.PlatformDefault = False
+          Stroke.Color = xFFE9E8F1
+          Stroke.Thickness = 1.600000023841858000
+          WrapMode = Fit
+        end
+      end
+    end
+    object LayoutInspectorContent: TLayout
+      Align = Client
+      Size.Width = 1101.000000000000000000
+      Size.Height = 639.000000000000000000
+      Size.PlatformDefault = False
     end
   end
 end

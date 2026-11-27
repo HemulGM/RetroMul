@@ -29,12 +29,13 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads, RM.Settings.Catalog, Core.Snapshots, System.StrUtils,
-  Core.Emulation, Core.Platforms, Core.Platforms.GBA.Adapter, GBA.Cartridge,
-  RM.Platforms.GBA.Settings, RM.Platforms.Presentation, RM.Gamepad.Factory,
-  RM.Platforms.GBA.Gamepads, RM.Input.Runtime, RM.Session.Runtime,
-  RM.Window.Layout, RM.Settings.Runtime, RM.ControlsHelp.Content,
-  RM.Settings.Callouts, RM.Settings.Devices, System.Classes;
+  RM.Input.Gamepads, RM.Settings.Catalog, Core.Snapshots, Core.PlatformServices,
+  System.StrUtils, Core.Emulation, Core.Emulation.Types, Core.Platforms,
+  Core.Platforms.GBA.Adapter, GBA.Cartridge, RM.Platforms.GBA.Settings,
+  RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Platforms.GBA.Gamepads,
+  RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
+  RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
+  System.Classes;
 
 const
   PlatformIcon =
@@ -108,8 +109,28 @@ begin
   RegisterEmulationCore(Registration);
 end;
 
+type
+  TGBAAchievementMedia = class(TInterfacedObject, IEmulationAchievementMedia)
+    function GetConsoleId: Cardinal;
+    function AcceptsROM(const SourceName: string; Input: TStream): Boolean;
+  end;
+
+function TGBAAchievementMedia.GetConsoleId: Cardinal;
+begin
+  Result := 5; // RetroAchievements console ID for Game Boy Advance.
+end;
+
+function TGBAAchievementMedia.AcceptsROM(const SourceName: string; Input: TStream): Boolean;
+begin
+  var Size := Input.Size;
+  Result := (Size >= $C0) and (Size <= GBA_ROM_MAX_SIZE);
+end;
+
 class procedure TGBAPlatform.RegisterServices;
 begin
+  var Service := Default(TPlatformServices);
+  Service.AchievementMedia := TGBAAchievementMedia.Create;
+  RegisterPlatformServices(ROM_SYSTEM_GBA, Service);
   RegisterSnapshotPolicy('GBA', TSnapshotPolicy.Create(6));
 end;
 

@@ -95,6 +95,7 @@ type
     procedure ClockIo; inline;
     function DebugCpuRead(Address: UInt16): UInt8;
     function PeekInternalRam(Address: Word): Byte;
+    function PeekAchievementByte(Address: Word; out Value: Byte): Boolean;
     property InternalRamMask: Word read GetInternalRamMask;
     property CpuAddress: UInt16 read FCpuAddress write FCpuAddress;
     property CpuCycle: UInt64 read FCpuCycle write FCpuCycle;
@@ -110,7 +111,10 @@ type
 implementation
 
 uses
-  System.Types, NES.Mapper, NES.Mapper.FlameCyclone, NES.DiskSystem;
+  System.Types, NES.Mapper, NES.Mapper.FlameCyclone, NES.DiskSystem,
+  NES.Mapper.Nrom, NES.Mapper.Mmc1, NES.Mapper.Mmc3, NES.Mapper.Uxrom,
+  NES.Mapper.Cnrom, NES.Mapper.Axrom, NES.Mapper.Banked, NES.Mapper.Discrete,
+  NES.Mapper.Vrc;
 
 function TNesBus.HasVsCoinInputs: Boolean;
 begin
@@ -871,6 +875,34 @@ end;
 function TNesBus.PeekInternalRam(Address: Word): Byte;
 begin
   Result := FRam[Address and GetInternalRamMask];
+end;
+
+function TNesBus.PeekAchievementByte(Address: Word; out Value: Byte): Boolean;
+type
+  TMapperRead = function(Address: UInt16; out Value: UInt8): Boolean of object;
+begin
+  if Address < $2000 then
+  begin
+    Value := PeekInternalRam(Address);
+    Exit(True);
+  end;
+  if (Address < $4020) or (FCartridge = nil) or (FCartridge.Mapper = nil) then
+    Exit(False);
+
+  var Mapper := FCartridge.Mapper;
+  if Mapper.CpuPeek(Address, Value) then
+    Exit(True);
+
+  // Look at the implementation, since descendants may override CpuRead with side effects.
+  var Read: TMapperRead := Mapper.CpuRead;
+  var ReadCode := TMethod(Read).Code;
+  if (ReadCode = @TMapperNrom.CpuRead) or (ReadCode = @TMapperMmc1.CpuRead) or
+    (ReadCode = @TMapperMmc3.CpuRead) or (ReadCode = @TMapperUxrom.CpuRead) or
+    (ReadCode = @TMapperCnrom.CpuRead) or (ReadCode = @TMapperAxrom.CpuRead) or
+    (ReadCode = @TMapperBanked.CpuRead) or (ReadCode = @TMapperDiscrete.CpuRead) or
+    (ReadCode = @TMapperVrc.CpuRead) then
+    Exit(Read(Address, Value));
+  Result := False;
 end;
 
 function TNesBus.DebugCpuRead(Address: UInt16): UInt8;

@@ -3,7 +3,8 @@
 interface
 
 uses
-  System.UITypes, System.Types, Core.RomMetadata;
+  System.Classes, System.SysUtils, System.UITypes, System.Types,
+  Core.RomMetadata;
 
 {$SCOPEDENUMS ON}
 
@@ -186,6 +187,32 @@ type
     procedure ChangeDisc(Index: Integer);
     procedure OpenDisc(const Location: string);
     procedure EjectDisc;
+  end;
+
+  TEmulationAchievementRead = reference to function(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+
+  // Observer operations run on the emulation thread. The memory reader is valid only during Frame.
+  IEmulationAchievementObserver = interface
+    ['{ACF983F7-7E67-4804-947E-545E773B812B}']
+    procedure Frame(const ReadMemory: TEmulationAchievementRead);
+    procedure Reset;
+    function CaptureProgress: TBytes;
+    procedure RestoreProgress(const Data: TBytes);
+  end;
+
+  // Platform capability for identifying achievement media before a core is started.
+  // The provider is used by a library worker and preserves the input position.
+  IEmulationAchievementMedia = interface
+    ['{136E8028-531E-4361-A92E-BDFBC5A3508B}']
+    function GetConsoleId: Cardinal;
+    function AcceptsROM(const SourceName: string; Input: TStream): Boolean;
+    property ConsoleId: Cardinal read GetConsoleId;
+  end;
+
+  IEmulationAchievements = interface
+    ['{0044A383-D20C-424A-9E10-7719C0304C41}']
+    function AchievementROM: TBytes;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
   end;
 
   IEmulationSnapshotLocation = interface

@@ -8,7 +8,7 @@ uses
   System.SysUtils, System.Types, System.UITypes, FMX.Forms, FMX.StdCtrls,
   FMX.Menus, Core.Emulation, Core.Storage, Core.InputConfig, FMX.OpenDialog,
   RM.LibraryView, RM.Settings, RM.ControlsHelp, RM.Input, FMXInput, RM.Rumble,
-  RM.Gamepad, Core.RomMetadata
+  RM.Gamepad, Core.RomMetadata, RA.Account
   {$IFDEF MSWINDOWS}
     , Winapi.Windows
   {$ENDIF}
@@ -134,6 +134,7 @@ type
   TMainState = class
   public
     Session: TMainSessionState;
+    AchievementAccount: IRAAccount;
     Browser: TMainBrowserState;
     Preferences: TMainPreferencesState;
     Help: TMainHelpState;

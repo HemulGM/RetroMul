@@ -50,6 +50,7 @@ type
     function ReadEEPROM: Byte;
     procedure LoadBattery(const Data: TBytes);
     function BatteryData: TBytes;
+    function SaveMemory(out Size: Cardinal): PByte;
     procedure MarkBatteryDirty;
     procedure Reset;
     procedure SerializeState(State: TStateArchive);
@@ -63,10 +64,11 @@ function IsGBAROM(const Data: TBytes): Boolean;
 
 implementation
 {$IFDEF RETROMUL_GBA_NATIVE_QUIET}
+
 procedure TGBACartridge.NativeQuietOffsets(out Hardware, Required: Integer);
 begin
-  Hardware := Integer(NativeUInt(@FHardware)-NativeUInt(Self));
-  Required := Integer(NativeUInt(@FTickRequired)-NativeUInt(Self));
+  Hardware := Integer(NativeUInt(@FHardware) - NativeUInt(Self));
+  Required := Integer(NativeUInt(@FTickRequired) - NativeUInt(Self));
 end;
 {$ENDIF}
 
@@ -82,13 +84,13 @@ end;
 function HasEEPROMToSRAMPatch(const Data: TBytes): Boolean;
 const
   ReadCode: array[0..39] of Byte = (
-    $70,$B5,$00,$04,$0A,$1C,$40,$0B,$E0,$21,$09,$05,$41,$18,$07,$31,
-    $00,$23,$08,$78,$10,$70,$01,$33,$01,$32,$01,$39,$07,$2B,$F8,$D9,
-    $00,$20,$70,$BC,$02,$BC,$08,$47);
+    $70, $B5, $00, $04, $0A, $1C, $40, $0B, $E0, $21, $09, $05, $41, $18, $07, $31,
+    $00, $23, $08, $78, $10, $70, $01, $33, $01, $32, $01, $39, $07, $2B, $F8, $D9,
+    $00, $20, $70, $BC, $02, $BC, $08, $47);
   WriteCode: array[0..39] of Byte = (
-    $70,$B5,$00,$04,$0A,$1C,$40,$0B,$E0,$21,$09,$05,$41,$18,$07,$31,
-    $00,$23,$10,$78,$08,$70,$01,$33,$01,$32,$01,$39,$07,$2B,$F8,$D9,
-    $00,$20,$70,$BC,$02,$BC,$08,$47);
+    $70, $B5, $00, $04, $0A, $1C, $40, $0B, $E0, $21, $09, $05, $41, $18, $07, $31,
+    $00, $23, $10, $78, $08, $70, $01, $33, $01, $32, $01, $39, $07, $2B, $F8, $D9,
+    $00, $20, $70, $BC, $02, $BC, $08, $47);
 var
   HasRead, HasWrite: Boolean;
 begin
@@ -101,19 +103,21 @@ begin
     begin
       HasRead := HasRead or CompareMem(@Data[I], @ReadCode[0], SizeOf(ReadCode));
       HasWrite := HasWrite or CompareMem(@Data[I], @WriteCode[0], SizeOf(WriteCode));
-      if HasRead and HasWrite then Exit(True);
+      if HasRead and HasWrite then
+        Exit(True);
     end;
     Inc(I, 2);
   end;
   Result := False;
 end;
+
 constructor TGBACartridge.Create(const Data: TBytes);
 
   function Has(const Signature: AnsiString): Boolean;
   begin
     Result := False;
-    for var i := 0 to Length(Data) - Length(Signature) do
-      if (Data[i] = Ord(Signature[1])) and CompareMem(@Data[i], PAnsiChar(Signature), Length(Signature)) then
+    for var I := 0 to Length(Data) - Length(Signature) do
+      if (Data[I] = Ord(Signature[1])) and CompareMem(@Data[I], PAnsiChar(Signature), Length(Signature)) then
         Exit(True);
   end;
 
@@ -132,8 +136,8 @@ begin
   if (Code[1] = 'F') and (Length(FData) = $100000) then
   begin
     SetLength(FData, $400000);
-    for var i := 1 to 3 do
-      Move(FData[0], FData[i * $100000], $100000);
+    for var I := 1 to 3 do
+      Move(FData[0], FData[I * $100000], $100000);
   end;
 
   FSRAMPatchedEEPROM := HasEEPROMToSRAMPatch(Data);
@@ -274,8 +278,8 @@ function TGBACartridge.ReadROMBusSlow(Address: Cardinal; Size: Integer): Cardina
 begin
   // GPIO bytes and unmapped ROM keep their individual device/open-bus reads.
   Result := 0;
-  for var i := 0 to Size - 1 do
-    Result := Result or (Cardinal(ReadROM(Address + Cardinal(i))) shl (i * 8));
+  for var I := 0 to Size - 1 do
+    Result := Result or (Cardinal(ReadROM(Address + Cardinal(I))) shl (I * 8));
 end;
 
 function TGBACartridge.ReadROM(Address: Cardinal): Byte;
@@ -455,19 +459,19 @@ begin
     Exit;
 
   FEEPROMAddress := 0;
-  for var i := 2 to 1 + FEEPROMBits do
-    FEEPROMAddress := (FEEPROMAddress shl 1) or FEEPROMCommand[i];
+  for var I := 2 to 1 + FEEPROMBits do
+    FEEPROMAddress := (FEEPROMAddress shl 1) or FEEPROMCommand[I];
   FEEPROMAddress := (FEEPROMAddress and $3FF) * 8;
   if ReadCommand then
     FEEPROMRead := 0
   else
   begin
-    for var i := 0 to 7 do
+    for var I := 0 to 7 do
     begin
       var B := 0;
       for var Bit := 0 to 7 do
-        B := (B shl 1) or FEEPROMCommand[2 + FEEPROMBits + i * 8 + Bit];
-      FSave[FEEPROMAddress + i] := Byte(B);
+        B := (B shl 1) or FEEPROMCommand[2 + FEEPROMBits + I * 8 + Bit];
+      FSave[FEEPROMAddress + I] := Byte(B);
     end;
     FDirty := True;
     FEEPROMBusy := 108368;
@@ -528,6 +532,14 @@ begin
     Result := Copy(FSave, 0, 512)
   else
     Result := Copy(FSave);
+end;
+
+function TGBACartridge.SaveMemory(out Size: Cardinal): PByte;
+begin
+  Size := Length(FSave);
+  if (FKind = TGBASaveKind.EEPROM) and (FEEPROMBits = 6) then
+    Size := 512;
+  Result := PByte(FSave);
 end;
 
 procedure TGBACartridge.MarkBatteryDirty;

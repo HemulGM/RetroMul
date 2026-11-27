@@ -4,7 +4,7 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.IniFiles, Core.Storage, Core.Emulation,
-  Core.InputConfig, GBA.Console, GBA.Emulation;
+  Core.Emulation.Types, Core.InputConfig, GBA.Console, GBA.Emulation;
 
 const
   GBA_BUTTONS: TEmulatorButtons = [
@@ -30,10 +30,11 @@ type
     property Keys: TGBAKeyMap read FKeys;
   end;
 
-  TGBACoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationMotionInput, IEmulationRotationInput, IEmulationRumbleOutput)
+  TGBACoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationMotionInput, IEmulationRotationInput, IEmulationRumbleOutput, IEmulationAchievements)
   private
     FThread: TGBAWorker;
-    FData: TBytes;
+    FAchievementObserver: IEmulationAchievementObserver;
+    FData, FUnmirroredROM: TBytes;
     FSnapshotDirectory: string;
     FStorage: IStorage;
     FSavePath, FError: string;
@@ -47,6 +48,8 @@ type
     procedure ApplySettings;
   public
     procedure ApplyLiveSettings;
+    function AchievementROM: TBytes;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     constructor Create(const FileName: string); overload;
     constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string); overload;
     destructor Destroy; override;
@@ -86,7 +89,8 @@ type
 implementation
 
 uses
-  RM.Platforms.GBA, System.IOUtils, System.UITypes, System.Math, System.Hash, GBA.Cartridge;
+  RM.Platforms.GBA, System.IOUtils, System.UITypes, System.Math, System.Hash,
+  GBA.Cartridge;
 
 const
   KeyNames: array[TEmulatorButton] of string =
@@ -168,6 +172,8 @@ begin
   Cart := TGBACartridge.Create(Data);
   try
     FData := Copy(Cart.Data);
+    if Length(FData) <> Length(Data) then
+      FUnmirroredROM := Data;
     FHasTilt := Cart.Hardware.HasTilt;
     FHasGyro := Cart.Hardware.HasGyro;
     FHasRumble := Cart.Hardware.HasRumble;
@@ -243,6 +249,21 @@ begin
       FConfig.AudioEnabled, FConfig.AudioVolume);
 end;
 
+function TGBACoreAdapter.AchievementROM: TBytes;
+begin
+  // RetroAchievements hashes the ROM file before the cartridge adds mirrors.
+  if FUnmirroredROM <> nil then
+    Exit(Copy(FUnmirroredROM));
+  Result := Copy(FData);
+end;
+
+procedure TGBACoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  FAchievementObserver := Observer;
+  if FThread <> nil then
+    FThread.SetAchievementObserver(Observer);
+end;
+
 procedure TGBACoreAdapter.Start;
 begin
   if FThread <> nil then
@@ -251,6 +272,7 @@ begin
   FThread := TGBAWorker.Create(FData, FSavePath, FStorage, FBIOS, FCoreConfig.SaveOverride, FCoreConfig.SolarLevel);
   FThread.SetMotion(FMotionX, FMotionY, FRotation);
   FThread.SnapshotDirectory := FSnapshotDirectory;
+  FThread.SetAchievementObserver(FAchievementObserver);
   FThread.InputPorts := LoadCoreInputPorts(FStorage, ROM_SYSTEM_GBA, GetConfig.FileName);
   ApplySettings;
   FThread.Start;

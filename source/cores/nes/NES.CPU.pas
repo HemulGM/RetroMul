@@ -16,6 +16,8 @@ const
   FLAG_NEGATIVE = $80;
 
 type
+  TCPU6502StateField = procedure(var Value; Size: Integer) of object;
+
   TCpuReadFunc = function(Address: UInt16): UInt8 of object;
 
   TCpuOpcodeDecoder = function(Value: UInt8): UInt8 of object;
@@ -137,6 +139,7 @@ type
     CyclesRemaining: Integer;
     TotalCycles: UInt32;
     procedure SerializeState(State: TNesStateArchive);
+    procedure SerializeStateFields(const Field: TCPU6502StateField; Loading: Boolean; Version: Integer);
     constructor Create;
     procedure Connect(Reader: TCpuReadFunc; Writer: TCpuWriteProc);
     property OpcodeDecoder: TCpuOpcodeDecoder read FOpcodeDecoder write FOpcodeDecoder;
@@ -235,57 +238,62 @@ const
 
 procedure TCPU6502.SerializeState(State: TNesStateArchive);
 begin
-  State.Field(FPendingNmi, SizeOf(FPendingNmi));
-  State.Field(FPendingIrq, SizeOf(FPendingIrq));
-  State.Field(FNmiAfterInstruction, SizeOf(FNmiAfterInstruction));
-  State.Field(FIrqAfterInstruction, SizeOf(FIrqAfterInstruction));
-  State.Field(FUnknownOpcodeCount, SizeOf(FUnknownOpcodeCount));
-  State.Field(FJammed, SizeOf(FJammed));
-  State.Field(FJamOpcode, SizeOf(FJamOpcode));
-  State.Field(FJamPc, SizeOf(FJamPc));
-  State.Field(FInterruptSequenceActive, SizeOf(FInterruptSequenceActive));
-  State.Field(FInterruptKind, SizeOf(FInterruptKind));
-  State.Field(FInterruptBreakFlag, SizeOf(FInterruptBreakFlag));
-  State.Field(FInterruptLatchedPc, SizeOf(FInterruptLatchedPc));
-  State.Field(FInterruptLatchedP, SizeOf(FInterruptLatchedP));
-  State.Field(FInterruptVectorLow, SizeOf(FInterruptVectorLow));
-  State.Field(FPollInterruptDisable, SizeOf(FPollInterruptDisable));
-  State.Field(FInstructionActive, SizeOf(FInstructionActive));
-  State.Field(FPollCycle, SizeOf(FPollCycle));
-  State.Field(FExecutingOpcode, SizeOf(FExecutingOpcode));
-  State.Field(FQueuedWriteCount, SizeOf(FQueuedWriteCount));
-  State.Field(FWriteAddresses, SizeOf(FWriteAddresses));
-  State.Field(FWriteValues, SizeOf(FWriteValues));
-  State.Field(FLastUnknownOpcode, SizeOf(FLastUnknownOpcode));
-  State.Field(FLastUnknownPc, SizeOf(FLastUnknownPc));
-  State.Field(A, SizeOf(A));
-  State.Field(X, SizeOf(X));
-  State.Field(Y, SizeOf(Y));
-  State.Field(Sp, SizeOf(Sp));
-  State.Field(Pc, SizeOf(Pc));
-  State.Field(P, SizeOf(P));
-  State.Field(CyclesRemaining, SizeOf(CyclesRemaining));
-  State.Field(TotalCycles, SizeOf(TotalCycles));
-  if State.Version >= 7 then
+  SerializeStateFields(State.Field, State.Loading, State.Version);
+end;
+
+procedure TCPU6502.SerializeStateFields(const Field: TCPU6502StateField; Loading: Boolean; Version: Integer);
+begin
+  Field(FPendingNmi, SizeOf(FPendingNmi));
+  Field(FPendingIrq, SizeOf(FPendingIrq));
+  Field(FNmiAfterInstruction, SizeOf(FNmiAfterInstruction));
+  Field(FIrqAfterInstruction, SizeOf(FIrqAfterInstruction));
+  Field(FUnknownOpcodeCount, SizeOf(FUnknownOpcodeCount));
+  Field(FJammed, SizeOf(FJammed));
+  Field(FJamOpcode, SizeOf(FJamOpcode));
+  Field(FJamPc, SizeOf(FJamPc));
+  Field(FInterruptSequenceActive, SizeOf(FInterruptSequenceActive));
+  Field(FInterruptKind, SizeOf(FInterruptKind));
+  Field(FInterruptBreakFlag, SizeOf(FInterruptBreakFlag));
+  Field(FInterruptLatchedPc, SizeOf(FInterruptLatchedPc));
+  Field(FInterruptLatchedP, SizeOf(FInterruptLatchedP));
+  Field(FInterruptVectorLow, SizeOf(FInterruptVectorLow));
+  Field(FPollInterruptDisable, SizeOf(FPollInterruptDisable));
+  Field(FInstructionActive, SizeOf(FInstructionActive));
+  Field(FPollCycle, SizeOf(FPollCycle));
+  Field(FExecutingOpcode, SizeOf(FExecutingOpcode));
+  Field(FQueuedWriteCount, SizeOf(FQueuedWriteCount));
+  Field(FWriteAddresses, SizeOf(FWriteAddresses));
+  Field(FWriteValues, SizeOf(FWriteValues));
+  Field(FLastUnknownOpcode, SizeOf(FLastUnknownOpcode));
+  Field(FLastUnknownPc, SizeOf(FLastUnknownPc));
+  Field(A, SizeOf(A));
+  Field(X, SizeOf(X));
+  Field(Y, SizeOf(Y));
+  Field(Sp, SizeOf(Sp));
+  Field(Pc, SizeOf(Pc));
+  Field(P, SizeOf(P));
+  Field(CyclesRemaining, SizeOf(CyclesRemaining));
+  Field(TotalCycles, SizeOf(TotalCycles));
+  if Version >= 7 then
   begin
-    State.Field(FJsrActive, SizeOf(FJsrActive));
-    State.Field(FJsrLow, SizeOf(FJsrLow));
+    Field(FJsrActive, SizeOf(FJsrActive));
+    Field(FJsrLow, SizeOf(FJsrLow));
   end
-  else if State.Loading then
+  else if Loading then
   begin
     FJsrActive := False;
     FJsrLow := 0;
   end;
-  if State.Version >= 8 then
-    State.Field(FBusSequence, SizeOf(FBusSequence))
-  else if State.Loading then
+  if Version >= 8 then
+    Field(FBusSequence, SizeOf(FBusSequence))
+  else if Loading then
     FBusSequence := Default(TBusSequence);
-  if State.Version >= 10 then
-    State.Field(FDmaOnStoreDummy, SizeOf(FDmaOnStoreDummy))
-  else if State.Loading then
+  if Version >= 10 then
+    Field(FDmaOnStoreDummy, SizeOf(FDmaOnStoreDummy))
+  else if Loading then
     FDmaOnStoreDummy := False;
   if Assigned(FSoundDataRead) then
-    State.Field(FSoundDataBank, SizeOf(FSoundDataBank));
+    Field(FSoundDataBank, SizeOf(FSoundDataBank));
 end;
 
 constructor TCPU6502.Create;

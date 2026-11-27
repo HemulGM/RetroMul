@@ -20,6 +20,8 @@ type
     procedure CompatibleField(var Value; Size, PreviousSize: Integer; IntermediateSize: Integer = -1);
     // Keep the existing native-width count on save. Accept both widths on load.
     procedure NativeCount(var Value: NativeInt);
+    // An optional trailing field, absent in snapshots created before the extension.
+    procedure OptionalBytes(var Data: TBytes; MaximumSize: Integer);
     property Loading: Boolean read FLoading;
     // The core payload version; zero for direct, current-layout archives.
     property Version: Cardinal read FVersion;
@@ -182,6 +184,33 @@ begin
   if (Stored < 0) or (Stored > High(Integer)) then
     raise EReadError.Create('Invalid snapshot count');
   Value := NativeInt(Stored);
+end;
+
+procedure TStateArchive.OptionalBytes(var Data: TBytes; MaximumSize: Integer);
+var
+  Count: Integer;
+begin
+  if FLoading then
+  begin
+    Data := nil;
+    if FStream.Position = FStream.Size then
+      Exit;
+    Count := 0;
+    Field(Count, SizeOf(Count));
+    if (Count <= 0) or (Count > MaximumSize) or (Count > FStream.Size - FStream.Position) then
+      raise EReadError.Create('Invalid optional snapshot field');
+    SetLength(Data, Count);
+  end
+  else
+  begin
+    Count := Length(Data);
+    if Count = 0 then
+      Exit;
+    if Count > MaximumSize then
+      raise EWriteError.Create('Optional snapshot field is too large');
+    Field(Count, SizeOf(Count));
+  end;
+  Field(Data[0], Count);
 end;
 
 procedure TransferStream(Stream: TStream; Loading: Boolean; const Transfer: TStateTransfer; Version: Cardinal);

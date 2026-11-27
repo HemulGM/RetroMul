@@ -29,7 +29,7 @@ uses
   System.SysUtils, System.Classes, System.Math, System.UITypes, FMX.Types,
   RM.Gamepad, RM.Settings, RM.ControlsHelp, RM.Styles, RM.Dialogs,
   RM.Gamepad.Base, RM.Main.State, Core.Emulation, Core.Storage,
-  PCM.Audio.Backend;
+  PCM.Audio.Backend, RA.Account, RA.Protocol;
 
 function TSettingsController.RuntimeContext: TSettingsRuntimeContext;
 begin
@@ -41,6 +41,11 @@ procedure TSettingsController.Load;
 begin
   var Ini := FState.Session.Storage.ReadConfig(FState.Session.Storage.ConfigFile('config'));
   try
+    var AccountSettings := TRAAccountSettings.Read(Ini);
+    var Credentials := FState.AchievementAccount.Credentials;
+    if (Credentials.Token = '') or not SameText(Credentials.UserName, AccountSettings.UserName) then
+      FState.AchievementAccount.Credentials := ReadRAStoredCredentials(Ini);
+
     var PreviousLanguage := FormStyles.Lang.Lang;
     var FirstLaunch := not Ini.ValueExists('General', 'Language');
     var Language := Ini.ReadString('General', 'Language', 'en');
@@ -153,7 +158,7 @@ begin
     GameSettingsId := FState.Session.Emulation.SystemId;
   end;
   FState.Settings.View := TSettingsView.CreateSettings(FView, FState.Session.Storage, FState.Input.Manager,
-    GameName, GameLocation, GameSettingsId);
+    GameName, GameLocation, GameSettingsId, '', FState.AchievementAccount);
   if (FState.Browser.View <> nil) and
     (Sender = FState.Browser.View.FindComponent('ButtonConfigureLibrary')) then
     FState.Settings.View.SelectCategory(SETTINGS_CATEGORY_LIBRARY)
@@ -163,6 +168,7 @@ begin
   FView.ScreenTabs.ActiveTab := FView.SettingsScreen;
   FState.Settings.View.Align := TAlignLayout.Client;
   FState.Settings.View.OnApply := FView.SettingsApplied;
+  FState.Settings.View.OnAchievementAccountChanged := FView.RefreshAchievements;
   FState.Settings.View.OnClose := FView.SettingsClose;
   FView.LayoutClient.Visible := False;
   FState.Settings.View.BringToFront;
@@ -198,6 +204,7 @@ begin
     end;
   end;
   FView.Load;
+  FView.RefreshAchievements(Sender);
   if FState.Browser.View <> nil then
   begin
     FState.Browser.ReloadPending := True;
@@ -206,7 +213,9 @@ begin
       FState.Browser.View.ApplyPreferences;
       FState.Browser.View.Reload;
       FState.Browser.ReloadPending := False;
-    end;
+    end
+    else
+      FState.Browser.View.RefreshAchievementScanPreference;
   end;
   FView.ReloadHostInputBindings;
   FView.SyncActivity;

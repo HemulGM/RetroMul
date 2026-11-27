@@ -9,7 +9,7 @@ uses
   FMX.Platform, FMX.Dialogs, Core.Emulation, Core.Storage, FMXInput, WinUI3.Form,
   RM.Main.State, RM.ShaderBitmap, FMX.Menus, FMX.Objects, FMX.StdCtrls,
   FMX.Controls.Presentation, FMX.Layouts, FMX.Controls, FMX.TabControl, FMX.Edit,
-  FMX.ListBox
+  FMX.ListBox, RA.Account
   {$IF not Defined(LINUX)}
     , System.Sensors
   {$ENDIF}
@@ -55,15 +55,23 @@ type
     GameFPS: TLabel;
     GameAudio: TLabel;
     LayoutVideoOutput: TLayout;
-    TimerUpdate: TTimer;
+    TimerUpdate, TimerAchievementNotice: TTimer;
     ImageLogo: TImage;
     RectangleBG: TRectangle;
     LayoutClient: TLayout;
     LabelPaused: TLabel;
+    LayoutAchievementOverlay, LayoutAchievementNoticeCorner: TLayout;
+    LayoutAchievementNoticeIcon, LayoutAchievementNoticeText: TLayout;
+    RectangleAchievementNotice, RectangleAchievementNoticeIcon: TRectangle;
+    PathAchievementNoticeIcon: TPath;
+    LabelAchievementNoticeCaption, LabelAchievementNotice: TLabel;
     ImageNoBox: TImage;
     LayoutHead: TLayout;
     LabelStatus: TLabel;
     ButtonCloseRom: TButton;
+    procedure LayoutAchievementNoticeCornerResize(Sender: TObject);
+    procedure TimerAchievementNoticeTimer(Sender: TObject);
+    procedure RefreshAchievements(Sender: TObject);
     procedure FormActivate(Sender: TObject); virtual;
     procedure FormResize(Sender: TObject); virtual;
     procedure FormDeactivate(Sender: TObject); virtual;
@@ -199,6 +207,9 @@ type
     procedure ResetClick(Sender: TObject); virtual;
     procedure HardRestart; virtual;
     procedure SelectTapeFile(const FileName: string); virtual;
+    procedure SetAchievementNoticeCorner(Corner: TRAAchievementCorner);
+    procedure PresentAchievementNotice(const Caption, Text: string; Duration: Integer = RANotificationDefaultDuration);
+    procedure HideAchievementNotice;
     function SaveScreenshot: string; virtual;
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
@@ -214,8 +225,8 @@ implementation
 
 uses
   System.IOUtils, System.Math, System.Messaging, FMX.Forms, FMX.Graphics,
-  FMX.OpenDialog, FMX.BehaviorManager, Core.EmulatorFactory, RM.Storage.Dialogs,
-  RM.Feedback, RM.Controllers.Browser, RM.Controllers.Window,
+  FMX.TextLayout, FMX.OpenDialog, FMX.BehaviorManager, Core.EmulatorFactory,
+  RM.Storage.Dialogs, RM.Feedback, RM.Controllers.Browser, RM.Controllers.Window,
   RM.Controllers.Settings, RM.Controllers.Snapshots, RM.Controllers.Input,
   RM.Controllers.Mobile, RM.Controllers.Session, RM.Dialogs, RM.Styles,
   RM.Rumble, FMX.Image, RM.Input.Gamepads, RM.Help.Content, RM.Settings.Catalog,
@@ -285,6 +296,7 @@ end;
 constructor TFormMain.Create(AOwner: TComponent);
 begin
   FState := TMainState.Create;
+  FState.AchievementAccount := CreateRAAccount;
   FControllers := TMainControllers.Create(Self);
   FormStyles := TFormStyles.Create(Application);
   inherited;
@@ -865,6 +877,79 @@ begin
   var Locale: IFMXLocaleService;
   if TPlatformServices.Current.SupportsPlatformService(IFMXLocaleService, Locale) then
     Result := Locale.GetCurrentLangID;
+end;
+
+procedure TFormMain.LayoutAchievementNoticeCornerResize(Sender: TObject);
+const
+  MinimumHeight = 66;
+begin
+  if RectangleAchievementNotice = nil then
+    Exit;
+  RectangleAchievementNotice.Width := Min(312, LayoutAchievementNoticeCorner.Width);
+  if (LabelAchievementNotice = nil) or not RectangleAchievementNotice.Visible then
+    Exit;
+
+  var NoticeHeight := MinimumHeight;
+  if LabelAchievementNotice.Text.Contains(sLineBreak) then
+  begin
+    var Layout := TTextLayoutManager.DefaultTextLayout.Create;
+    try
+      Layout.BeginUpdate;
+      Layout.Font.Assign(LabelAchievementNotice.ResultingTextSettings.Font);
+      Layout.MaxSize := TPointF.Create(Max(1, LabelAchievementNotice.Width), 100000);
+      Layout.WordWrap := True;
+      Layout.Text := LabelAchievementNotice.Text;
+      Layout.EndUpdate;
+      NoticeHeight := Max(MinimumHeight, Ceil(Layout.TextHeight + LabelAchievementNoticeCaption.Height +
+          RectangleAchievementNotice.Padding.Top + RectangleAchievementNotice.Padding.Bottom));
+    finally
+      Layout.Free;
+    end;
+  end;
+  if LayoutAchievementNoticeCorner.Height <> NoticeHeight then
+    LayoutAchievementNoticeCorner.Height := NoticeHeight;
+end;
+
+procedure TFormMain.SetAchievementNoticeCorner(Corner: TRAAchievementCorner);
+begin
+  if Corner in [TRAAchievementCorner.TopRight, TRAAchievementCorner.TopLeft] then
+    LayoutAchievementNoticeCorner.Align := TAlignLayout.Top
+  else
+    LayoutAchievementNoticeCorner.Align := TAlignLayout.Bottom;
+  if Corner in [TRAAchievementCorner.TopRight, TRAAchievementCorner.BottomRight] then
+    RectangleAchievementNotice.Align := TAlignLayout.Right
+  else
+    RectangleAchievementNotice.Align := TAlignLayout.Left;
+end;
+
+procedure TFormMain.PresentAchievementNotice(const Caption, Text: string; Duration: Integer);
+begin
+  LabelAchievementNoticeCaption.Text := Caption;
+  LabelAchievementNotice.Text := Text;
+  RectangleAchievementNotice.Visible := True;
+  LayoutAchievementNoticeCornerResize(LayoutAchievementNoticeCorner);
+  LayoutAchievementOverlay.BringToFront;
+  TimerAchievementNotice.Enabled := False;
+  TimerAchievementNotice.Interval := Duration;
+  TimerAchievementNotice.Enabled := True;
+end;
+
+procedure TFormMain.HideAchievementNotice;
+begin
+  if TimerAchievementNotice <> nil then
+    TimerAchievementNotice.Enabled := False;
+  if RectangleAchievementNotice <> nil then
+    RectangleAchievementNotice.Visible := False;
+end;
+
+procedure TFormMain.TimerAchievementNoticeTimer(Sender: TObject);
+begin
+  HideAchievementNotice;
+end;
+
+procedure TFormMain.RefreshAchievements(Sender: TObject);
+begin
+  TMainControllers(FControllers).Session.RefreshAchievements;
 end;
 
 procedure TFormMain.Load;

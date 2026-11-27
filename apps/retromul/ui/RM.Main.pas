@@ -5,9 +5,10 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Types, System.UITypes, FMX.Types,
-  FMX.Platform, FMX.Dialogs, Core.Emulation, Core.Storage, FMXInput, WinUI3.Form,
-  RM.Main.State, RM.ShaderBitmap, FMX.Menus, FMX.Objects, FMX.StdCtrls,
+  System.SysUtils, System.Classes, System.Types, System.UITypes,
+  System.Generics.Collections, FMX.Types, FMX.Platform, FMX.Dialogs,
+  Core.Emulation, Core.Storage, FMXInput, WinUI3.Form, RM.Main.State,
+  RM.ShaderBitmap, FMX.Menus, FMX.Objects, FMX.StdCtrls,
   FMX.Controls.Presentation, FMX.Layouts, FMX.Controls, FMX.TabControl, FMX.Edit,
   FMX.ListBox, RA.Account
   {$IF not Defined(LINUX)}
@@ -60,8 +61,8 @@ type
     RectangleBG: TRectangle;
     LayoutClient: TLayout;
     LabelPaused: TLabel;
-    LayoutAchievementOverlay, LayoutAchievementNoticeCorner: TLayout;
-    LayoutAchievementNoticeIcon, LayoutAchievementNoticeText: TLayout;
+    LayoutAchievementOverlay, LayoutAchievementViewport, LayoutAchievementNoticeCorner: TLayout;
+    LayoutAchievementNoticeIcon, LayoutAchievementNoticeText, LayoutAchievementNoticeLines: TLayout;
     RectangleAchievementNotice, RectangleAchievementNoticeIcon: TRectangle;
     PathAchievementNoticeIcon: TPath;
     LabelAchievementNoticeCaption, LabelAchievementNotice: TLabel;
@@ -70,6 +71,7 @@ type
     LabelStatus: TLabel;
     ButtonCloseRom: TButton;
     procedure LayoutAchievementNoticeCornerResize(Sender: TObject);
+    procedure UpdateAchievementNoticeBounds(Sender: TObject);
     procedure TimerAchievementNoticeTimer(Sender: TObject);
     procedure RefreshAchievements(Sender: TObject);
     procedure FormActivate(Sender: TObject); virtual;
@@ -98,8 +100,16 @@ type
     procedure ImageCanvasMouseMove(Sender: TObject; Shift: TShiftState; X, Y: Single);
     procedure ImageCanvasMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single); virtual;
   private
+    type
+      TAchievementNotice = record
+        Caption, Text, BadgeURL: string;
+        Duration: Integer;
+      end;
+  private
     // The concrete controller types are private to the implementation.
     FControllers: TObject;
+    FAchievementNoticeRevision: UInt64;
+    FAchievementNoticeQueue: TQueue<TAchievementNotice>;
     FHelpReturnTab: TTabItem;
     FResizingHelp, FUpdatingHelpPlatforms: Boolean;
     FHelpPlatformId: string;
@@ -107,6 +117,8 @@ type
     {$IFNDEF ISMOBILE}
     FHelpResumeCore: IEmulationCore;
     {$ENDIF}
+    procedure ResetAchievementNoticeBadge;
+    procedure LoadAchievementNoticeBadge(const BadgeURL: string);
     procedure RefreshHelpPlatforms;
     procedure HelpPlatformSearchChange(Sender: TObject);
     procedure SelectHelpPlatform(const PageId: string);
@@ -208,7 +220,8 @@ type
     procedure HardRestart; virtual;
     procedure SelectTapeFile(const FileName: string); virtual;
     procedure SetAchievementNoticeCorner(Corner: TRAAchievementCorner);
-    procedure PresentAchievementNotice(const Caption, Text: string; Duration: Integer = RANotificationDefaultDuration);
+    procedure PresentAchievementNotice(const Caption, Text: string; Duration: Integer = RANotificationDefaultDuration; const BadgeURL: string = '');
+    procedure QueueAchievementNotice(const Caption, Text: string; Duration: Integer; const BadgeURL: string);
     procedure HideAchievementNotice;
     function SaveScreenshot: string; virtual;
     constructor Create(AOwner: TComponent); override;
@@ -230,7 +243,8 @@ uses
   RM.Controllers.Settings, RM.Controllers.Snapshots, RM.Controllers.Input,
   RM.Controllers.Mobile, RM.Controllers.Session, RM.Dialogs, RM.Styles,
   RM.Rumble, FMX.Image, RM.Input.Gamepads, RM.Help.Content, RM.Settings.Catalog,
-  RM.Settings.Platform, RM.SearchEdit, RM.Icons, RM.Controls.Lifetime
+  RM.Settings.Platform, RM.SearchEdit, RM.Icons, RM.Controls.Lifetime,
+  RA.Connection, RA.Http
   {$IF not Defined(LINUX)}
     , System.Sensors.Components
   {$ENDIF}
@@ -312,6 +326,7 @@ begin
   ImageCanvas.OnMouseDown := ImageCanvasMouseDown;
   ImageCanvas.OnMouseUp := ImageCanvasMouseUp;
   ImageCanvas.OnMouseMove := ImageCanvasMouseMove;
+  ImageCanvas.OnResize := UpdateAchievementNoticeBounds;
   ImageCanvas.AutoCapture := True;
   ImageLogo.Parent := ImageCanvas;
   LabelPaused.Parent := ImageCanvas;
@@ -827,6 +842,7 @@ begin
     Application.HandleException(Self);
   end;
   TMainControllers(FControllers).Session.DisconnectSession;
+  FreeAndNil(FAchievementNoticeQueue);
   try
     TMainControllers(FControllers).Input.FinalizePeripherals;
   except
@@ -879,6 +895,27 @@ begin
     Result := Locale.GetCurrentLangID;
 end;
 
+procedure TFormMain.UpdateAchievementNoticeBounds(Sender: TObject);
+begin
+  if (ImageCanvas = nil) or (RectangleAchievementNotice = nil) or
+    not RectangleAchievementNotice.Visible then
+    Exit;
+
+  var Viewport := ImageCanvas.AbsoluteRect;
+  LayoutAchievementOverlay.Visible := (ScreenTabs.ActiveTab = GameScreen) and
+    LayoutClient.Visible and not Viewport.IsEmpty;
+  if not LayoutAchievementOverlay.Visible then
+    Exit;
+
+  var TopLeft := LayoutAchievementOverlay.AbsoluteToLocal(Viewport.TopLeft);
+  var BottomRight := LayoutAchievementOverlay.AbsoluteToLocal(Viewport.BottomRight);
+  var Insets := RectF(Max(0, TopLeft.X), Max(0, TopLeft.Y),
+    Max(0, LayoutAchievementOverlay.Width - BottomRight.X),
+    Max(0, LayoutAchievementOverlay.Height - BottomRight.Y));
+  if LayoutAchievementOverlay.Padding.Rect <> Insets then
+    LayoutAchievementOverlay.Padding.Rect := Insets;
+end;
+
 procedure TFormMain.LayoutAchievementNoticeCornerResize(Sender: TObject);
 const
   MinimumHeight = 66;
@@ -889,23 +926,24 @@ begin
   if (LabelAchievementNotice = nil) or not RectangleAchievementNotice.Visible then
     Exit;
 
-  var NoticeHeight := MinimumHeight;
-  if LabelAchievementNotice.Text.Contains(sLineBreak) then
-  begin
-    var Layout := TTextLayoutManager.DefaultTextLayout.Create;
-    try
-      Layout.BeginUpdate;
-      Layout.Font.Assign(LabelAchievementNotice.ResultingTextSettings.Font);
-      Layout.MaxSize := TPointF.Create(Max(1, LabelAchievementNotice.Width), 100000);
-      Layout.WordWrap := True;
-      Layout.Text := LabelAchievementNotice.Text;
-      Layout.EndUpdate;
-      NoticeHeight := Max(MinimumHeight, Ceil(Layout.TextHeight + LabelAchievementNoticeCaption.Height +
-          RectangleAchievementNotice.Padding.Top + RectangleAchievementNotice.Padding.Bottom));
-    finally
-      Layout.Free;
-    end;
+  var BodyHeight := 18;
+  var Layout := TTextLayoutManager.DefaultTextLayout.Create;
+  try
+    Layout.BeginUpdate;
+    Layout.Font.Assign(LabelAchievementNotice.ResultingTextSettings.Font);
+    Layout.MaxSize := TPointF.Create(Max(1, LayoutAchievementNoticeText.Width), 100000);
+    Layout.WordWrap := True;
+    Layout.Text := LabelAchievementNotice.Text;
+    Layout.EndUpdate;
+    BodyHeight := Max(BodyHeight, Ceil(Layout.TextHeight));
+  finally
+    Layout.Free;
   end;
+  LayoutAchievementNoticeLines.Height := BodyHeight;
+  if LabelAchievementNoticeCaption.Visible then
+    LayoutAchievementNoticeLines.Height := BodyHeight + LabelAchievementNoticeCaption.Height;
+  var NoticeHeight := Max(MinimumHeight, Ceil(LayoutAchievementNoticeLines.Height +
+      RectangleAchievementNotice.Padding.Top + RectangleAchievementNotice.Padding.Bottom));
   if LayoutAchievementNoticeCorner.Height <> NoticeHeight then
     LayoutAchievementNoticeCorner.Height := NoticeHeight;
 end;
@@ -922,34 +960,130 @@ begin
     RectangleAchievementNotice.Align := TAlignLayout.Left;
 end;
 
-procedure TFormMain.PresentAchievementNotice(const Caption, Text: string; Duration: Integer);
+procedure TFormMain.ResetAchievementNoticeBadge;
 begin
+  Inc(FAchievementNoticeRevision);
+  if RectangleAchievementNoticeIcon <> nil then
+  begin
+    RectangleAchievementNoticeIcon.Fill.Kind := TBrushKind.Solid;
+    RectangleAchievementNoticeIcon.Fill.Bitmap.Bitmap.SetSize(0, 0);
+  end;
+  if PathAchievementNoticeIcon <> nil then
+    PathAchievementNoticeIcon.Visible := True;
+end;
+
+procedure TFormMain.LoadAchievementNoticeBadge(const BadgeURL: string);
+begin
+  var Alive := State.Session.CallbackAlive;
+  var Revision := FAchievementNoticeRevision;
+  var Storage := State.Session.Storage;
+  TThread.CreateAnonymousThread(
+    procedure
+    begin
+      var Data: TBytes;
+      try
+        var Client := TRAHttpClient.Create(RARetroMulUserAgent);
+        try
+          Data := LoadRABadgePNG(Storage, Client, BadgeURL);
+        finally
+          Client.Free;
+        end;
+      except
+        // An unavailable image leaves the trophy visible.
+        Exit;
+      end;
+      if Length(Data) = 0 then
+        Exit;
+      TThread.Queue(nil,
+        procedure
+        begin
+          if not Alive() or (Revision <> FAchievementNoticeRevision) then
+            Exit;
+          var Input := TBytesStream.Create(Data);
+          try
+            var Fill := RectangleAchievementNoticeIcon.Fill;
+            try
+              Fill.Bitmap.Bitmap.LoadFromStream(Input);
+              if not Fill.Bitmap.Bitmap.IsEmpty then
+              begin
+                Fill.Bitmap.WrapMode := TWrapMode.TileStretch;
+                Fill.Kind := TBrushKind.Bitmap;
+                PathAchievementNoticeIcon.Visible := False;
+              end;
+            except
+              // An invalid image leaves the trophy visible.
+            end;
+          finally
+            Input.Free;
+          end;
+        end);
+    end).Start;
+end;
+
+procedure TFormMain.PresentAchievementNotice(const Caption, Text: string; Duration: Integer; const BadgeURL: string);
+begin
+  ResetAchievementNoticeBadge;
   LabelAchievementNoticeCaption.Text := Caption;
+  LabelAchievementNoticeCaption.Visible := Caption <> '';
   LabelAchievementNotice.Text := Text;
   RectangleAchievementNotice.Visible := True;
+  UpdateAchievementNoticeBounds(Self);
   LayoutAchievementNoticeCornerResize(LayoutAchievementNoticeCorner);
   LayoutAchievementOverlay.BringToFront;
   TimerAchievementNotice.Enabled := False;
   TimerAchievementNotice.Interval := Duration;
   TimerAchievementNotice.Enabled := True;
+  if BadgeURL <> '' then
+    LoadAchievementNoticeBadge(BadgeURL);
+end;
+
+procedure TFormMain.QueueAchievementNotice(const Caption, Text: string; Duration: Integer; const BadgeURL: string);
+begin
+  if not TimerAchievementNotice.Enabled then
+  begin
+    PresentAchievementNotice(Caption, Text, Duration, BadgeURL);
+    Exit;
+  end;
+
+  if FAchievementNoticeQueue = nil then
+    FAchievementNoticeQueue := TQueue<TAchievementNotice>.Create;
+  var Notice: TAchievementNotice;
+  Notice.Caption := Caption;
+  Notice.Text := Text;
+  Notice.Duration := Duration;
+  Notice.BadgeURL := BadgeURL;
+  FAchievementNoticeQueue.Enqueue(Notice);
 end;
 
 procedure TFormMain.HideAchievementNotice;
 begin
+  if FAchievementNoticeQueue <> nil then
+    FAchievementNoticeQueue.Clear;
+  ResetAchievementNoticeBadge;
   if TimerAchievementNotice <> nil then
     TimerAchievementNotice.Enabled := False;
   if RectangleAchievementNotice <> nil then
     RectangleAchievementNotice.Visible := False;
+  if LayoutAchievementOverlay <> nil then
+    LayoutAchievementOverlay.Visible := False;
 end;
 
 procedure TFormMain.TimerAchievementNoticeTimer(Sender: TObject);
 begin
-  HideAchievementNotice;
+  if (FAchievementNoticeQueue <> nil) and (FAchievementNoticeQueue.Count > 0) then
+  begin
+    var Notice := FAchievementNoticeQueue.Dequeue;
+    PresentAchievementNotice(Notice.Caption, Notice.Text, Notice.Duration, Notice.BadgeURL);
+  end
+  else
+    HideAchievementNotice;
 end;
 
 procedure TFormMain.RefreshAchievements(Sender: TObject);
 begin
   TMainControllers(FControllers).Session.RefreshAchievements;
+  if State.Browser.View <> nil then
+    State.Browser.View.RefreshAchievementPreferences;
 end;
 
 procedure TFormMain.Load;
@@ -1054,6 +1188,7 @@ procedure TFormMain.SyncActivity;
 begin
   TMainControllers(FControllers).Window.SyncLibrarySystemUI;
   TMainControllers(FControllers).Session.SyncActivity;
+  UpdateAchievementNoticeBounds(Self);
 end;
 
 procedure TFormMain.FormCloseQuery(Sender: TObject; var CanClose: Boolean);

@@ -462,7 +462,7 @@ end;
 
 procedure TBrowserController.InitializeLibrary;
 begin
-  FState.Browser.View := TLibraryView.CreateLibrary(FView, FState.Session.Storage);
+  FState.Browser.View := TLibraryView.CreateLibrary(FView, FState.Session.Storage, FState.AchievementAccount);
   FState.Browser.View.Parent := FView.LibraryScreen;
   FState.Browser.View.Align := TAlignLayout.Client;
   FState.Browser.View.OnPresentationChanged := FView.FormResize;

@@ -27,7 +27,7 @@ type
     procedure PollAchievements;
     procedure OpenAchievementSession;
     procedure ShowAchievementSessionError(const ReasonKey: string);
-    procedure ShowAchievementNotice(const Text: string; const Caption: string = 'RetroAchievements');
+    procedure ShowAchievementNotice(const Text: string; const Caption: string = 'RetroAchievements'; const BadgeURL: string = '');
     function RuntimeContext: TSessionRuntimeContext;
     procedure UpdateVirtualButtons;
     procedure EndCoreLoading;
@@ -251,6 +251,7 @@ begin
           begin
             Connection.SetShareRichPresence(FAchievementRichPresence);
             FAchievementConnection := Connection;
+            Connection.CacheUnlockDates(FState.Session.Storage);
             CurrentCore.SetAchievementObserver(Connection);
             Connection := nil;
           end
@@ -266,11 +267,11 @@ begin
     Translate(ReasonKey));
 end;
 
-procedure TSessionController.ShowAchievementNotice(const Text, Caption: string);
+procedure TSessionController.ShowAchievementNotice(const Text, Caption, BadgeURL: string);
 begin
   if not FAchievementNotifications then
     Exit;
-  FView.PresentAchievementNotice(Caption, Text, FAchievementNoticeDuration);
+  FView.QueueAchievementNotice(Caption, Text, FAchievementNoticeDuration, BadgeURL);
 end;
 
 procedure TSessionController.PollAchievements;
@@ -278,20 +279,34 @@ begin
   if FAchievementConnection = nil then
     Exit;
 
-  FAchievementConnection.TakeRuntimeEvents;
+  var Events := FAchievementConnection.TakeRuntimeEvents;
+  if FAchievementNotifications then
+    for var Event in Events do
+      if Event.Kind = TRARuntimeEventKind.AchievementTriggered then
+      begin
+        var Achievement: TRAClientAchievement;
+        if FAchievementConnection.TryGetCoreAchievement(Event.ID, Achievement) then
+          ShowAchievementNotice(Achievement.Title, Translate('Achievement unlocked'), Achievement.BadgeURL);
+      end;
   FAchievementConnection.TakeError;
   var Submissions := FAchievementConnection.TakeSubmissions;
-  if not FAchievementNotifications then
-    Exit;
   for var Submission in Submissions do
+  begin
+    var IsAchievement := Submission.Event.Kind = TRARuntimeEventKind.AchievementTriggered;
+    if IsAchievement and (Submission.State = TRASubmissionState.Confirmed) then
+    begin
+      if not Submission.Award.AlreadyAwarded then
+        FAchievementConnection.CacheUnlockDates(FState.Session.Storage, Submission.Event.ID);
+      if FState.Browser.View <> nil then
+        FState.Browser.View.RecordAchievementUnlock(FState.Session.RomLocation,
+          FAchievementCredentials.UserName, Submission.Event.ID);
+    end;
+    if not FAchievementNotifications then
+      Continue;
     if (Submission.State = TRASubmissionState.Rejected) and
       ((Submission.HTTPStatus = 401) or SameText(Submission.ServerCode, 'expired_token')) then
-      ShowAchievementNotice(Translate('Sign in to RetroAchievements again.'))
-    else if (Submission.State = TRASubmissionState.Confirmed) and not Submission.Award.AlreadyAwarded then
-      for var GameSet in FAchievementConnection.GameData.Sets do
-        for var Achievement in GameSet.Achievements do
-          if Achievement.ID = Submission.Event.ID then
-            ShowAchievementNotice(Achievement.Title, Translate('Achievement unlocked'));
+      ShowAchievementNotice(Translate('Sign in to RetroAchievements again.'));
+  end;
 end;
 
 procedure TSessionController.DisconnectSession;

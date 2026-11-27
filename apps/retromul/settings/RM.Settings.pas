@@ -160,7 +160,7 @@ type
     procedure UpdateAchievementControls;
     procedure AchievementSignInClick(Sender: TObject);
     procedure AchievementSignOutClick(Sender: TObject);
-    procedure PersistAchievementAccount(const Settings: TRAAccountSettings; const Credentials: TRACredentials);
+    procedure PersistAchievementAccount(const Settings: TRAAccountSettings; const Credentials: TRACredentials; UpdateProgressUser: Boolean = False);
     function IsPlatformCategory(Index: Integer): Boolean;
     procedure UpdateGameSettingsPanel;
     procedure ResetGameSettingsClick(Sender: TObject);
@@ -546,6 +546,8 @@ begin
     end;
   FSession := TSettingsSession.Create(FStorage, GameRomName, GameSettingsId);
   FSession.Open('main', 'config');
+  var AccountDraft := FSession.Drafts['main'];
+  AccountDraft.WriteString(RAAchievementsSection, RALastProgressUserKey, ReadRALastProgressUser(AccountDraft));
   for var SettingsPlatform in SettingsPlatforms.Items do
     if (FFixedPlatformPage = '') or SameText(SettingsPlatform.PageId, FFixedPlatformPage) then
       FSession.Open(SettingsPlatform.PageId, SettingsPlatform.CoreId);
@@ -2191,7 +2193,8 @@ begin
   FEditAchievementUserName.Enabled := not FSigningIn;
   FEditAchievementPassword.Enabled := not FSigningIn;
   FButtonAchievementSignIn.Enabled := not FSigningIn;
-  FButtonAchievementSignOut.Enabled := not FSigningIn and (FAchievementAccount.Credentials.Token <> '');
+  FButtonAchievementSignOut.Enabled := not FSigningIn and
+    ((FAchievementAccount.Credentials.Token <> '') or (ReadRALastProgressUser(FSession.Drafts['main']) <> ''));
   FCheckBoxRememberAchievementPassword.Enabled := CanRememberRAAccount and not FSigningIn;
   if FAchievementStatus <> '' then
     FLabelAchievementAccountStatus.Text := Translate(FAchievementStatus)
@@ -2201,10 +2204,15 @@ begin
     FLabelAchievementAccountStatus.Text := Translate('Not signed in');
 end;
 
-procedure TSettingsView.PersistAchievementAccount(const Settings: TRAAccountSettings; const Credentials: TRACredentials);
+procedure TSettingsView.PersistAchievementAccount(const Settings: TRAAccountSettings; const Credentials: TRACredentials; UpdateProgressUser: Boolean);
 begin
   var Ini := FStorage.ReadConfig(FStorage.ConfigFile('config'));
+  var ProgressUser: string;
   try
+    ProgressUser := ReadRALastProgressUser(Ini);
+    if UpdateProgressUser then
+      ProgressUser := Credentials.UserName;
+    Ini.WriteString(RAAchievementsSection, RALastProgressUserKey, ProgressUser);
     Ini.WriteString(RAAchievementsSection, 'UserName', Settings.UserName);
     Ini.WriteBool(RAAchievementsSection, 'Remember', Settings.Remember);
     WriteRAStoredCredentials(Ini, Settings, Credentials);
@@ -2215,6 +2223,7 @@ begin
   var Draft := FSession.Drafts['main'];
   Draft.WriteString(RAAchievementsSection, 'UserName', Settings.UserName);
   Draft.WriteBool(RAAchievementsSection, 'Remember', Settings.Remember);
+  Draft.WriteString(RAAchievementsSection, RALastProgressUserKey, ProgressUser);
   FAchievementAccount.Credentials := Credentials;
   if Assigned(FOnAchievementAccountChanged) then
     FOnAchievementAccountChanged(Self);
@@ -2283,7 +2292,7 @@ begin
           FAchievementStatus := Status;
           if Status = '' then
           try
-            PersistAchievementAccount(Settings, Credentials);
+            PersistAchievementAccount(Settings, Credentials, True);
           except
             FAchievementStatus := 'Unable to save the RetroAchievements account.';
           end;
@@ -2301,7 +2310,7 @@ begin
   var Settings := TRAAccountSettings.Read(FSession.Drafts['main']);
   Settings.Remember := False;
   try
-    PersistAchievementAccount(Settings, Default(TRACredentials));
+    PersistAchievementAccount(Settings, Default(TRACredentials), True);
     FAchievementStatus := '';
     FCheckBoxRememberAchievementPassword.IsChecked := False;
     FEditAchievementPassword.Text := '';

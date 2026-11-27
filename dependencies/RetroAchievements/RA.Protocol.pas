@@ -120,6 +120,8 @@ procedure SetRADefaultImageHost(const Host: string);
 
 procedure ResetRADefaultHosts;
 
+function GetRADefaultAPIHost: string;
+
 function GetRADefaultRequestURL: string;
 
 function GetRADefaultImageHost: string;
@@ -274,7 +276,7 @@ begin
   end;
 end;
 
-function GetRADefaultRequestURL: string;
+function GetRADefaultAPIHost: string;
 begin
   DefaultHostLock.Acquire;
   try
@@ -284,7 +286,11 @@ begin
   end;
   if Result = '' then
     Result := RAAPIHost;
-  Result := Result + RARequestPath;
+end;
+
+function GetRADefaultRequestURL: string;
+begin
+  Result := GetRADefaultAPIHost + RARequestPath;
 end;
 
 function GetRADefaultImageHost: string;

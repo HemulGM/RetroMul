@@ -710,19 +710,36 @@ object LibraryView: TLibraryView
           Size.Height = 510.000000000000000000
           Size.PlatformDefault = False
           TabOrder = 1
-          object LabelDescription: TLabel
+          object LayoutInspectorDescription: TLayout
             Align = Top
-            StyledSettings = []
-            Opacity = 0.699999988079071000
             Margins.Bottom = 8.000000000000000000
             Size.Width = 232.000000000000000000
             Size.Height = 92.000000000000000000
             Size.PlatformDefault = False
-            TextSettings.Font.Size = 13.000000000000000000
-            TextSettings.FontColor = xFFE9E8F1
-            TextSettings.Trimming = None
-            Text = 'FDescription'
-            TabOrder = 6
+            object LabelDescription: TLabel
+              Align = Top
+              StyledSettings = []
+              Opacity = 0.699999988079071000
+              Size.Width = 232.000000000000000000
+              Size.Height = 92.000000000000000000
+              Size.PlatformDefault = False
+              TextSettings.Font.Size = 13.000000000000000000
+              TextSettings.FontColor = xFFE9E8F1
+              TextSettings.VertAlign = Leading
+              TextSettings.Trimming = None
+              Text = 'FDescription'
+            end
+            object ButtonToggleInspectorDescription: TButton
+              Align = Top
+              Position.Y = 92.000000000000000000
+              Size.Width = 80.000000000000000000
+              Size.Height = 30.000000000000000000
+              Size.PlatformDefault = False
+              StyleLookup = 'buttonstyle_subtle'
+              Text = 'Show more'
+              Visible = False
+              OnClick = ToggleInspectorDescriptionClick
+            end
           end
           object LabelGameInfo: TLabel
             Align = Top
@@ -738,119 +755,158 @@ object LibraryView: TLibraryView
             Text = 'FGameInfo'
             TabOrder = 7
           end
-          object LabelSnapshots: TLabel
+          object LayoutInspectorAchievements: TLayout
             Align = Top
-            StyledSettings = []
             Margins.Bottom = 8.000000000000000000
+            Position.Y = 153.000000000000000000
+            Size.Width = 50.000000000000000000
+            Size.Height = 70.000000000000000000
+            Size.PlatformDefault = False
+            Visible = False
+            object LabelInspectorAchievements: TLabel
+              Align = Top
+              StyledSettings = [Family, Style, FontColor]
+              Size.Width = 50.000000000000000000
+              Size.Height = 28.000000000000000000
+              Size.PlatformDefault = False
+              TextSettings.Font.Size = 18.000000000000000000
+              Text = 'Achievements'
+            end
+            object LayoutInspectorAchievementBadges: TLayout
+              Align = Client
+              ClipChildren = True
+              Size.Width = 50.000000000000000000
+              Size.Height = 42.000000000000000000
+              Size.PlatformDefault = False
+              OnResize = AchievementPreviewResized
+              object LabelInspectorAchievementStatus: TLabel
+                Align = Client
+                StyledSettings = [Family, Style, FontColor]
+                Size.Width = 50.000000000000000000
+                Size.Height = 42.000000000000000000
+                Size.PlatformDefault = False
+              end
+            end
+          end
+          object LayoutInspectorSaves: TLayout
+            Align = Top
             Position.Y = 156.000000000000000000
             Size.Width = 232.000000000000000000
-            Size.Height = 32.000000000000000000
+            Size.Height = 270.000000000000000000
             Size.PlatformDefault = False
-            TextSettings.Font.Size = 19.000000000000000000
-            TextSettings.FontColor = xFFE9E8F1
-            TextSettings.WordWrap = False
-            Text = 'Save states'
-            TabOrder = 8
-          end
-          object LabelSavesEmpty: TLabel
-            Align = Top
-            StyledSettings = []
-            Opacity = 0.600000023841857900
-            Margins.Bottom = 8.000000000000000000
-            Position.Y = 196.000000000000000000
-            Size.Width = 232.000000000000000000
-            Size.Height = 54.000000000000000000
-            Size.PlatformDefault = False
-            TextSettings.Font.Size = 13.000000000000000000
-            TextSettings.FontColor = xFFE9E8F1
-            Text = 'FSavesEmpty'
-            TabOrder = 9
-          end
-          object LayoutSaveRow0: TLayout
-            Align = Top
-            Margins.Bottom = 20.000000000000000000
-            Position.Y = 258.000000000000000000
-            Size.Width = 232.000000000000000000
-            Size.Height = 64.000000000000000000
-            Size.PlatformDefault = False
-            TabOrder = 10
-            object ImageSavePreview0: TImage
-              MultiResBitmap = <
-                item
-                end>
-              Align = Left
-              Margins.Right = 8.000000000000000000
-              Size.Width = 76.000000000000000000
-              Size.Height = 64.000000000000000000
+            object LabelSnapshots: TLabel
+              Align = Top
+              StyledSettings = []
+              Margins.Bottom = 8.000000000000000000
+              Size.Width = 232.000000000000000000
+              Size.Height = 32.000000000000000000
               Size.PlatformDefault = False
+              TextSettings.Font.Size = 19.000000000000000000
+              TextSettings.FontColor = xFFE9E8F1
+              TextSettings.WordWrap = False
+              Text = 'Save states'
+              TabOrder = 8
             end
-            object ButtonSaveButton0: TButton
-              Align = Client
-              Size.Width = 164.000000000000000000
+            object LabelSavesEmpty: TLabel
+              Align = Top
+              StyledSettings = []
+              Opacity = 0.600000023841857900
+              Margins.Bottom = 8.000000000000000000
+              Position.Y = 40.000000000000000000
+              Size.Width = 232.000000000000000000
+              Size.Height = 54.000000000000000000
+              Size.PlatformDefault = False
+              TextSettings.Font.Size = 13.000000000000000000
+              TextSettings.FontColor = xFFE9E8F1
+              Text = 'FSavesEmpty'
+              TabOrder = 9
+            end
+            object LayoutSaveRow0: TLayout
+              Align = Top
+              Margins.Bottom = 20.000000000000000000
+              Position.Y = 102.000000000000000000
+              Size.Width = 232.000000000000000000
               Size.Height = 64.000000000000000000
               Size.PlatformDefault = False
               TabOrder = 10
-              Text = 'No save state'
-              TextSettings.Trimming = Character
-              Visible = False
+              object ImageSavePreview0: TImage
+                MultiResBitmap = <
+                  item
+                  end>
+                Align = Left
+                Margins.Right = 8.000000000000000000
+                Size.Width = 76.000000000000000000
+                Size.Height = 64.000000000000000000
+                Size.PlatformDefault = False
+              end
+              object ButtonSaveButton0: TButton
+                Align = Client
+                Size.Width = 164.000000000000000000
+                Size.Height = 64.000000000000000000
+                Size.PlatformDefault = False
+                TabOrder = 10
+                Text = 'No save state'
+                TextSettings.Trimming = Character
+                Visible = False
+              end
             end
-          end
-          object LayoutSaveRow1: TLayout
-            Align = Top
-            Margins.Bottom = 20.000000000000000000
-            Position.Y = 342.000000000000000000
-            Size.Width = 232.000000000000000000
-            Size.Height = 64.000000000000000000
-            Size.PlatformDefault = False
-            TabOrder = 11
-            object ImageSavePreview1: TImage
-              MultiResBitmap = <
-                item
-                end>
-              Align = Left
-              Margins.Right = 8.000000000000000000
-              Size.Width = 76.000000000000000000
+            object LayoutSaveRow1: TLayout
+              Align = Top
+              Margins.Bottom = 20.000000000000000000
+              Position.Y = 186.000000000000000000
+              Size.Width = 232.000000000000000000
               Size.Height = 64.000000000000000000
               Size.PlatformDefault = False
+              TabOrder = 11
+              object ImageSavePreview1: TImage
+                MultiResBitmap = <
+                  item
+                  end>
+                Align = Left
+                Margins.Right = 8.000000000000000000
+                Size.Width = 76.000000000000000000
+                Size.Height = 64.000000000000000000
+                Size.PlatformDefault = False
+              end
+              object ButtonSaveButton1: TButton
+                Align = Client
+                Size.Width = 164.000000000000000000
+                Size.Height = 64.000000000000000000
+                Size.PlatformDefault = False
+                TabOrder = 12
+                Text = 'No save state'
+                TextSettings.Trimming = Character
+                Visible = False
+              end
             end
-            object ButtonSaveButton1: TButton
-              Align = Client
-              Size.Width = 164.000000000000000000
+            object LayoutSaveRow2: TLayout
+              Align = Top
+              Margins.Bottom = 20.000000000000000000
+              Position.Y = 270.000000000000000000
+              Size.Width = 232.000000000000000000
               Size.Height = 64.000000000000000000
               Size.PlatformDefault = False
               TabOrder = 12
-              Text = 'No save state'
-              TextSettings.Trimming = Character
-              Visible = False
-            end
-          end
-          object LayoutSaveRow2: TLayout
-            Align = Top
-            Margins.Bottom = 20.000000000000000000
-            Position.Y = 426.000000000000000000
-            Size.Width = 232.000000000000000000
-            Size.Height = 64.000000000000000000
-            Size.PlatformDefault = False
-            TabOrder = 12
-            object ImageSavePreview2: TImage
-              MultiResBitmap = <
-                item
-                end>
-              Align = Left
-              Margins.Right = 8.000000000000000000
-              Size.Width = 76.000000000000000000
-              Size.Height = 64.000000000000000000
-              Size.PlatformDefault = False
-            end
-            object ButtonSaveButton2: TButton
-              Align = Client
-              Size.Width = 164.000000000000000000
-              Size.Height = 64.000000000000000000
-              Size.PlatformDefault = False
-              TabOrder = 14
-              Text = 'No save state'
-              TextSettings.Trimming = Character
-              Visible = False
+              object ImageSavePreview2: TImage
+                MultiResBitmap = <
+                  item
+                  end>
+                Align = Left
+                Margins.Right = 8.000000000000000000
+                Size.Width = 76.000000000000000000
+                Size.Height = 64.000000000000000000
+                Size.PlatformDefault = False
+              end
+              object ButtonSaveButton2: TButton
+                Align = Client
+                Size.Width = 164.000000000000000000
+                Size.Height = 64.000000000000000000
+                Size.PlatformDefault = False
+                TabOrder = 14
+                Text = 'No save state'
+                TextSettings.Trimming = Character
+                Visible = False
+              end
             end
           end
         end
@@ -3174,36 +3230,196 @@ object LibraryView: TLibraryView
               TextSettings.FontColor = xFFE9E8F1
               TextSettings.Trimming = None
             end
-            object LabelPadPageSaves: TLabel
+            object LayoutPadPageSaves: TLayout
               Align = Top
-              StyledSettings = []
               Position.Y = 172.000000000000000000
               Size.Width = 50.000000000000000000
-              Size.Height = 32.000000000000000000
+              Size.Height = 60.000000000000000000
               Size.PlatformDefault = False
-              TextSettings.Font.Size = 18.000000000000000000
-              TextSettings.FontColor = xFFE9E8F1
-              TextSettings.WordWrap = False
+              object LabelPadPageSaves: TLabel
+                Align = Top
+                StyledSettings = []
+                Size.Width = 50.000000000000000000
+                Size.Height = 32.000000000000000000
+                Size.PlatformDefault = False
+                TextSettings.Font.Size = 18.000000000000000000
+                TextSettings.FontColor = xFFE9E8F1
+                TextSettings.WordWrap = False
+              end
+              object LabelPadPageSavesEmpty: TLabel
+                Align = Top
+                StyledSettings = []
+                Position.Y = 32.000000000000000000
+                Size.Width = 50.000000000000000000
+                Size.Height = 28.000000000000000000
+                Size.PlatformDefault = False
+                TextSettings.Font.Size = 12.800000190734860000
+                TextSettings.FontColor = xFFE9E8F1
+                TextSettings.WordWrap = False
+              end
+              object LayoutPadPageSaveList: TLayout
+                Align = Top
+                Position.Y = 60.000000000000000000
+                Size.Width = 50.000000000000000000
+                Size.Height = 0.000000000000000000
+                Size.PlatformDefault = False
+              end
             end
-            object LabelPadPageSavesEmpty: TLabel
+            object LayoutPadPageAchievements: TLayout
               Align = Top
-              StyledSettings = []
-              Position.Y = 204.000000000000000000
+              Margins.Bottom = 8.000000000000000000
+              Position.Y = 233.000000000000000000
               Size.Width = 50.000000000000000000
-              Size.Height = 28.000000000000000000
+              Size.Height = 70.000000000000000000
               Size.PlatformDefault = False
-              TextSettings.Font.Size = 12.800000190734860000
-              TextSettings.FontColor = xFFE9E8F1
-              TextSettings.WordWrap = False
-            end
-            object LayoutPadPageSaveList: TLayout
-              Align = Top
-              Position.Y = 232.000000000000000000
-              Size.Width = 50.000000000000000000
-              Size.Height = 0.000000000000000000
-              Size.PlatformDefault = False
+              Visible = False
+              object LabelPadPageAchievements: TLabel
+                Align = Top
+                StyledSettings = [Family, Style, FontColor]
+                Size.Width = 50.000000000000000000
+                Size.Height = 28.000000000000000000
+                Size.PlatformDefault = False
+                TextSettings.Font.Size = 18.000000000000000000
+                Text = 'Achievements'
+              end
+              object LayoutPadPageAchievementBadges: TLayout
+                Align = Client
+                ClipChildren = True
+                Size.Width = 50.000000000000000000
+                Size.Height = 42.000000000000000000
+                Size.PlatformDefault = False
+                OnResize = AchievementPreviewResized
+                object LabelPadPageAchievementStatus: TLabel
+                  Align = Client
+                  StyledSettings = [Family, Style, FontColor]
+                  Size.Width = 50.000000000000000000
+                  Size.Height = 42.000000000000000000
+                  Size.PlatformDefault = False
+                end
+              end
             end
           end
+        end
+      end
+    end
+  end
+  object LayoutAchievementsOverlay: TLayout
+    Align = Contents
+    Padding.Left = 12.000000000000000000
+    Padding.Top = 12.000000000000000000
+    Padding.Right = 12.000000000000000000
+    Padding.Bottom = 12.000000000000000000
+    Visible = False
+    object PathAchievementUnlockedTemplate: TPath
+      Data.Path = {
+        150000000000000089D25D4152ED69400200000051DA6041B0C9764002000000
+        D0B360413485854002000000857C5D41C4948B40010000000938BD40705F3D41
+        02000000959FB540B6F340410200000014B3A94073D74041020000009A5FA240
+        F31F3D4101000000AD34194065991141020000004BCD0C40B6730E4102000000
+        A1F30C4000630941020000005D8A19402849064102000000422126404F2F0341
+        02000000F1633A40EF3803410200000053CB46409E5E064101000000A661B040
+        D26F2D41010000007B83524192966840020000005EBA554170775C4002000000
+        C1CA5A41F5105D400200000089D25D4152ED69400300000089D25D4152ED6940}
+      Fill.Color = xFF7DD9A9
+      HitTest = False
+      Size.Width = 50.000000000000000000
+      Size.Height = 50.000000000000000000
+      Size.PlatformDefault = False
+      Stroke.Kind = None
+      Visible = False
+      WrapMode = Fit
+    end
+    object RectangleAchievementsBackdrop: TRectangle
+      Align = Contents
+      Fill.Color = xB8000000
+      Size.Width = 50.000000000000000000
+      Size.Height = 50.000000000000000000
+      Size.PlatformDefault = False
+      Stroke.Kind = None
+      OnClick = CloseAchievementsClick
+    end
+    object PanelAchievements: TRectangle
+      Align = Center
+      Fill.Color = xFF24242E
+      Padding.Left = 16.000000000000000000
+      Padding.Top = 12.000000000000000000
+      Padding.Right = 16.000000000000000000
+      Padding.Bottom = 12.000000000000000000
+      Size.Width = 680.000000000000000000
+      Size.Height = 580.000000000000000000
+      Size.PlatformDefault = False
+      Stroke.Color = xFF74768B
+      Stroke.Thickness = 1.500000000000000000
+      XRadius = 14.000000000000000000
+      YRadius = 14.000000000000000000
+      object LayoutAchievementsHeader: TLayout
+        Align = Top
+        Position.X = 16.000000000000000000
+        Position.Y = 12.000000000000000000
+        Size.Width = 648.000000000000000000
+        Size.Height = 38.000000000000000000
+        Size.PlatformDefault = False
+        object ButtonCloseAchievements: TButton
+          Align = Right
+          Position.X = 552.000000000000000000
+          Size.Width = 96.000000000000000000
+          Size.Height = 38.000000000000000000
+          Size.PlatformDefault = False
+          Text = 'Close'
+          OnClick = CloseAchievementsClick
+        end
+        object LabelAchievementsTitle: TLabel
+          Align = Client
+          StyledSettings = [Family, Style, FontColor]
+          Size.Width = 552.000000000000000000
+          Size.Height = 38.000000000000000000
+          Size.PlatformDefault = False
+          TextSettings.Font.Size = 21.000000000000000000
+          TextSettings.WordWrap = False
+          Text = 'Achievements'
+        end
+      end
+      object LayoutAchievementsSummary: TLayout
+        Align = Top
+        Margins.Bottom = 8.000000000000000000
+        Position.X = 16.000000000000000000
+        Position.Y = 50.000000000000000000
+        Size.Width = 648.000000000000000000
+        Size.Height = 30.000000000000000000
+        Size.PlatformDefault = False
+        object LabelAchievementsProgress: TLabel
+          Align = Right
+          StyledSettings = [Family, Style]
+          Margins.Left = 8.000000000000000000
+          Position.X = 542.000000000000000000
+          Size.Width = 106.000000000000000000
+          Size.Height = 30.000000000000000000
+          Size.PlatformDefault = False
+          TextSettings.Font.Size = 15.000000000000000000
+          TextSettings.FontColor = xFF7DD9A9
+          TextSettings.HorzAlign = Trailing
+          TextSettings.WordWrap = False
+        end
+        object LabelAchievementsGame: TLabel
+          Align = Client
+          Size.Width = 534.000000000000000000
+          Size.Height = 30.000000000000000000
+          Size.PlatformDefault = False
+          TextSettings.WordWrap = False
+        end
+      end
+      object VertScrollBoxAchievements: TVertScrollBox
+        Align = Client
+        Size.Width = 648.000000000000000000
+        Size.Height = 480.000000000000000000
+        Size.PlatformDefault = False
+        ScrollAnimation = True
+        OnViewportPositionChange = AchievementListScrolled
+        Viewport.Width = 50.000000000000000000
+        Viewport.Height = 50.000000000000000000
+        object LayoutAchievementList: TLayout
+          Align = Top
+          TabOrder = 0
         end
       end
     end

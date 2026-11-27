@@ -6,17 +6,18 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.Types, System.UITypes,
-  System.Generics.Collections, System.IniFiles, FMX.Types, FMX.Controls,
-  FMX.Forms, FMX.Layouts, FMX.StdCtrls, FMX.Edit, FMX.Objects, Core.Storage,
-  FMX.Controls.Presentation, FMX.ListBox, FMXInput, RM.LibraryNavigation,
-  FMX.Ani, Core.RomMetadata;
+  System.DateUtils, System.Generics.Collections, System.IniFiles, FMX.Types,
+  FMX.Controls, FMX.Forms, FMX.Layouts, FMX.StdCtrls, FMX.Edit, FMX.Objects,
+  Core.Storage, FMX.Controls.Presentation, FMX.ListBox, FMXInput,
+  RM.LibraryNavigation, FMX.Ani, Core.RomMetadata, RA.Account, RA.GameData;
 
 type
   TLibraryGame = class
   public
     FileInfo: TStorageFile;
     SystemId, Title, Cover, BoxCover, Description, Developer, Genre, Players: string;
-    Favorite, HasAchievements: Boolean;
+    Favorite: Boolean;
+    AchievementHash: string;
     InLibrary: Boolean;
     LastPlayed: TDateTime;
     function Key: string;
@@ -46,6 +47,24 @@ type
     TextLayout, TitleLayout: TLayout;
   end;
 
+  TLibraryAchievementIcon = record
+    Image: TImage;
+    Trophy: TPath;
+  end;
+
+  TLibraryAchievementTile = record
+    Button: TButton;
+    Icon: TLibraryAchievementIcon;
+  end;
+
+  TLibraryAchievementRow = record
+    Panel: TLayout;
+    Title, Description, Status: TLabel;
+    Icon: TLibraryAchievementIcon;
+    UnlockedMark: TPath;
+    Divider: TRectangle;
+  end;
+
   TLibraryView = class(TFrame)
     PanelSidebar, PanelInspector: TPanel;
     LayoutOpenOpticalDisc, LayoutCompactOpenOpticalDisc: TLayout;
@@ -56,6 +75,17 @@ type
     LayoutGrid: TLayout;
     VertScrollBoxDetailScroll: TVertScrollBox;
     LayoutInspectorColumns, LayoutInspectorOverview, LayoutInspectorDetails: TLayout;
+    LayoutInspectorSaves, LayoutPadPageSaves, LayoutInspectorDescription: TLayout;
+    ButtonToggleInspectorDescription: TButton;
+    LayoutInspectorAchievements, LayoutInspectorAchievementBadges: TLayout;
+    LayoutPadPageAchievements, LayoutPadPageAchievementBadges: TLayout;
+    LabelInspectorAchievementStatus, LabelPadPageAchievementStatus: TLabel;
+    LayoutAchievementsOverlay, LayoutAchievementList: TLayout;
+    PanelAchievements: TRectangle;
+    VertScrollBoxAchievements: TVertScrollBox;
+    LabelAchievementsGame, LabelAchievementsProgress: TLabel;
+    PathAchievementUnlockedTemplate: TPath;
+    ButtonCloseAchievements: TButton;
     LabelTitle, LabelCount, LabelDetails, LabelDescription, LabelGameInfo, LabelSavesEmpty, LabelEmpty, LabelContinueTitle: TLabel;
     EditRomPath: TEdit;
     ImageCover: TImage;
@@ -67,6 +97,10 @@ type
     Path2: TPath;
     PathSidebarBackIcon: TPath;
     LayoutCardStatusTemplate: TLayout;
+    procedure CloseAchievementsClick(Sender: TObject);
+    procedure ToggleInspectorDescriptionClick(Sender: TObject);
+    procedure AchievementPreviewResized(Sender: TObject);
+    procedure AchievementListScrolled(Sender: TObject; const OldViewportPosition, NewViewportPosition: TPointF; const ContentSizeChanged: Boolean);
   private
     FPadMode, FPadStartPending: Boolean;
     FPadPageOpen: Boolean;
@@ -176,7 +210,21 @@ type
   private
     FLoadThread: TLibraryLoader;
     FStopAchievementScan: TProc;
-    FScanAchievementROMs: Boolean;
+    FScanAchievementROMs, FAchievementsEnabled: Boolean;
+    FAchievementAccount: IRAAccount;
+    FAchievementCatalog, FAchievementDefinitions: TArray<TRAAchievementDefinition>;
+    FAchievementUnlocks, FAchievementNewUnlocks: THashSet<Cardinal>;
+    FAchievementUnlockDates: TDictionary<Cardinal, Int64>;
+    FAchievementProgressLoading, FAchievementProgressKnown: Boolean;
+    FAchievementBadges: TDictionary<string, TBytes>;
+    FInspectorAchievementTiles, FPadAchievementTiles: TArray<TLibraryAchievementTile>;
+    FAchievementRows: TArray<TLibraryAchievementRow>;
+    FAchievementDetailsKey, FAchievementStatus, FAchievementUser, FAchievementToken: string;
+    FLastAchievementUser: string;
+    FAchievementDetailsActive: TFunc<Boolean>;
+    FStopAchievementDetails: TProc;
+    FRenderingAchievementPreviews, FInspectorDescriptionExpanded: Boolean;
+    FInspectorDescriptionLocation: string;
     FReloadPending, FClosing: Boolean;
     ButtonReloadLibrary: TButton;
     LayoutLibraryLoading: TLayout;
@@ -217,7 +265,24 @@ type
     procedure OpenOpticalDiscClick(Sender: TObject);
     procedure ClearCards;
     procedure StartAchievementScan;
-    procedure ApplyAchievementStatus(const Supported: TArray<string>);
+    procedure ApplyAchievementStatus(const Supported: TArray<TPair<string, string>>);
+    procedure RefreshAchievementDetails;
+    procedure ResetAchievementDetails;
+    procedure RenderAchievementPreviews;
+    procedure UpdateAchievementOrder;
+    procedure RenderAchievementPreview(Host: TLayout; Status: TLabel; var Tiles: TArray<TLibraryAchievementTile>);
+    function CreateAchievementIcon(Host: TControl): TLibraryAchievementIcon;
+    procedure SetAchievementIcon(const Icon: TLibraryAchievementIcon; const URL: string; Dimmed: Boolean = False);
+    procedure RequestAchievementBadges(First, Count: Integer);
+    procedure QueueAchievementBadge(const Active: TFunc<Boolean>; const URL: string; const Data: TBytes);
+    procedure OpenAchievementsClick(Sender: TObject);
+    procedure ReadAchievementUnlockDates;
+    procedure UpdateAchievementProgress;
+    procedure PopulateAchievementRows;
+    procedure ResizeAchievementsOverlay;
+    procedure RequestVisibleAchievementBadges;
+    procedure ScrollAchievements(Delta: Single; Animate: Boolean = True);
+    function PadAchievementPreviewButton: TButton;
     procedure UpdateCardStatus(Host: TLayout; Game: TLibraryGame);
     procedure UpdatePadCardStatus(Slot: TRectangle);
     procedure SaveState;
@@ -241,6 +306,7 @@ type
     {$ENDIF}
     procedure InspectorColumnsResized(Sender: TObject);
     procedure ArrangeInspector;
+    procedure ArrangeInspectorDescription(Width: Single);
     procedure UpdateInspector;
     procedure SelectContinueGame;
     procedure UpdateContinue;
@@ -271,7 +337,7 @@ type
   protected
     procedure Resize; override;
   public
-    constructor CreateLibrary(AOwner: TComponent; const Storage: IStorage);
+    constructor CreateLibrary(AOwner: TComponent; const Storage: IStorage; const AchievementAccount: IRAAccount = nil);
     destructor Destroy; override;
     procedure PollLibraryInput(Input: TInputManager; Active: Boolean);
     function LibraryKey(Key: Word; PhysicalKeyboard: Boolean = True): Boolean;
@@ -279,7 +345,8 @@ type
     procedure ApplyOrientationPresentation(Landscape: Boolean);
     procedure Reload;
     procedure ApplyPreferences;
-    procedure RefreshAchievementScanPreference;
+    procedure RefreshAchievementPreferences;
+    procedure RecordAchievementUnlock(const Location, UserName: string; AchievementId: Cardinal);
     procedure ApplyLanguage(const PreviousLanguage: string);
     procedure RecordSession(const FileName, SnapshotDirectory: string; const SystemId: string = ''; const DisplayName: string = ''; const Metadata: IRomMetadata = nil);
     procedure RefreshSnapshots;
@@ -311,7 +378,7 @@ uses
   Core.GameList, FMX.Image, FMX.TextLayout, Core.Platforms, Core.SavePaths,
   Core.CD.Physical, RM.Icons, RM.SearchEdit, RM.Styles, RM.Controls.Lifetime,
   System.JSON, System.SyncObjs, Core.Emulation.Types, Core.PlatformServices,
-  RA.Account, RA.Connection, RA.Hash, RA.Http, RA.Info, RA.Protocol;
+  RA.Connection, RA.Hash, RA.Http, RA.Info, RA.Protocol;
 
 {$IFDEF ISMOBILE}
 type
@@ -471,11 +538,16 @@ begin
   Result.OnClick := Click;
 end;
 
-constructor TLibraryView.CreateLibrary(AOwner: TComponent; const Storage: IStorage);
+constructor TLibraryView.CreateLibrary(AOwner: TComponent; const Storage: IStorage; const AchievementAccount: IRAAccount);
 begin
   FBuilding := True;
   inherited Create(AOwner);
   FStorage := Storage;
+  FAchievementAccount := AchievementAccount;
+  FAchievementBadges := TDictionary<string, TBytes>.Create;
+  FAchievementUnlocks := THashSet<Cardinal>.Create;
+  FAchievementUnlockDates := TDictionary<Cardinal, Int64>.Create;
+  FAchievementNewUnlocks := THashSet<Cardinal>.Create;
   {$IFDEF ISMOBILE}
   var IsMobile := True;
   {$ELSE}
@@ -712,6 +784,8 @@ destructor TLibraryView.Destroy;
 
 begin
   FClosing := True;
+  if Assigned(FStopAchievementDetails) then
+    FStopAchievementDetails();
   if Assigned(FStopAchievementScan) then
     FStopAchievementScan();
   FBuilding := True;
@@ -742,6 +816,10 @@ begin
   finally
     FSelected := nil;
     FRecent := nil;
+    FAchievementNewUnlocks.Free;
+    FAchievementUnlockDates.Free;
+    FAchievementUnlocks.Free;
+    FAchievementBadges.Free;
     FNavigation.Free;
     FPadGames.Free;
     FCards.Free;
@@ -1080,6 +1158,7 @@ end;
 
 procedure TLibraryView.Reload;
 begin
+  ResetAchievementDetails;
   FPadPageOpen := False;
   (FindComponent('LayoutPadGamePage') as TLayout).Visible := False;
   (FindComponent('LayoutPadShelf') as TLayout).Visible := True;
@@ -1159,6 +1238,8 @@ begin
   var Ini := FStorage.ReadConfig(FStorage.ConfigFile('config'));
   try
     FScanAchievementROMs := Ini.ReadBool(RAAchievementsSection, RAScanLibraryROMsKey, RAScanLibraryROMsDefault);
+    FAchievementsEnabled := Ini.ReadBool(RAAchievementsSection, 'Enabled', False);
+    FLastAchievementUser := ReadRALastProgressUser(Ini);
     FListMode := Ini.ReadString('Library', 'View', 'grid') = 'list';
     FShowPlatform := Ini.ReadBool('Library', 'ShowPlatform', True);
     FShowLetters := Ini.ReadBool('Library', 'ShowLetters', False);
@@ -1174,18 +1255,25 @@ begin
     BuildCards;
 end;
 
-procedure TLibraryView.RefreshAchievementScanPreference;
+procedure TLibraryView.RefreshAchievementPreferences;
 begin
   var Ini := FStorage.ReadConfig(FStorage.ConfigFile('config'));
+  var ScanChanged: Boolean;
   try
-    var Enabled := Ini.ReadBool(RAAchievementsSection, RAScanLibraryROMsKey, RAScanLibraryROMsDefault);
-    if Enabled = FScanAchievementROMs then
-      Exit;
-    FScanAchievementROMs := Enabled;
+    var Scan := Ini.ReadBool(RAAchievementsSection, RAScanLibraryROMsKey, RAScanLibraryROMsDefault);
+    ScanChanged := Scan <> FScanAchievementROMs;
+    FScanAchievementROMs := Scan;
+    FAchievementsEnabled := Ini.ReadBool(RAAchievementsSection, 'Enabled', False);
+    FLastAchievementUser := ReadRALastProgressUser(Ini);
   finally
     Ini.Free;
   end;
-  if FLoadThread = nil then
+  for var Card in FCards do
+    UpdateCardStatus(Card.TitleLayout, TLibraryGame(Card.TagObject));
+  for var Slot in FPadSlots do
+    UpdatePadCardStatus(Slot);
+  RefreshAchievementDetails;
+  if ScanChanged and (FLoadThread = nil) then
     StartAchievementScan;
 end;
 
@@ -1496,19 +1584,23 @@ begin
   end;
 end;
 
-procedure TLibraryView.ApplyAchievementStatus(const Supported: TArray<string>);
+procedure TLibraryView.ApplyAchievementStatus(const Supported: TArray<TPair<string, string>>);
 begin
-  var SupportedLocations := THashSet<string>.Create(Supported);
+  var Digests := TDictionary<string, string>.Create;
   try
+    for var Pair in Supported do
+      Digests.AddOrSetValue(Pair.Key, Pair.Value);
     for var Game in FGames do
-      Game.HasAchievements := SupportedLocations.Contains(Game.SystemId + ':' + Game.FileInfo.Location);
+      if not Digests.TryGetValue(Game.SystemId + ':' + Game.FileInfo.Location, Game.AchievementHash) then
+        Game.AchievementHash := '';
   finally
-    SupportedLocations.Free;
+    Digests.Free;
   end;
   for var Card in FCards do
     UpdateCardStatus(Card.TitleLayout, TLibraryGame(Card.TagObject));
   for var Slot in FPadSlots do
     UpdatePadCardStatus(Slot);
+  RefreshAchievementDetails;
 end;
 
 procedure TLibraryView.StartAchievementScan;
@@ -1559,7 +1651,7 @@ begin
       end;
       try
         var Consoles := THashSet<Cardinal>.Create;
-        var Available := TList<string>.Create;
+        var Available := TList<TPair<string, string>>.Create;
         try
           var Cancellation := TStorage.BeginReadCancellation(
             procedure
@@ -1579,7 +1671,7 @@ begin
               var ConsoleId := ROMs[Index].ConsoleId;
               Consoles.Add(ConsoleId);
               if Cache.ReadBool(LibraryAchievementStatusSection(ConsoleId), Digest, False) then
-                Available.Add(ROMs[Index].SystemId + ':' + ROMs[Index].Location);
+                Available.Add(TPair<string, string>.Create(ROMs[Index].SystemId + ':' + ROMs[Index].Location, Digest));
             except
               // Individual ROMs may be unavailable or unreadable.
             end;
@@ -1601,7 +1693,7 @@ begin
 
           var Hashes := THashSet<string>.Create;
           var CacheData: TBytes := nil;
-          var Supported: TArray<string>;
+          var Supported: TArray<TPair<string, string>>;
           try
             var Updated := False;
             for var ConsoleId in Consoles do
@@ -1623,7 +1715,7 @@ begin
               for var ROM in ROMs do
                 if (ROM.Digest <> '') and
                   Cache.ReadBool(LibraryAchievementStatusSection(ROM.ConsoleId), ROM.Digest, False) then
-                  Available.Add(ROM.SystemId + ':' + ROM.Location);
+                  Available.Add(TPair<string, string>.Create(ROM.SystemId + ':' + ROM.Location, ROM.Digest));
               Supported := Available.ToArray;
               var Lines := TStringList.Create;
               try
@@ -1661,11 +1753,694 @@ begin
     end).Start;
 end;
 
+function NewAchievementDetailsActivity(out Stop: TProc): TFunc<Boolean>;
+begin
+  var Cancelled: Integer := 0;
+  Stop :=
+    procedure
+    begin
+      TInterlocked.Exchange(Cancelled, 1);
+    end;
+  Result :=
+    function: Boolean
+    begin
+      Result := TInterlocked.CompareExchange(Cancelled, 0, 0) = 0;
+    end;
+end;
+
+procedure TLibraryView.ResetAchievementDetails;
+begin
+  if Assigned(FStopAchievementDetails) then
+    FStopAchievementDetails();
+  FStopAchievementDetails := nil;
+  FAchievementDetailsActive := nil;
+  FAchievementDetailsKey := '';
+  FAchievementUser := '';
+  FAchievementToken := '';
+  FAchievementStatus := '';
+  FAchievementCatalog := nil;
+  FAchievementDefinitions := nil;
+  FAchievementProgressLoading := False;
+  FAchievementProgressKnown := False;
+  FAchievementUnlocks.Clear;
+  FAchievementNewUnlocks.Clear;
+  FAchievementUnlockDates.Clear;
+  FAchievementBadges.Clear;
+  CloseAchievementsClick(Self);
+end;
+
+procedure TLibraryView.RefreshAchievementDetails;
+begin
+  if FClosing or (LayoutAchievementsOverlay = nil) then
+    Exit;
+  var Key := '';
+  var ProgressUser := '';
+  var Credentials := Default(TRACredentials);
+  if FAchievementsEnabled and (FSelected <> nil) and (FLoadThread = nil) and
+    ((FPadMode and FPadPageOpen) or (not FPadMode and PanelInspector.Visible)) and
+    (FSelected.AchievementHash <> '') then
+  begin
+    Key := FSelected.SystemId + ':' + FSelected.AchievementHash;
+    if FAchievementAccount <> nil then
+      Credentials := FAchievementAccount.Credentials;
+    if (Credentials.UserName <> '') and (Credentials.Token <> '') then
+      ProgressUser := Credentials.UserName
+    else
+      ProgressUser := FLastAchievementUser;
+  end;
+  if (Key = FAchievementDetailsKey) and (ProgressUser = FAchievementUser) and
+    (Credentials.Token = FAchievementToken) then
+  begin
+    RenderAchievementPreviews;
+    Exit;
+  end;
+
+  ResetAchievementDetails;
+  FAchievementDetailsKey := Key;
+  FAchievementUser := ProgressUser;
+  FAchievementToken := Credentials.Token;
+  if Key = '' then
+  begin
+    RenderAchievementPreviews;
+    Exit;
+  end;
+  var Media := PlatformAchievementMedia(FSelected.SystemId);
+  if Media = nil then
+  begin
+    ResetAchievementDetails;
+    RenderAchievementPreviews;
+    Exit;
+  end;
+  var Storage := FStorage;
+  var ConsoleId := Media.ConsoleId;
+  var Digest := FSelected.AchievementHash;
+  var Active: TFunc<Boolean> := NewAchievementDetailsActivity(FStopAchievementDetails);
+  var SignedIn := (Credentials.UserName <> '') and (Credentials.Token <> '');
+  FAchievementDetailsActive := Active;
+  FAchievementStatus := 'Loading...';
+  RenderAchievementPreviews;
+
+  TThread.CreateAnonymousThread(
+    procedure
+    begin
+      if not Active() then
+        Exit;
+      var CachedGameIds: TArray<Cardinal>;
+      var Cached := LoadRAGameAchievementCache(Storage, Digest, ConsoleId, CachedGameIds);
+      var CachedUnlocks: TArray<Cardinal>;
+      var HasProgress := (ProgressUser <> '') and
+        LoadRAUnlockCache(Storage, Digest, ProgressUser, ConsoleId, CachedUnlocks);
+      if Length(Cached) > 0 then
+        TThread.Queue(nil,
+          procedure
+          begin
+            if not Active() then
+              Exit;
+            FAchievementCatalog := Cached;
+            FAchievementStatus := '';
+            FAchievementProgressKnown := HasProgress;
+            FAchievementProgressLoading := SignedIn and not HasProgress;
+            for var Id in CachedUnlocks do
+              FAchievementUnlocks.Add(Id);
+            UpdateAchievementOrder;
+          end);
+      if not Active() then
+        Exit;
+
+      var Definitions: TArray<TRAAchievementDefinition>;
+      var GameIds: TArray<Cardinal>;
+      var Unlocks: TArray<Cardinal>;
+      var ProgressKnown := False;
+      var Status := '';
+      if SignedIn then
+      begin
+        var Client: TRAHttpClient := nil;
+        try
+          try
+            Client := TRAHttpClient.Create(RARetroMulUserAgent);
+            Definitions := FetchRAGameAchievements(Storage, Client, Credentials, Digest, ConsoleId, GameIds);
+            if Length(Definitions) = 0 then
+              Status := 'No achievement sets found.';
+          except
+            Status := 'Could not connect to RetroAchievements.';
+          end;
+          if (Length(Definitions) > 0) and Active() then
+          begin
+            if Length(Cached) = 0 then
+              TThread.Queue(nil,
+                procedure
+                begin
+                  if not Active() then
+                    Exit;
+                  FAchievementCatalog := Definitions;
+                  FAchievementStatus := '';
+                  FAchievementProgressLoading := True;
+                  UpdateAchievementOrder;
+                end);
+            ProgressKnown := FetchRAAchievementUnlocks(Client, Credentials, GameIds, Active, Unlocks);
+          end;
+        finally
+          Client.Free;
+        end;
+      end
+      else
+        Status := 'Sign in to RetroAchievements';
+
+      TThread.Queue(nil,
+        procedure
+        begin
+          if not Active() then
+            Exit;
+          if Length(Definitions) > 0 then
+            FAchievementCatalog := Definitions;
+          if Length(FAchievementCatalog) = 0 then
+            FAchievementStatus := Status
+          else
+            FAchievementStatus := '';
+          FAchievementProgressLoading := False;
+          if ProgressKnown then
+          begin
+            FAchievementUnlocks.Clear;
+            for var Id in FAchievementNewUnlocks do
+              FAchievementUnlocks.Add(Id);
+          end;
+          for var Id in Unlocks do
+            FAchievementUnlocks.Add(Id);
+          FAchievementProgressKnown := ProgressKnown or HasProgress;
+          if ProgressKnown then
+            SaveRAUnlockCache(Storage, Digest, Credentials.UserName, ConsoleId, FAchievementUnlocks.ToArray);
+          UpdateAchievementOrder;
+        end);
+    end).Start;
+end;
+
+function TLibraryView.CreateAchievementIcon(Host: TControl): TLibraryAchievementIcon;
+begin
+  Result.Image := TImage.Create(Host);
+  Result.Image.Name := 'ImageAchievementBadge';
+  Result.Image.Parent := Host;
+  Result.Image.Align := TAlignLayout.Contents;
+  Result.Image.Margins.Rect := RectF(3, 3, 3, 3);
+  Result.Image.WrapMode := TImageWrapMode.Fit;
+  Result.Image.HitTest := False;
+  Result.Image.Visible := False;
+
+  Result.Trophy := FMX.Objects.TPath.Create(Host);
+  Result.Trophy.Name := 'PathAchievementTrophy';
+  Result.Trophy.Parent := Host;
+  Result.Trophy.Align := TAlignLayout.Center;
+  Result.Trophy.SetBounds(0, 0, 22, 22);
+  Result.Trophy.Data.Assign((FindComponent('PathCardAchievements') as FMX.Objects.TPath).Data);
+  Result.Trophy.Fill.Color := ThemeAccentTextColor;
+  Result.Trophy.Stroke.Kind := TBrushKind.None;
+  Result.Trophy.WrapMode := TPathWrapMode.Fit;
+  Result.Trophy.HitTest := False;
+end;
+
+procedure TLibraryView.UpdateAchievementOrder;
+begin
+  SetLength(FAchievementDefinitions, Length(FAchievementCatalog));
+  var Index := 0;
+  for var Unlocked := True downto False do
+    for var Entry in FAchievementCatalog do
+      if FAchievementUnlocks.Contains(Entry.ID) = Unlocked then
+      begin
+        FAchievementDefinitions[Index] := Entry;
+        Inc(Index);
+      end;
+  RenderAchievementPreviews;
+  if FPadPageOpen then
+    MovePadPageFocus(0);
+  if LayoutAchievementsOverlay.Visible then
+  begin
+    PopulateAchievementRows;
+    UpdateAchievementProgress;
+    RequestVisibleAchievementBadges;
+  end;
+end;
+
+procedure GrayscaleAchievementBadge(Bitmap: TBitmap);
+begin
+  var Pixels: TBitmapData;
+  if not Bitmap.Map(TMapAccess.ReadWrite, Pixels) then
+    Exit;
+  try
+    for var Y := 0 to Bitmap.Height - 1 do
+      for var X := 0 to Bitmap.Width - 1 do
+      begin
+        var Color := TAlphaColorRec(Pixels.GetPixel(X, Y));
+        var Shade := Byte((54 * Color.R + 183 * Color.G + 19 * Color.B) shr 8);
+        Color.R := Shade;
+        Color.G := Shade;
+        Color.B := Shade;
+        Pixels.SetPixel(X, Y, TAlphaColor(Color));
+      end;
+  finally
+    Bitmap.Unmap(Pixels);
+  end;
+end;
+
+procedure TLibraryView.SetAchievementIcon(const Icon: TLibraryAchievementIcon; const URL: string; Dimmed: Boolean);
+begin
+  if (Icon.Image.TagString <> URL) or (Icon.Image.Tag <> Ord(Dimmed)) then
+  begin
+    Icon.Image.TagString := URL;
+    Icon.Image.Tag := Ord(Dimmed);
+    var IconOpacity: Single := IfThen(Dimmed, 0.78, 1.0);
+    Icon.Image.Opacity := IconOpacity;
+    Icon.Trophy.Opacity := IconOpacity;
+    Icon.Image.Bitmap := nil;
+    Icon.Image.Visible := False;
+    Icon.Trophy.Visible := True;
+  end;
+  var Data: TBytes;
+  if Icon.Image.Visible or not FAchievementBadges.TryGetValue(URL, Data) or (Length(Data) = 0) then
+    Exit;
+  var Stream := TBytesStream.Create(Data);
+  try
+    try
+      Icon.Image.Bitmap.LoadFromStream(Stream);
+      if Dimmed then
+        GrayscaleAchievementBadge(Icon.Image.Bitmap);
+      Icon.Image.Visible := not Icon.Image.Bitmap.IsEmpty;
+      Icon.Trophy.Visible := not Icon.Image.Visible;
+    except
+      FAchievementBadges.AddOrSetValue(URL, nil);
+    end;
+  finally
+    Stream.Free;
+  end;
+end;
+
+procedure TLibraryView.RenderAchievementPreview(Host: TLayout; Status: TLabel; var Tiles: TArray<TLibraryAchievementTile>);
+const
+  BadgeWidth = 40;
+  BadgeGap = 6;
+begin
+  var Count := 0;
+  if TControl(Host.Parent).Visible then
+    Count := Min(Length(FAchievementDefinitions), Max(0, Floor((Host.Width + BadgeGap) / (BadgeWidth + BadgeGap))));
+  Host.BeginUpdate;
+  try
+    var Previous := Length(Tiles);
+    if Count > Previous then
+    begin
+      SetLength(Tiles, Count);
+      for var Index := Previous to Count - 1 do
+      begin
+        var Button := TButton.Create(Host);
+        Button.Name := 'ButtonAchievementBadge' + IntToStr(Index);
+        Button.Parent := Host;
+        Button.Align := TAlignLayout.Left;
+        Button.Width := BadgeWidth;
+        Button.Margins.Right := BadgeGap;
+        Button.StyleLookup := 'buttonstyle_subtle';
+        Button.ShowHint := True;
+        Button.Tag := Index;
+        Button.OnClick := OpenAchievementsClick;
+        Tiles[Index].Button := Button;
+        Tiles[Index].Icon := CreateAchievementIcon(Button);
+      end;
+    end;
+    for var Index := 0 to High(Tiles) do
+    begin
+      Tiles[Index].Button.Visible := Index < Count;
+      Tiles[Index].Button.Position.X := Index * (BadgeWidth + BadgeGap);
+      if Index < Count then
+      begin
+        var Entry := FAchievementDefinitions[Index];
+        Tiles[Index].Button.Hint := Entry.Title + sLineBreak + Entry.Description;
+        SetAchievementIcon(Tiles[Index].Icon, Entry.BadgeURL,
+          FAchievementProgressKnown and not FAchievementUnlocks.Contains(Entry.ID));
+      end
+      else
+      begin
+        Tiles[Index].Button.Hint := '';
+        SetAchievementIcon(Tiles[Index].Icon, '');
+      end;
+    end;
+    Status.Text := '';
+    if FAchievementStatus <> '' then
+      Status.Text := Translate(FAchievementStatus);
+    Status.Visible := Status.Text <> '';
+  finally
+    Host.EndUpdate;
+  end;
+  RequestAchievementBadges(0, Count);
+end;
+
+procedure TLibraryView.RenderAchievementPreviews;
+begin
+  if FRenderingAchievementPreviews or (LayoutInspectorAchievements = nil) then
+    Exit;
+  FRenderingAchievementPreviews := True;
+  try
+    var Visible := FAchievementsEnabled and (FAchievementDetailsKey <> '');
+    var InspectorVisible := Visible and not FPadMode and PanelInspector.Visible;
+    var PadVisible := Visible and FPadMode and FPadPageOpen;
+    var Changed := (LayoutInspectorAchievements.Visible <> InspectorVisible) or
+      (LayoutPadPageAchievements.Visible <> PadVisible);
+    LayoutInspectorAchievements.Visible := InspectorVisible;
+    LayoutPadPageAchievements.Visible := PadVisible;
+    RenderAchievementPreview(LayoutInspectorAchievementBadges, LabelInspectorAchievementStatus,
+      FInspectorAchievementTiles);
+    RenderAchievementPreview(LayoutPadPageAchievementBadges, LabelPadPageAchievementStatus,
+      FPadAchievementTiles);
+    if Changed then
+    begin
+      if PadVisible then
+        ResizePadGamePage
+      else if not FPadMode and PanelInspector.Visible then
+        ArrangeInspector;
+    end;
+  finally
+    FRenderingAchievementPreviews := False;
+  end;
+end;
+
+procedure TLibraryView.AchievementPreviewResized(Sender: TObject);
+begin
+  if not FClosing and not FBuilding then
+    RenderAchievementPreviews;
+end;
+
+procedure TLibraryView.RequestAchievementBadges(First, Count: Integer);
+begin
+  var Active: TFunc<Boolean> := FAchievementDetailsActive;
+  if (Count <= 0) or not Assigned(Active) then
+    Exit;
+  var URLs := TList<string>.Create;
+  var Pending: TArray<string>;
+  try
+    for var Index := First to Min(First + Count, Length(FAchievementDefinitions)) - 1 do
+    begin
+      var URL := FAchievementDefinitions[Index].BadgeURL;
+      if (URL = '') or FAchievementBadges.ContainsKey(URL) then
+        Continue;
+      FAchievementBadges.Add(URL, nil);
+      URLs.Add(URL);
+    end;
+    Pending := URLs.ToArray;
+  finally
+    URLs.Free;
+  end;
+  if Length(Pending) = 0 then
+    Exit;
+
+  var Storage := FStorage;
+  TThread.CreateAnonymousThread(
+    procedure
+    begin
+      var Client := TRAHttpClient.Create(RARetroMulUserAgent);
+      try
+        for var URL in Pending do
+        begin
+          if not Active() then
+            Exit;
+          try
+            var Data := LoadRABadgePNG(Storage, Client, URL);
+            if Length(Data) > 0 then
+              QueueAchievementBadge(Active, URL, Data);
+          except
+            // Keep the trophy for an unavailable badge.
+          end;
+        end;
+      finally
+        Client.Free;
+      end;
+    end).Start;
+end;
+
+procedure TLibraryView.QueueAchievementBadge(const Active: TFunc<Boolean>; const URL: string; const Data: TBytes);
+begin
+  TThread.Queue(nil,
+    procedure
+    begin
+      if not Active() then
+        Exit;
+      FAchievementBadges.AddOrSetValue(URL, Data);
+      for var Tile in FInspectorAchievementTiles do
+        if Tile.Button.Visible and (Tile.Icon.Image.TagString = URL) then
+          SetAchievementIcon(Tile.Icon, URL, Tile.Icon.Image.Tag <> 0);
+      for var Tile in FPadAchievementTiles do
+        if Tile.Button.Visible and (Tile.Icon.Image.TagString = URL) then
+          SetAchievementIcon(Tile.Icon, URL, Tile.Icon.Image.Tag <> 0);
+      if LayoutAchievementsOverlay.Visible then
+        for var Row in FAchievementRows do
+          if Row.Panel.Visible and (Row.Icon.Image.TagString = URL) then
+            SetAchievementIcon(Row.Icon, URL);
+    end);
+end;
+
+const
+  AchievementRowHeight = 76;
+
+procedure TLibraryView.OpenAchievementsClick(Sender: TObject);
+begin
+  if not FAchievementsEnabled or (FSelected = nil) or (Length(FAchievementDefinitions) = 0) then
+    Exit;
+  var IndexToShow := EnsureRange(TButton(Sender).Tag, 0, High(FAchievementDefinitions));
+  PopulateAchievementRows;
+  LabelAchievementsGame.Text := FSelected.Title;
+  LayoutAchievementsOverlay.Visible := True;
+  ReadAchievementUnlockDates;
+  UpdateAchievementProgress;
+  ResizeAchievementsOverlay;
+  VertScrollBoxAchievements.RealignContent;
+  VertScrollBoxAchievements.ViewportPosition := TPointF.Zero;
+  ScrollAchievements(IndexToShow * AchievementRowHeight, False);
+  ButtonCloseAchievements.SetFocus;
+  RequestVisibleAchievementBadges;
+end;
+
+procedure TLibraryView.PopulateAchievementRows;
+begin
+  LayoutAchievementList.BeginUpdate;
+  try
+    var Previous := Length(FAchievementRows);
+    if Previous < Length(FAchievementDefinitions) then
+    begin
+      SetLength(FAchievementRows, Length(FAchievementDefinitions));
+      for var Index := Previous to High(FAchievementRows) do
+      begin
+        var Row := TLayout.Create(LayoutAchievementList);
+        Row.Name := 'LayoutAchievementRow' + IntToStr(Index);
+        Row.Parent := LayoutAchievementList;
+        Row.Align := TAlignLayout.Top;
+        Row.Height := AchievementRowHeight;
+        Row.Padding.Rect := RectF(4, 0, 4, 0);
+        var Divider := TRectangle.Create(Row);
+        Divider.Name := 'RectangleAchievementDivider';
+        Divider.Parent := Row;
+        Divider.Align := TAlignLayout.MostBottom;
+        Divider.Height := 1;
+        Divider.Fill.Color := $FF474858;
+        Divider.Stroke.Kind := TBrushKind.None;
+        Divider.HitTest := False;
+        FAchievementRows[Index].Divider := Divider;
+        Row.ShowHint := True;
+        FAchievementRows[Index].Panel := Row;
+
+        var IconHost := TLayout.Create(Row);
+        IconHost.Name := 'LayoutAchievementIcon';
+        IconHost.Parent := Row;
+        IconHost.Align := TAlignLayout.Left;
+        IconHost.Width := 54;
+        IconHost.Margins.Right := 12;
+        IconHost.HitTest := False;
+        FAchievementRows[Index].Icon := CreateAchievementIcon(IconHost);
+
+        var StatusHost := TLayout.Create(Row);
+        StatusHost.Name := 'LayoutAchievementUnlockedMark';
+        StatusHost.Parent := Row;
+        StatusHost.Align := TAlignLayout.Right;
+        StatusHost.Width := 26;
+        StatusHost.HitTest := False;
+        var Mark := PathAchievementUnlockedTemplate.Clone(StatusHost) as FMX.Objects.TPath;
+        Mark.Name := 'PathAchievementUnlocked';
+        Mark.Parent := StatusHost;
+        Mark.Align := TAlignLayout.Center;
+        Mark.SetBounds(0, 0, 16, 16);
+        FAchievementRows[Index].UnlockedMark := Mark;
+
+        var TextHost := TLayout.Create(Row);
+        TextHost.Name := 'LayoutAchievementText';
+        TextHost.Parent := Row;
+        TextHost.Align := TAlignLayout.Client;
+        TextHost.HitTest := False;
+        var Lines := TLayout.Create(TextHost);
+        Lines.Name := 'LayoutAchievementLines';
+        Lines.Parent := TextHost;
+        Lines.Align := TAlignLayout.VertCenter;
+        Lines.Height := 58;
+        Lines.HitTest := False;
+        var Title := TextLabel(Row, Lines, '', 14);
+        Title.Name := 'LabelAchievementTitle';
+        Title.Align := TAlignLayout.Top;
+        Title.Height := 20;
+        Title.TextSettings.VertAlign := TTextAlign.Center;
+        Title.TextSettings.Font.Style := [TFontStyle.fsBold];
+        FAchievementRows[Index].Title := Title;
+        var Description := TextLabel(Row, Lines, '', 13);
+        Description.Name := 'LabelAchievementDescription';
+        Description.Align := TAlignLayout.Client;
+        Description.TextSettings.WordWrap := False;
+        Description.TextSettings.VertAlign := TTextAlign.Center;
+        FAchievementRows[Index].Description := Description;
+        var Status := TextLabel(Row, Lines, '', 12);
+        Status.Name := 'LabelAchievementStatus';
+        Status.Align := TAlignLayout.Bottom;
+        Status.Height := 18;
+        Status.TextSettings.VertAlign := TTextAlign.Center;
+        Status.TextSettings.FontColor := ThemeSecondaryTextColor;
+        FAchievementRows[Index].Status := Status;
+      end;
+    end;
+    for var Index := 0 to High(FAchievementRows) do
+    begin
+      var Row := FAchievementRows[Index];
+      Row.Panel.Visible := Index < Length(FAchievementDefinitions);
+      Row.Panel.Position.Y := Index * AchievementRowHeight;
+      Row.Divider.Visible := Index < High(FAchievementDefinitions);
+      if Row.Panel.Visible then
+      begin
+        var Entry := FAchievementDefinitions[Index];
+        Row.Title.Text := Entry.Title.Replace(#13, '').Replace(#10, ' ');
+        Row.Description.Text := Entry.Description.Replace(#13, '').Replace(#10, ' ');
+        SetAchievementIcon(Row.Icon, Entry.BadgeURL);
+      end
+      else
+        SetAchievementIcon(Row.Icon, '');
+    end;
+    LayoutAchievementList.Height := Length(FAchievementDefinitions) * AchievementRowHeight;
+  finally
+    LayoutAchievementList.EndUpdate;
+  end;
+  VertScrollBoxAchievements.RealignContent;
+  ScrollAchievements(0, False);
+end;
+
+procedure TLibraryView.ReadAchievementUnlockDates;
+begin
+  var Media := PlatformAchievementMedia(FSelected.SystemId);
+  if Media <> nil then
+    LoadRAUnlockDates(FStorage, FSelected.AchievementHash, FAchievementUser, Media.ConsoleId,
+      FAchievementUnlockDates);
+end;
+
+procedure TLibraryView.UpdateAchievementProgress;
+begin
+  if not LayoutAchievementsOverlay.Visible then
+    Exit;
+  var Total := Length(FAchievementDefinitions);
+  var Earned := 0;
+  for var Index := 0 to Total - 1 do
+  begin
+    var Entry := FAchievementDefinitions[Index];
+    var Row := FAchievementRows[Index];
+    var Unlocked := FAchievementUnlocks.Contains(Entry.ID);
+    Row.UnlockedMark.Visible := Unlocked;
+    Row.Panel.Hint := Entry.Title + sLineBreak + Entry.Description;
+    if Unlocked then
+    begin
+      Inc(Earned);
+      var Awarded: Int64;
+      if FAchievementUnlockDates.TryGetValue(Entry.ID, Awarded) then
+        Row.Status.Text := DateToStr(UnixToDateTime(Awarded, False))
+      else
+        Row.Status.Text := Translate('Achievement unlocked');
+    end
+    else if FAchievementProgressKnown then
+      Row.Status.Text := Translate('Not earned')
+    else
+      Row.Status.Text := '';
+    if Row.Status.Text <> '' then
+      Row.Panel.Hint := Row.Panel.Hint + sLineBreak + Row.Status.Text;
+  end;
+  LabelAchievementsProgress.ShowHint := not FAchievementProgressKnown;
+  LabelAchievementsProgress.Hint := '';
+  if FAchievementProgressKnown then
+    LabelAchievementsProgress.Text := Format('%d / %d', [Earned, Total])
+  else
+  begin
+    LabelAchievementsProgress.Text := #$2014 + ' / ' + IntToStr(Total);
+    if FAchievementProgressLoading then
+      LabelAchievementsProgress.Hint := Translate('Loading...')
+    else
+      LabelAchievementsProgress.Hint := Translate('Could not connect to RetroAchievements.');
+  end;
+end;
+
+procedure TLibraryView.RecordAchievementUnlock(const Location, UserName: string; AchievementId: Cardinal);
+begin
+  if not FAchievementsEnabled or (FAchievementDetailsKey = '') or (FSelected = nil) or
+    not SameText(FAchievementUser, UserName) or not SameFileName(FSelected.FileInfo.Location, Location) then
+    Exit;
+  FAchievementNewUnlocks.Add(AchievementId);
+  if LayoutAchievementsOverlay.Visible then
+    ReadAchievementUnlockDates;
+  if FAchievementUnlocks.Add(AchievementId) then
+  begin
+    UpdateAchievementOrder;
+    var Media := PlatformAchievementMedia(FSelected.SystemId);
+    if FAchievementProgressKnown and (Media <> nil) then
+      SaveRAUnlockCache(FStorage, FSelected.AchievementHash, UserName, Media.ConsoleId,
+        FAchievementUnlocks.ToArray);
+  end
+  else
+    UpdateAchievementProgress;
+end;
+
+procedure TLibraryView.CloseAchievementsClick(Sender: TObject);
+begin
+  if (LayoutAchievementsOverlay <> nil) and LayoutAchievementsOverlay.Visible then
+    LayoutAchievementsOverlay.Visible := False;
+end;
+
+procedure TLibraryView.ResizeAchievementsOverlay;
+begin
+  if (LayoutAchievementsOverlay = nil) or not LayoutAchievementsOverlay.Visible then
+    Exit;
+  PanelAchievements.Width := Min(680, Max(0, LayoutAchievementsOverlay.Width - 24));
+  PanelAchievements.Height := Min(580, Max(0, LayoutAchievementsOverlay.Height - 24));
+  LayoutAchievementsOverlay.BringToFront;
+end;
+
+procedure TLibraryView.ScrollAchievements(Delta: Single; Animate: Boolean);
+begin
+  if Animate then
+    VertScrollBoxAchievements.AniCalculations.MouseWheel(0, Delta)
+  else
+    VertScrollBoxAchievements.ViewportPosition := PointF(0, EnsureRange(
+        VertScrollBoxAchievements.ViewportPosition.Y + Delta, 0,
+        Max(0, LayoutAchievementList.Height - VertScrollBoxAchievements.Height)));
+end;
+
+procedure TLibraryView.AchievementListScrolled(Sender: TObject; const OldViewportPosition, NewViewportPosition: TPointF; const ContentSizeChanged: Boolean);
+begin
+  RequestVisibleAchievementBadges;
+end;
+
+procedure TLibraryView.RequestVisibleAchievementBadges;
+begin
+  if not FClosing and not FBuilding and (LayoutAchievementsOverlay <> nil) and LayoutAchievementsOverlay.Visible then
+    RequestAchievementBadges(Max(0, Floor(VertScrollBoxAchievements.ViewportPosition.Y / AchievementRowHeight)),
+      Ceil(VertScrollBoxAchievements.Height / AchievementRowHeight) + 1);
+end;
+
+function TLibraryView.PadAchievementPreviewButton: TButton;
+begin
+  Result := nil;
+  if LayoutPadPageAchievements.Visible and (Length(FPadAchievementTiles) > 0) and
+    FPadAchievementTiles[0].Button.Visible then
+    Result := FPadAchievementTiles[0].Button;
+end;
+
 procedure TLibraryView.UpdateCardStatus(Host: TLayout; Game: TLibraryGame);
 begin
   var Status := Host.FindComponent('LayoutCardStatus') as TLayout;
   var Favorite := (Game <> nil) and Game.Favorite;
-  var Achievements := (Game <> nil) and Game.HasAchievements;
+  var Achievements := FAchievementsEnabled and (Game <> nil) and (Game.AchievementHash <> '');
   if not (Favorite or Achievements) then
   begin
     if Status <> nil then
@@ -1693,7 +2468,7 @@ begin
   var Game := FPadGames[Slot.Tag];
   if Host = nil then
   begin
-    if not (Game.Favorite or Game.HasAchievements) then
+    if not Game.Favorite and (not FAchievementsEnabled or (Game.AchievementHash = '')) then
       Exit;
     var Overlay := TLayout.Create(Slot);
     Overlay.Name := 'LayoutPadCardStatusOverlay';
@@ -2055,6 +2830,8 @@ begin
     (FindComponent('LayoutInspectorOverlay') as TLayout).Visible := False;
     LayoutGamepadLibrary.BringToFront;
     ResizePadView;
+    RefreshAchievementDetails;
+    ResizeAchievementsOverlay;
     Exit;
   end;
   FLayouting := True;
@@ -2098,6 +2875,8 @@ begin
     Realign;
     if PanelInspector.Visible then
       ArrangeInspector;
+    RefreshAchievementDetails;
+    ResizeAchievementsOverlay;
     for var i := 0 to High(FNavButtons) do
     begin
       FNavIcons[i].Visible := not CompactNav.Visible;
@@ -2282,6 +3061,14 @@ procedure TLibraryView.UpdateInspector;
 begin
   if FLoadThread <> nil then
     Exit;
+  var Location := '';
+  if FSelected <> nil then
+    Location := FSelected.FileInfo.Location;
+  if Location <> FInspectorDescriptionLocation then
+  begin
+    FInspectorDescriptionLocation := Location;
+    FInspectorDescriptionExpanded := False;
+  end;
   LayoutInspectorColumns.BeginUpdate;
   try
     ButtonPlay.Enabled := FSelected <> nil;
@@ -2299,7 +3086,6 @@ begin
     else
     begin
       LabelTitle.Text := FSelected.Title;
-      var Location := FSelected.FileInfo.Location;
       if (Location <> '') and not Location.Contains('://') then
         Location := ExpandFileName(Location);
       EditRomPath.Text := Location;
@@ -2322,7 +3108,7 @@ begin
     EditRomPath.Visible := EditRomPath.Text <> '';
     EditRomPath.Hint := EditRomPath.Text;
     LabelDetails.Visible := LabelDetails.Text <> '';
-    LabelDescription.Visible := LabelDescription.Text <> '';
+    LayoutInspectorDescription.Visible := LabelDescription.Text <> '';
     LabelGameInfo.Visible := LabelGameInfo.Text <> '';
 
     var Saves := Snapshots(FSelected);
@@ -2340,22 +3126,11 @@ begin
         LoadImage(FSaveImages[i], Saves[i].PreviewLocation);
       end;
     end;
-    // Hidden Top-aligned controls retain old positions. Restore the logical
-    // order before FMX sorts them when the selected game's content changes.
-    for var Column in [LayoutInspectorOverview, LayoutInspectorDetails] do
-    begin
-      var OrderY: Single := 0;
-      for var i := 0 to Column.ControlsCount - 1 do
-      begin
-        var Item := Column.Controls[i];
-        Item.Position.Y := OrderY + Item.Margins.Top;
-        OrderY := OrderY + Item.Margins.Top + Item.Height + Item.Margins.Bottom;
-      end;
-    end;
   finally
     LayoutInspectorColumns.EndUpdate;
   end;
   ArrangeInspector;
+  RefreshAchievementDetails;
 end;
 
 procedure TLibraryView.InspectorColumnsResized(Sender: TObject);
@@ -2365,22 +3140,84 @@ begin
     ArrangeInspector;
 end;
 
+function ArrangeLibraryStack(const Container: TLayout): Single;
+begin
+  Result := 0;
+  var OrderY: Single := 0;
+  Container.BeginUpdate;
+  try
+    // A hidden Top-aligned control keeps its former Y. Restore FMX's sort order
+    // from the form structure whenever content expands, collapses or reappears.
+    for var Index := 0 to Container.ControlsCount - 1 do
+    begin
+      var Item := Container.Controls[Index];
+      Item.Position.Y := OrderY + Item.Margins.Top;
+      var Extent := Item.Margins.Top + Item.Height + Item.Margins.Bottom;
+      OrderY := OrderY + Extent;
+      if Item.Visible then
+        Result := Result + Extent;
+    end;
+  finally
+    Container.EndUpdate;
+  end;
+end;
+
+procedure TLibraryView.ToggleInspectorDescriptionClick(Sender: TObject);
+begin
+  FInspectorDescriptionExpanded := not FInspectorDescriptionExpanded;
+  ArrangeInspector;
+end;
+
+procedure TLibraryView.ArrangeInspectorDescription(Width: Single);
+begin
+  if not LayoutInspectorDescription.Visible then
+    Exit;
+  var Layout := TTextLayoutManager.DefaultTextLayout.Create;
+  try
+    Layout.BeginUpdate;
+    Layout.Font.Assign(LabelDescription.TextSettings.Font);
+    Layout.MaxSize := PointF(Max(1, Width - 4), TTextLayout.MaxLayoutSize.Y);
+    Layout.WordWrap := True;
+    Layout.Text := LabelDescription.Text;
+    Layout.EndUpdate;
+    var FullHeight := Ceil(Layout.TextHeight) + 4;
+    var DescriptionHeight := FullHeight;
+    var CanExpand := False;
+    if PanelInspector.Parent = Self then
+    begin
+      Layout.Text := 'Ag' + sLineBreak + 'Ag' + sLineBreak + 'Ag' + sLineBreak + 'Ag' + sLineBreak + 'Ag';
+      var LimitHeight := Ceil(Layout.TextHeight);
+      CanExpand := FullHeight - 4 > LimitHeight;
+      if CanExpand and not FInspectorDescriptionExpanded then
+        DescriptionHeight := LimitHeight;
+    end;
+    LayoutInspectorDescription.BeginUpdate;
+    try
+      LabelDescription.Height := DescriptionHeight;
+      LabelDescription.TextSettings.Trimming := TTextTrimming.None;
+      if CanExpand and not FInspectorDescriptionExpanded then
+        LabelDescription.TextSettings.Trimming := TTextTrimming.Character;
+      ButtonToggleInspectorDescription.Position.Y := DescriptionHeight;
+      ButtonToggleInspectorDescription.Visible := CanExpand;
+      if FInspectorDescriptionExpanded then
+        ButtonToggleInspectorDescription.Text := Translate('Show less')
+      else
+        ButtonToggleInspectorDescription.Text := Translate('Show more');
+      LayoutInspectorDescription.Height := DescriptionHeight;
+      if CanExpand then
+        LayoutInspectorDescription.Height := DescriptionHeight + ButtonToggleInspectorDescription.Height;
+    finally
+      LayoutInspectorDescription.EndUpdate;
+    end;
+  finally
+    Layout.Free;
+  end;
+end;
+
 procedure TLibraryView.ArrangeInspector;
 const
   MinimumTwoColumnWidth = 600;
   ColumnGap = 24;
-
-  function ColumnHeight(const Column: TLayout): Single;
-  begin
-    Result := 0;
-    for var i := 0 to Column.ControlsCount - 1 do
-    begin
-      var Item := Column.Controls[i];
-      if Item.Visible then
-        Result := Result + Item.Margins.Top + Item.Height + Item.Margins.Bottom;
-    end;
-  end;
-
 begin
   if FArrangingInspector then
     Exit;
@@ -2409,24 +3246,11 @@ begin
           LayoutInspectorDetails.Margins.Left := 0;
           LayoutInspectorDetails.Align := TAlignLayout.Top;
         end;
-        if LabelDescription.Visible then
-        begin
-          var TextLayout := TTextLayoutManager.DefaultTextLayout.Create;
-          try
-            TextLayout.BeginUpdate;
-            TextLayout.Font.Assign(LabelDescription.TextSettings.Font);
-            TextLayout.MaxSize := PointF(Max(1, DescriptionWidth - 4), TTextLayout.MaxLayoutSize.Y);
-            TextLayout.WordWrap := True;
-            TextLayout.Text := LabelDescription.Text;
-            TextLayout.EndUpdate;
-            LabelDescription.Height := Ceil(TextLayout.TextHeight) + 4;
-          finally
-            TextLayout.Free;
-          end;
-        end;
+        ArrangeInspectorDescription(DescriptionWidth);
 
-        var OverviewHeight := ColumnHeight(LayoutInspectorOverview);
-        var DetailsHeight := ColumnHeight(LayoutInspectorDetails);
+        LayoutInspectorSaves.Height := ArrangeLibraryStack(LayoutInspectorSaves);
+        var OverviewHeight := ArrangeLibraryStack(LayoutInspectorOverview);
+        var DetailsHeight := ArrangeLibraryStack(LayoutInspectorDetails);
         if SideBySide then
           LayoutInspectorColumns.Height := Max(OverviewHeight, DetailsHeight)
         else
@@ -2687,6 +3511,11 @@ end;
 
 function TLibraryView.CloseDetails: Boolean;
 begin
+  if LayoutAchievementsOverlay.Visible then
+  begin
+    CloseAchievementsClick(Self);
+    Exit(True);
+  end;
   Result := FInspectorOpen;
   FInspectorOpen := False;
   Resize;
@@ -3888,6 +4717,18 @@ end;
 
 procedure TLibraryView.PadCommand(Command: Integer);
 begin
+  if LayoutAchievementsOverlay.Visible then
+  begin
+    case Command of
+      0, 6, 10:
+        ScrollAchievements(-VertScrollBoxAchievements.Height * 0.6);
+      1, 7, 11:
+        ScrollAchievements(VertScrollBoxAchievements.Height * 0.6);
+      2, 3:
+        CloseAchievementsClick(Self);
+    end;
+    Exit;
+  end;
   if FPadPageOpen then
   begin
     case Command of
@@ -3901,7 +4742,9 @@ begin
         else if FPadPageFocus = 1 then
           PadPageAction(FindComponent('ButtonPadPageFavorite'))
         else if FPadPageFocus - 2 < FPadPageSaveCount then
-          SaveClick(FPadPageSaves[FPadPageFocus - 2]);
+          SaveClick(FPadPageSaves[FPadPageFocus - 2])
+        else if PadAchievementPreviewButton <> nil then
+          OpenAchievementsClick(PadAchievementPreviewButton);
       3:
         ClosePadGamePage;
       4, 5:
@@ -3991,6 +4834,24 @@ end;
 
 function TLibraryView.LibraryKey(Key: Word; PhysicalKeyboard: Boolean): Boolean;
 begin
+  if LayoutAchievementsOverlay.Visible then
+  begin
+    case Key of
+      vkEscape:
+        CloseAchievementsClick(Self);
+      vkUp:
+        ScrollAchievements(-AchievementRowHeight);
+      vkDown:
+        ScrollAchievements(AchievementRowHeight);
+      vkPrior:
+        ScrollAchievements(-VertScrollBoxAchievements.Height * 0.8);
+      vkNext:
+        ScrollAchievements(VertScrollBoxAchievements.Height * 0.8);
+    else
+      Exit(False);
+    end;
+    Exit(True);
+  end;
   if PhysicalKeyboard then
     FNavigation.KeyboardUsed
   else
@@ -4339,6 +5200,7 @@ end;
 procedure TLibraryView.ClosePadGamePage;
 begin
   FPadPageOpen := False;
+  RefreshAchievementDetails;
   (FindComponent('LayoutPadGamePage') as TLayout).Visible := False;
   (FindComponent('LayoutPadShelf') as TLayout).Visible := True;
   UpdatePadView;
@@ -4348,6 +5210,7 @@ procedure TLibraryView.UpdatePadGamePage;
 begin
   if not FPadPageOpen or (FSelected = nil) then
     Exit;
+  RefreshAchievementDetails;
   (FindComponent('LabelPadPageTitle') as TLabel).Text := FSelected.Title;
   var Metadata := LibrarySystemFullName(FSelected.SystemId);
   if FSelected.Genre <> '' then
@@ -4405,7 +5268,6 @@ begin
   (FindComponent('LabelPadPageSavesEmpty') as TLabel).Text := Translate('No save states yet.');
   (FindComponent('LabelPadPageSavesEmpty') as TLabel).Visible := Length(Saves) = 0;
   (FindComponent('LayoutPadPageSaveList') as TLayout).Height := Length(Saves) * 64;
-  FPadPageFocus := Min(FPadPageFocus, FPadPageSaveCount + 1);
   MovePadPageFocus(0);
   ResizePadGamePage;
   for var Button in FPadPageSaves do
@@ -4437,17 +5299,21 @@ begin
   Description.Width := Max(1, Scroll.Width - 8);
   Description.AutoSize := False;
   Description.AutoSize := True;
-  Content.Height := 28 + Description.Height + 24 + 32 + IfThen(FPadPageSaveCount = 0, 28, 0) + FPadPageSaveCount * 64;
+  LayoutPadPageSaves.Height := ArrangeLibraryStack(LayoutPadPageSaves);
+  Content.Height := ArrangeLibraryStack(Content);
   Scroll.RealignContent;
   RoundPadTextSizes(FindComponent('LayoutPadGamePage') as TFmxObject);
 end;
 
 procedure TLibraryView.MovePadPageFocus(Delta: Integer);
 begin
-  FPadPageFocus := EnsureRange(FPadPageFocus + Delta, 0, FPadPageSaveCount + 1);
-  var Controls: TArray<TButton> := FPadPageSaves + [
-      FindComponent('ButtonPadPagePlay') as TButton,
-      FindComponent('ButtonPadPageFavorite') as TButton];
+  var Controls: TArray<TButton> := [
+      FindComponent('ButtonPadPagePlay') as TButton, FindComponent('ButtonPadPageFavorite') as TButton];
+  Controls := Controls + Copy(FPadPageSaves, 0, FPadPageSaveCount);
+  var Achievement := PadAchievementPreviewButton;
+  if Achievement <> nil then
+    Controls := Controls + [Achievement];
+  FPadPageFocus := EnsureRange(FPadPageFocus + Delta, 0, High(Controls));
   for var i := 0 to High(Controls) do
   begin
     if i = FPadPageFocus then
@@ -4466,7 +5332,7 @@ begin
   if (Delta <> 0) and (FPadPageFocus >= 2) then
   begin
     var Scroll := FindComponent('VertScrollBoxPadPage') as TVertScrollBox;
-    var Y := FPadPageSaves[FPadPageFocus - 2].AbsoluteRect.Top - TLayout(FindComponent('LayoutPadPageContent')).AbsoluteRect.Top;
+    var Y := Controls[FPadPageFocus].AbsoluteRect.Top - TLayout(FindComponent('LayoutPadPageContent')).AbsoluteRect.Top;
     Scroll.ViewportPosition := PointF(0, Max(0, Y - Scroll.Height * 0.5));
   end;
 end;

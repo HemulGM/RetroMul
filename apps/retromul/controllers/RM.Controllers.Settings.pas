@@ -213,9 +213,7 @@ begin
       FState.Browser.View.ApplyPreferences;
       FState.Browser.View.Reload;
       FState.Browser.ReloadPending := False;
-    end
-    else
-      FState.Browser.View.RefreshAchievementScanPreference;
+    end;
   end;
   FView.ReloadHostInputBindings;
   FView.SyncActivity;

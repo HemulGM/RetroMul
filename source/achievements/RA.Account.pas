@@ -9,6 +9,7 @@ uses
 
 const
   RAAchievementsSection = 'RetroAchievements';
+  RALastProgressUserKey = 'LastProgressUser';
   RAScanLibraryROMsKey = 'ScanLibraryROMs';
   RAScanLibraryROMsDefault = True;
   RARetroMulUserAgent = 'RetroMul/1.0.0.0 ' + RAUserAgentClause;
@@ -47,6 +48,8 @@ function CreateRAAccount: IRAAccount;
 function CanRememberRAAccount: Boolean;
 
 function ReadRAStoredCredentials(Ini: TCustomIniFile): TRACredentials;
+
+function ReadRALastProgressUser(Ini: TCustomIniFile): string;
 
 procedure WriteRAStoredCredentials(Ini: TCustomIniFile; const Settings: TRAAccountSettings; const Credentials: TRACredentials);
 
@@ -182,6 +185,16 @@ begin
   {$ELSE}
   Result := False;
   {$ENDIF}
+end;
+
+function ReadRALastProgressUser(Ini: TCustomIniFile): string;
+begin
+  // Profiles predating the progress marker used the configured username.
+  // An explicit empty marker records a sign-out even if that name is retained.
+  if Ini.ValueExists(RAAchievementsSection, RALastProgressUserKey) then
+    Result := Ini.ReadString(RAAchievementsSection, RALastProgressUserKey, '').Trim
+  else
+    Result := Ini.ReadString(RAAchievementsSection, 'UserName', '').Trim;
 end;
 
 function ReadRAStoredCredentials(Ini: TCustomIniFile): TRACredentials;

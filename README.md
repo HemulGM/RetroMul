@@ -342,17 +342,22 @@ Support can vary by submapper and peripheral. The grid covers catalogued numbers
 ## Features
 
 - Browse a game library in grid or list view with cover art and information from `gamelist.xml`, search by title, filter by system or initial letter, and keep favorites and recently played games. ROM files can also be opened directly or dropped onto the desktop application.
+- Fetch game metadata and front covers in the background with ScreenScraper for games without a `gamelist.xml` entry. Use anonymous access or a ScreenScraper account and check the remaining daily quota. See [Background scraping](#background-scraping) for setup.
+- Earn RetroAchievements in Casual mode for supported games. Scan your library to find games with achievements, view unlock progress on the game page, and customize in-game unlock notifications. Optional Rich Presence shares game activity on your RetroAchievements profile.
 - Assign keyboard keys, controller buttons, axes, and D-pad directions for each system and controller port. View the active bindings in the in-game controls help.
 - Play with an Android screen gamepad, including NES / Dendy turbo buttons and six-button SEGA controls.
 - Use multiple controllers, NES Four Score, and SNES Multitap in compatible games.
 - Pause, reset, save and restore game states with preview images, and keep battery-backed saves. Continue games from saved states in the library.
+- Enable autosave on exit or at a configurable interval. When reopening a game with an autosave, choose whether to resume it or start fresh.
 - Switch to fullscreen, resize the game display, and capture screenshots.
-- Configure video filtering, audio, Game Boy palettes and boot ROMs, and system-specific hardware and peripherals. Supported settings can be applied during a game.
+- Choose nearest-neighbor or smooth scaling and preview per-system display shaders, including Scanlines, CRT, LCD, and color correction. Load custom shaders supported by the active graphics backend.
+- Arrange Nintendo DS screens vertically or side by side and adjust the gap between them.
+- Configure audio, Game Boy palettes and boot ROMs, and system-specific hardware and peripherals. Supported settings can be applied during a game.
 - Customize Game Boy / Game Boy Color frame blending, separate monochrome background and sprite palettes, layer visibility, sprite limits, CPU speed (100–400%), and individual sound-channel volume. Game Boy Color also offers LCD color correction. Higher CPU speeds and relaxed sprite limits can change game behavior.
 - Use Game Boy / Game Boy Color / Game Boy Advance cartridge rumble and cartridge motion inputs on supported devices; tilt and rotation depend on available device sensors.
 - Use supported NES peripherals, including Zapper, Power Pad, Family BASIC and Subor keyboards, Miracle Piano, and the Famicom Data Recorder. Four Score must be disabled when using Zapper, Power Pad or Miracle Piano.
 - Use an English, Russian or Portuguese interface, with language selection in settings (or custom).
-- Listen to native streaming audio. Supported audio platforms include Windows, Linux, Android, macOS, and iOS.
+- Listen to native streaming audio on Windows, Linux, Android, macOS, and iOS. Select the audio output and microphone on hosts with device selection.
 
 Compatibility depends on the game's cartridge hardware, protection, and peripherals. Mapper or ROM-set support does not imply complete hardware accuracy or full gameplay compatibility for every game. Save-state formats can change between builds.
 

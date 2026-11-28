@@ -3,8 +3,9 @@
 interface
 
 uses
-  Core.InputConfig, System.SysUtils, System.Classes, System.IniFiles,
-  Core.Storage, Core.Emulation, NeoGeo.Cartridge, NeoGeo.Emulation;
+  Core.Emulation.Types, Core.InputConfig, System.SysUtils, System.Classes,
+  System.IniFiles, Core.Storage, Core.Emulation, NeoGeo.Cartridge,
+  NeoGeo.Emulation;
 
 type
   TNeoGeoKeyMap = array[TEmulatorButton] of UInt32;
@@ -26,7 +27,7 @@ type
     property Keys2: TNeoGeoKeyMap read FKeys2;
   end;
 
-  TNeoGeoCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics)
+  TNeoGeoCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationAchievements, IEmulationArcadeAchievements)
   private
     FThread: TNeoGeoWorker;
     FCartridge: TNeoGeoCartridge;
@@ -39,6 +40,9 @@ type
     FSavePath, FSnapshotDirectory, FError: string;
     procedure ApplySettings;
   public
+    function AchievementROM: TBytes;
+    function AchievementSetName: string;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     procedure ApplyLiveSettings;
     constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; CD: Boolean = False);
     destructor Destroy; override;
@@ -493,6 +497,22 @@ end;
 function TNeoGeoCoreAdapter.IsPaused: Boolean;
 begin
   Result := FPaused;
+end;
+
+function TNeoGeoCoreAdapter.AchievementSetName: string;
+begin
+  Result := FCartridge.AchievementSetName;
+end;
+
+function TNeoGeoCoreAdapter.AchievementROM: TBytes;
+begin
+  Result := nil;
+end;
+
+procedure TNeoGeoCoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  if FThread <> nil then
+    FThread.SetAchievementObserver(Observer);
 end;
 
 end.

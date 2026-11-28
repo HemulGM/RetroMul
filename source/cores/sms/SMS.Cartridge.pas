@@ -30,6 +30,7 @@ type
     function GetExpandedRAM: Boolean;
     function ROM(Bank, Offset, Size: Integer): Byte; inline;
   public
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const Data: TBytes; MapperHint: Integer = -1);
     procedure Reset;
     function Read(Address: Word): Byte;
@@ -47,6 +48,9 @@ type
 function SMSAutoPAL(const Data: TBytes; const RomName: string): Boolean;
 
 implementation
+
+uses
+  Core.Emulation.Types;
 
 type
   TSMSRegionEntry = record
@@ -604,6 +608,11 @@ begin
   State.Field(FControl, SizeOf(FControl));
   State.Field(FGame, SizeOf(FGame));
   State.Field(FDirty, SizeOf(FDirty));
+end;
+
+function TSMSCartridge.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  Result := ReadAchievementMemoryBlock(Address, Buffer, Count, @FRAM, SizeOf(FRAM));
 end;
 
 end.

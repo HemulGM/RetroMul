@@ -37,6 +37,7 @@ type
     procedure EndAudioFrame; virtual; abstract;
     procedure RunAudio; virtual; abstract;
     procedure SerializeAudio(State: TStateArchive); virtual; abstract;
+    function ReadAchievementSoundRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal; virtual; abstract;
     function UsesMapper: Boolean; virtual;
     function HasMCU: Boolean; virtual;
     procedure VerticalBlank; virtual;
@@ -67,6 +68,7 @@ type
     destructor Destroy; override;
     procedure Reset; virtual;
     procedure RunFrame;
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     function AudioSamples: TArray<SmallInt>; virtual; abstract;
     function FrameRate: Double; virtual; abstract;
     function ReadWord(Address: Cardinal): Word;
@@ -565,6 +567,33 @@ begin
   SerializeAudio(State);
   if (FTime < 0) or (FFrameNumber < 0) then
     raise EReadError.Create('Invalid arcade clock state');
+end;
+
+function TSegaArcadeConsole.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+
+  procedure ReadBlock(Base: Cardinal; Memory: PByte; Size: Cardinal);
+  begin
+    if (Address < Base) or (Address - Base >= Size) or (Count = 0) then
+      Exit;
+    var Read := ReadAchievementMemoryBlock(Address - Base, Buffer, Count, Memory, Size);
+    Inc(Address, Read);
+    Inc(Buffer, Read);
+    Dec(Count, Read);
+    Inc(Result, Read);
+  end;
+
+begin
+  Result := 0;
+  if (Buffer = nil) or (Count = 0) then
+    Exit;
+  // FBNeo System16MemIndex, from RamStart. The 68000 buffers use host word order.
+  ReadBlock($00000, @FRAM, SizeOf(FRAM));
+  ReadBlock($04000, @Video.TileRAM, SizeOf(Video.TileRAM));
+  ReadBlock($14000, @Video.TextRAM, SizeOf(Video.TextRAM));
+  ReadBlock($15000, @Video.SpriteRAM, $800);
+  ReadBlock($15800, @Video.PaletteRAM, SizeOf(Video.PaletteRAM));
+  if (Address >= $16800) and (Count <> 0) then
+    Inc(Result, ReadAchievementSoundRAM(Address - $16800, Buffer, Count));
 end;
 
 end.

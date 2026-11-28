@@ -3,9 +3,9 @@
 interface
 
 uses
-  Core.Input.Keyboard, System.SysUtils, System.Classes, System.IniFiles,
-  Core.Storage, Core.Emulation, Core.InputConfig, SG1000.Console,
-  SG1000.Emulation;
+  Core.Emulation.Types, Core.Input.Keyboard, System.SysUtils, System.Classes,
+  System.IniFiles, Core.Storage, Core.Emulation, Core.InputConfig,
+  SG1000.Console, SG1000.Emulation;
 
 type
   TSGButton = (Up, Down, Left, Right, A, B, Start);
@@ -48,7 +48,7 @@ type
     property Options: TSGOptions read FOptions;
   end;
 
-  TSGCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationKeyboard)
+  TSGCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationKeyboard, IEmulationAchievements)
   private
     FThread: TSGWorker;
     FData, FBootROM: TBytes;
@@ -65,6 +65,8 @@ type
     FPaused: Boolean;
     procedure ApplySettings;
   public
+    function AchievementROM: TBytes;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     procedure ApplyLiveSettings;
     constructor Create(const FileName: string); overload;
     constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; SC3000: Boolean = False; ModelHint: Integer = -1); overload;
@@ -101,8 +103,9 @@ type
 implementation
 
 uses
-  RM.Platforms.SG1000, RM.Platforms.SMS, System.IOUtils, System.UITypes, System.Hash, SG1000.Cartridge, SG1000.Disk,
-  SMS.Cartridge, SMS.Firmware, System.Math;
+  RM.Platforms.SG1000, RM.Platforms.SMS, System.IOUtils, System.UITypes,
+  System.Hash, SG1000.Cartridge, SG1000.Disk, SMS.Cartridge, SMS.Firmware,
+  System.Math;
 
 const
   KeyNames: array[TSGButton] of string = ('Up', 'Down', 'Left', 'Right', 'A', 'B', 'Start');
@@ -600,6 +603,17 @@ begin
     raise EInvalidOpException.Create('Emulation worker is not running');
 
   FThread.LoadSnapshot(Name);
+end;
+
+function TSGCoreAdapter.AchievementROM: TBytes;
+begin
+  Result := FData;
+end;
+
+procedure TSGCoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  if FThread <> nil then
+    FThread.SetAchievementObserver(Observer);
 end;
 
 end.

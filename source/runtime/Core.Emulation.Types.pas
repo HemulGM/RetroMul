@@ -205,6 +205,7 @@ type
   IEmulationAchievementMedia = interface
     ['{136E8028-531E-4361-A92E-BDFBC5A3508B}']
     function GetConsoleId: Cardinal;
+    function IsDisc: Boolean;
     function AcceptsROM(const SourceName: string; Input: TStream): Boolean;
     property ConsoleId: Cardinal read GetConsoleId;
   end;
@@ -213,6 +214,12 @@ type
     ['{0044A383-D20C-424A-9E10-7719C0304C41}']
     function AchievementROM: TBytes;
     procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+  end;
+
+  // A loaded arcade set identified by its ROM catalog, including split sets.
+  IEmulationArcadeAchievements = interface
+    ['{331F0513-73F6-4DFC-8C01-AA644D91FF8F}']
+    function AchievementSetName: string;
   end;
 
   IEmulationSnapshotLocation = interface
@@ -294,7 +301,36 @@ type
 // The pool may overwrite an array only while no consumer owns it.
 function EmulationBufferReferences(Data: Pointer): Integer; inline;
 
+// Read a bounded byte range without invoking the guest bus or its devices.
+function ReadAchievementMemoryBlock(Address: Cardinal; Buffer: PByte; Count: Cardinal; Memory: PByte; Size: Cardinal; ByteXor: Cardinal = 0): Cardinal; overload;
+
+function ReadAchievementMemoryBlock(Address: Cardinal; Buffer: PByte; Count: Cardinal; const Memory: TBytes): Cardinal; overload;
+
 implementation
+
+function ReadAchievementMemoryBlock(Address: Cardinal; Buffer: PByte; Count: Cardinal; Memory: PByte; Size, ByteXor: Cardinal): Cardinal;
+begin
+  if (Address >= Size) or (Buffer = nil) or (Memory = nil) or (Count = 0) then
+    Exit(0);
+  Result := Size - Address;
+  if Count < Result then
+    Result := Count;
+  if ByteXor = 0 then
+    Move((Memory + Address)^, Buffer^, Result)
+  else
+    for var I: Cardinal := 0 to Result - 1 do
+    begin
+      var Index := (Address + I) xor ByteXor;
+      if Index >= Size then
+        Exit(I);
+      Buffer[I] := Memory[Index];
+    end;
+end;
+
+function ReadAchievementMemoryBlock(Address: Cardinal; Buffer: PByte; Count: Cardinal; const Memory: TBytes): Cardinal;
+begin
+  Result := ReadAchievementMemoryBlock(Address, Buffer, Count, Pointer(Memory), Length(Memory));
+end;
 
 function TEmulatorInput.PortButtons(Port: Integer): TEmulatorButtons;
 begin

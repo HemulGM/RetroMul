@@ -30,7 +30,7 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads, RM.Settings.Catalog, RM.Platforms.MSX.Keyboard,
+  RA.Console, RM.Input.Gamepads, RM.Settings.Catalog, RM.Platforms.MSX.Keyboard,
   Core.PlatformServices, Core.Snapshots, System.StrUtils, Core.Emulation,
   Core.Platforms, Core.Platforms.MSX.Adapter, MSX.Cartridge,
   RM.Platforms.MSX.Settings, RM.Platforms.Presentation, RM.Gamepad.Factory,
@@ -295,6 +295,9 @@ begin
   RegisterCore;
   RegisterClient;
   FRegistered := True;
+  RegisterPlatformAchievementMedia('msx1', RAConsoleMSX, TPlatformRegistry.Require('msx1').Extensions);
+  RegisterPlatformAchievementMedia('msx2', RAConsoleMSX, TPlatformRegistry.Require('msx2').Extensions);
+  RegisterPlatformAchievementMedia('msx2plus', RAConsoleMSX, TPlatformRegistry.Require('msx2plus').Extensions);
 end;
 
 end.

@@ -98,6 +98,7 @@ type
     function ReserveSCUDMA(At: Int64; Address: Cardinal; Size: Integer; Writing: Boolean): Int64;
     function DMAReady(Address: Cardinal; Size: Integer; Writing: Boolean): Boolean;
   public
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const BIOS: TBytes; Region: Byte = 4; PAL: Boolean = False; Disc: TCDDisc = nil; RAMCart: Integer = 0; const CartROM: TBytes = nil);
     destructor Destroy; override;
     procedure Reset;
@@ -141,7 +142,7 @@ type
 implementation
 
 uses
-  System.Math, System.Hash, Saturn.SCUDSP;
+  Core.Emulation.Types, System.Math, System.Hash, Saturn.SCUDSP;
 
 {$Q+}{$R+}
 
@@ -1402,6 +1403,13 @@ begin
   Archive.Field(FPixels[0], Length(FPixels) * SizeOf(TAlphaColor));
   if Archive.Loading then
     FBackupDirty := True;
+end;
+
+function TSaturnConsole.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  if Address < $100000 then
+    Exit(ReadAchievementMemoryBlock(Address, Buffer, Count, @FWorkLow, SizeOf(FWorkLow)));
+  Result := ReadAchievementMemoryBlock(Address - $100000, Buffer, Count, @FWorkHigh, SizeOf(FWorkHigh));
 end;
 
 end.

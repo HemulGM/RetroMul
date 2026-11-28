@@ -43,6 +43,7 @@ type
     function ReadPort(Address: Byte): Byte;
     procedure WritePort(Address, Value: Byte);
     procedure SerializeState(State: TStateArchive);
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     property SampleActivity: Integer read FSampleActivity;
     property Reply: Byte read FReply;
     property CPU: TZ80State read FCPU;
@@ -52,7 +53,7 @@ type
 implementation
 
 uses
-  System.Math, System.Classes, S16.Crypto;
+  System.Math, System.Classes, S16.Crypto, Core.Emulation.Types;
 
 function ReadZ(User: Pointer; Address: Cardinal): Cardinal;
 begin
@@ -585,6 +586,11 @@ begin
   if (FTime < 0) or (FUPDStep < 0) or (FUPDStep > 15) or
     (FUPDState < 0) or (FUPDState > 12) or (FBank < 0) then
     raise EReadError.Create('Invalid System 16 sound state');
+end;
+
+function TS16Sound.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  Result := ReadAchievementMemoryBlock(Address, Buffer, Count, @FRAM, SizeOf(FRAM));
 end;
 
 end.

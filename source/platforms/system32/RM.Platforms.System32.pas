@@ -20,12 +20,13 @@ type
 implementation
 
 uses
-  System.Classes, Core.Emulation, Core.Platforms, Core.Snapshots, S32.RomSets,
-  Core.Platforms.System32.Adapter, RM.Gamepad.Factory, RM.Input.Gamepads,
-  RM.Input.Runtime, RM.Platforms.Presentation, RM.Platforms.System32.Gamepads,
-  RM.Settings.Catalog, RM.Settings.Platform, RM.Session.Runtime,
-  RM.Window.Layout, RM.Settings.Runtime, RM.ControlsHelp.Content,
-  RM.Settings.Callouts, RM.Settings.Devices, RM.Settings.Builder;
+  Core.PlatformServices, RA.Console, System.Classes, Core.Emulation,
+  Core.Platforms, Core.Snapshots, S32.RomSets, Core.Platforms.System32.Adapter,
+  RM.Gamepad.Factory, RM.Input.Gamepads, RM.Input.Runtime,
+  RM.Platforms.Presentation, RM.Platforms.System32.Gamepads, RM.Settings.Catalog,
+  RM.Settings.Platform, RM.Session.Runtime, RM.Window.Layout,
+  RM.Settings.Runtime, RM.ControlsHelp.Content, RM.Settings.Callouts,
+  RM.Settings.Devices, RM.Settings.Builder;
 
 const
   PlatformIcon =
@@ -81,6 +82,8 @@ begin
         Result := TS32CoreAdapter.Create(Context.Stream, Context.Storage, Context.RomName);
       end);
     Result.Format.SystemId := 'system32';
+    if RomSet.ArchiveProgramMatched then
+      Result.AchievementSetName := RomSet.Name;
   end;
 end;
 
@@ -120,8 +123,8 @@ begin
   var Registration := TEmulationCoreRegistration.Create('System32', []);
   Registration.Add(TCoreLoadStage.Container, 20, Recognize);
   RegisterEmulationCore(Registration);
-  var Policy := TSnapshotPolicy.Create(10);
-  Policy.AcceptedVersions := [8, 9];
+  var Policy := TSnapshotPolicy.Create(11);
+  Policy.AcceptedVersions := [8, 9, 10];
   RegisterSnapshotPolicy('system32', Policy);
   RegisterSettingsPlatform('system32', TSystem32Settings,
     'Use a complete, recognized arcade ROM set for the matching board. Keep the ROM archive ' +
@@ -155,6 +158,7 @@ begin
   RegisterPlatformInput('system32', Definition);
   RegisterPlatformGamepads('system32', TGamepadSystem32, []);
   RegisterPlatformPresentation('system32', 'system32', PlatformIcon);
+  RegisterPlatformAchievementMedia('system32', RAConsoleArcade, ['.zip', '.7z']);
   FRegistered := True;
 end;
 

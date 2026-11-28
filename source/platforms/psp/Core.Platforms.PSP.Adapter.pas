@@ -3,10 +3,10 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.IniFiles, System.SyncObjs,
-  Core.Storage, Core.Emulation, PSP.Types, PSP.Media, PSP.Console,
-  RM.Vulkan.TexScale, Core.Platforms.PSP.Playback, Core.Platforms.PSP.Renderer,
-  PSP.UMDVideo;
+  Core.Emulation.Types, Core.Snapshots, System.SysUtils, System.Classes,
+  System.IniFiles, System.SyncObjs, Core.Storage, Core.Emulation, PSP.Types,
+  PSP.Media, PSP.Console, RM.Vulkan.TexScale, Core.Platforms.PSP.Playback,
+  Core.Platforms.PSP.Renderer, PSP.UMDVideo;
 
 type
   TPSPKeyMap = array[TEmulatorButton] of UInt32;
@@ -46,7 +46,7 @@ type
     property FontDirectory: string read FFontDirectory write FFontDirectory;
   end;
 
-  TPSPWorker = class(TThread)
+  TPSPWorker = class(TAchievementWorker)
   private
     FLock: TCriticalSection;
     FWake: TEvent;
@@ -92,7 +92,7 @@ type
     procedure CancelSnapshot;
   end;
 
-  TPSPCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationSnapshotLocation, IEmulationSnapshotOperation)
+  TPSPCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationSnapshotLocation, IEmulationSnapshotOperation, IEmulationAchievements)
   private
     FProgram: TPSPProgram;
     FStorage: IStorage;
@@ -106,6 +106,8 @@ type
     FSnapshotDirectory: string;
     procedure Configure;
   public
+    function AchievementROM: TBytes;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; const ImageName: string = '');
     destructor Destroy; override;
     function GetName: string;
@@ -141,7 +143,7 @@ implementation
 uses
   Core.PerformanceHints, Core.MediaArchive, System.UITypes, System.Diagnostics,
   System.Math, Core.Platforms, Core.Platforms.PSP.Archive, PSP.Settings,
-  Core.Snapshots, Core.SavePaths;
+  Core.SavePaths;
 
 const
   KeyNames: array[TEmulatorButton] of string =
@@ -346,6 +348,7 @@ begin
           var PreviousRenderer := Renderer;
           FConsole := Candidate;
           Candidate := nil;
+          RestoreAchievementProgress(FConsole.SnapshotAchievementProgress);
           Renderer := NewRenderer;
           NewRenderer := nil;
           try
@@ -379,7 +382,7 @@ begin
           finally
             FLock.Release;
           end;
-        end);
+        end, CaptureAchievementProgress);
       try
         if Length(FFrame.Pixels) > 0 then
           SaveSnapshotPreview(Path, FFrame.Width, FFrame.Height, FFrame.Width, @FFrame.Pixels[0], FStorage);
@@ -538,6 +541,11 @@ end;
 
 procedure TPSPWorker.Execute;
 begin
+  var ReadAchievementMemory: TEmulationAchievementRead :=
+    function(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal
+    begin
+      Result := FConsole.ReadAchievementRAM(Address, Buffer, Count);
+    end;
   if Terminated then
     Exit;
   var TimerSet := TEmulationPerformanceHints.BeginTimerPeriod(1);
@@ -586,7 +594,10 @@ begin
           var Snapshot := ProcessSnapshot(Renderer);
           var Restart := Reset or Snapshot or Paused or (AudioEnabled <> WasEnabled);
           if Reset then
+          begin
             FConsole.Reset;
+            ResetAchievements;
+          end;
           if Restart and (FAudio <> nil) and not AudioFailed then
           try
             FAudio.Clear;
@@ -627,6 +638,7 @@ begin
           var Frame: TEmulatorFrame;
           FConsole.AudioOutputEnabled := AudioEnabled and not AudioFailed;
           FConsole.RunFrame(Frame);
+          AchievementFrame(ReadAchievementMemory);
           // Frames emulated per host second, not the PSP's nominal refresh rate.
           Frame.FramesPerSecond := FRate.Update(Frame.FrameNumber, TStopwatch.GetTimeStamp, TStopwatch.Frequency);
           if AudioEnabled and not AudioFailed then
@@ -975,6 +987,17 @@ end;
 function TPSPCoreAdapter.IsPaused: Boolean;
 begin
   Result := FPaused;
+end;
+
+function TPSPCoreAdapter.AchievementROM: TBytes;
+begin
+  Result := nil;
+end;
+
+procedure TPSPCoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  if FWorker <> nil then
+    FWorker.SetAchievementObserver(Observer);
 end;
 
 end.

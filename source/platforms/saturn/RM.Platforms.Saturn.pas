@@ -30,12 +30,13 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads, RM.Settings.Catalog, Core.Snapshots, System.StrUtils,
-  Core.Emulation, Core.Platforms, Core.Platforms.Saturn.Adapter,
-  RM.Platforms.Saturn.Settings, RM.Platforms.Presentation, RM.Gamepad.Factory,
-  RM.Platforms.Saturn.Gamepads, RM.Input.Runtime, RM.Session.Runtime,
-  RM.Window.Layout, RM.Settings.Runtime, RM.ControlsHelp.Content,
-  RM.Settings.Callouts, RM.Settings.Devices, System.Classes;
+  RA.Console, Core.PlatformServices, RM.Input.Gamepads, RM.Settings.Catalog,
+  Core.Snapshots, System.StrUtils, Core.Emulation, Core.Platforms,
+  Core.Platforms.Saturn.Adapter, RM.Platforms.Saturn.Settings,
+  RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Platforms.Saturn.Gamepads,
+  RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
+  RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
+  System.Classes;
 
 const
   PlatformIcon = 'M29.6000003814697,46.7000007629395 C28.8999996185303,46.6000022888184 28.3999996185303,46.1000022888184 28.3000011444092,45.5 L28,41.7999992370605 C28,41.5 27.7000007629395,41.2999992370605 27.3999996185303,' +
@@ -195,6 +196,7 @@ begin
   RegisterCore;
   RegisterClient;
   FRegistered := True;
+  RegisterPlatformAchievementMedia('saturn', RAConsoleSaturn, TPlatformRegistry.Require('saturn').Extensions, True);
 end;
 
 end.

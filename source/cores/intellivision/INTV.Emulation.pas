@@ -9,7 +9,7 @@ uses
   Core.Microphone;
 
 type
-  TIntvWorker = class(TThread)
+  TIntvWorker = class(TAchievementWorker)
   private
     FInputPortsCommand: TInputPortsCommand;
     function GetInputPorts: TCoreInputPorts;
@@ -254,6 +254,11 @@ var
   Deadline: Double;
   CoreId: string;
 begin
+  var ReadAchievementMemory: TEmulationAchievementRead :=
+    function(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal
+    begin
+      Result := Console.ReadAchievementRAM(Address, Buffer, Count);
+    end;
   Console := nil;
   Audio := nil;
   Hints := nil;
@@ -311,6 +316,11 @@ begin
               procedure(State: TStateArchive)
               begin
                 Console.SerializeState(State);
+                // Keyboard tape data already owns the optional snapshot tail.
+                if Console.KeyboardComponent = nil then
+                  TransferAchievementProgress(State)
+                else if State.Loading then
+                  RestoreAchievementProgress(nil);
               end;
             if Loading then
             begin
@@ -364,6 +374,7 @@ begin
         begin
           Hints.Pause;
           Console.Reset;
+          ResetAchievements;
           if Audio <> nil then
             Audio.Clear;
           Deadline := TStopwatch.GetTimeStamp;
@@ -420,6 +431,7 @@ begin
         else
           Console.SetKeyboardMicrophone(nil);
         Console.RunFrame;
+        AchievementFrame(ReadAchievementMemory);
         if (Console.KeyboardComponent <> nil) and (Console.FrameNumber mod 60 = 0) then
           Console.KeyboardComponent.Peripherals.FlushWhenIdle;
         if (JLP <> nil) and (FlashPath <> '') and JLP.Dirty then

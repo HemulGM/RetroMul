@@ -77,7 +77,7 @@ uses
   FMX.OpenDialog, Core.Storage, Core.EmulatorFactory, Core.InputConfig,
   Core.Platforms, Core.CD.Physical, RM.Gamepad, RM.FrameUpload, RM.Dialogs,
   RM.Styles, Core.SavePaths, Core.Emulation.Types, Core.PlatformServices,
-  NES.Types, RA.Account, RA.Hash, RA.Runtime, RA.Session;
+  NES.Types, RA.Account, RA.Console, RA.Hash, RA.Runtime, RA.Session;
 
 function NewLoadCancellation(out CancelLoad: TProc): TProc;
 begin
@@ -210,13 +210,41 @@ begin
   var Media := PlatformAchievementMedia(FState.Session.Emulation.SystemId);
   if Media = nil then
     Exit;
-  var Console := TRARomConsole(Media.ConsoleId);
+  var ConsoleId := Media.ConsoleId;
+  var SystemId := FState.Session.Emulation.SystemId;
+  var Location := FState.Session.RomLocation;
+  var Storage := FState.Session.Storage;
+  var IsDisc := Media.IsDisc;
 
   DisconnectAchievements;
   FAchievementCredentials := Credentials;
-  var ROM := Core.AchievementROM;
-  if Length(ROM) = 0 then
-    Exit;
+  var ROM: TBytes;
+  var ArcadeDigest := '';
+  var HashFromFile := IsDisc;
+  if ConsoleId = RAConsoleArcade then
+  begin
+    var Arcade: IEmulationArcadeAchievements;
+    if not Supports(FState.Session.Emulation, IEmulationArcadeAchievements, Arcade) then
+      Exit;
+    var SetName := Arcade.AchievementSetName;
+    if SetName <> '' then
+    begin
+      if not TryHashRAArcadeSet(SystemId, SetName, ArcadeDigest) then
+        Exit;
+    end
+    else
+    begin
+      HashFromFile := (SystemId = 'neogeo') and SameText(ExtractFileExt(Location), '.neo');
+      if not HashFromFile then
+        Exit;
+    end;
+  end
+  else if not IsDisc then
+  begin
+    ROM := Core.AchievementROM;
+    if Length(ROM) = 0 then
+      Exit;
+  end;
   var Alive: TFunc<Boolean> := FState.Session.CallbackAlive;
   var Generation := FAchievementGeneration;
   var SharePresence := FAchievementRichPresence;
@@ -228,7 +256,18 @@ begin
       ReasonKey: string;
     begin
       try
-        Connection := OpenRAConnection(Console, ROM, Credentials, RARetroMulUserAgent, SharePresence);
+        if ArcadeDigest <> '' then
+          Connection := OpenRAHashedConnection(ConsoleId, ArcadeDigest, Credentials, RARetroMulUserAgent, SharePresence)
+        else if HashFromFile then
+        begin
+          var Digest: string;
+          if TryHashRAFile(Storage, SystemId, Location, Media, Digest) then
+            Connection := OpenRAHashedConnection(ConsoleId, Digest, Credentials, RARetroMulUserAgent, SharePresence)
+          else
+            ReasonKey := 'ROM not recognized.';
+        end
+        else
+          Connection := OpenRAConnection(TRARomConsole(ConsoleId), ROM, Credentials, RARetroMulUserAgent, SharePresence);
       except
         on E: Exception do
           ReasonKey := AchievementSessionErrorReason(E);

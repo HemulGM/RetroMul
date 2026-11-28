@@ -23,14 +23,14 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads, System.SysUtils, System.Classes, System.UITypes,
-  Core.Emulation, Core.Platforms, Core.Platforms.Jaguar.Adapter, Jaguar.Jerry,
-  Jaguar.CD, Core.CD.Disc, Core.Snapshots, RM.Settings.Catalog,
-  RM.Platforms.Jaguar.Settings, RM.Platforms.Jaguar.Gamepads,
-  RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Input.Runtime,
-  RM.Platforms.Jaguar.Input, RM.Session.Runtime, RM.Settings.Runtime,
-  RM.Window.Layout, RM.ControlsHelp.Content, RM.Settings.Callouts,
-  RM.Settings.Devices;
+  RA.Console, Core.PlatformServices, RM.Input.Gamepads, System.SysUtils,
+  System.Classes, System.UITypes, Core.Emulation, Core.Platforms,
+  Core.Platforms.Jaguar.Adapter, Jaguar.Jerry, Jaguar.CD, Core.CD.Disc,
+  Core.Snapshots, RM.Settings.Catalog, RM.Platforms.Jaguar.Settings,
+  RM.Platforms.Jaguar.Gamepads, RM.Platforms.Presentation, RM.Gamepad.Factory,
+  RM.Input.Runtime, RM.Platforms.Jaguar.Input, RM.Session.Runtime,
+  RM.Settings.Runtime, RM.Window.Layout, RM.ControlsHelp.Content,
+  RM.Settings.Callouts, RM.Settings.Devices;
 
 const
   PlatformIcon = '''
@@ -216,6 +216,8 @@ begin
     RegisterPlatformInput(Id, Definition);
   end;
   FRegistered := True;
+  RegisterPlatformAchievementMedia('jaguar', RAConsoleAtariJaguar, TPlatformRegistry.Require('jaguar').Extensions);
+  RegisterPlatformAchievementMedia('jaguarcd', RAConsoleAtariJaguarCD, TPlatformRegistry.Require('jaguarcd').Extensions, True);
 end;
 
 end.

@@ -3,8 +3,9 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.IniFiles, Core.Storage, Core.Emulation,
-  PCE.Cartridge, PCE.Emulation, Core.CD.Disc, Core.InputConfig;
+  Core.Emulation.Types, System.SysUtils, System.Classes, System.IniFiles,
+  Core.Storage, Core.Emulation, PCE.Cartridge, PCE.Emulation, Core.CD.Disc,
+  Core.InputConfig;
 
 type
   TPCEKeyMap = array[TEmulatorButton] of UInt32;
@@ -28,12 +29,12 @@ type
     property Keys2: TPCEKeyMap read FKeys2;
   end;
 
-  TPCECoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics)
+  TPCECoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationAchievements)
   private
     FCartridge: TPCECartridge;
     FDisc: TCDDisc;
     FModel: TPCEModel;
-    FIdentity: TBytes;
+    FIdentity, FAchievementROM: TBytes;
     FSystemId: string;
     FThread: TPCEWorker;
     FStorage: IStorage;
@@ -44,6 +45,8 @@ type
     FError, FSnapshotDirectory, FSaveFile: string;
     procedure ApplySettings;
   public
+    function AchievementROM: TBytes;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     procedure ApplyLiveSettings;
     constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; Disc: TCDDisc = nil; const SourceHint: string = '');
     destructor Destroy; override;
@@ -163,6 +166,7 @@ begin
   else
   begin
     var Data := ReadRomData(Stream);
+    FAchievementROM := Data;
     FCartridge := TPCECartridge.Create(Data, SourceName);
     if FCartridge.SuperGrafx then
     begin
@@ -393,6 +397,19 @@ end;
 function TPCECoreAdapter.IsPaused: Boolean;
 begin
   Result := FPaused;
+end;
+
+function TPCECoreAdapter.AchievementROM: TBytes;
+begin
+  if FDisc <> nil then
+    Exit(nil);
+  Result := FAchievementROM;
+end;
+
+procedure TPCECoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  if FThread <> nil then
+    FThread.SetAchievementObserver(Observer);
 end;
 
 end.

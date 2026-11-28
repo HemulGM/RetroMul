@@ -218,6 +218,7 @@ type
     RunIOPModules: Boolean;
     // Modules the EE asked the IOP to load (diagnostics).
     ModuleLog: TStringList;
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const Config: TPS2ConsoleConfig);
     destructor Destroy; override;
     procedure Reset;
@@ -247,7 +248,8 @@ type
 implementation
 
 uses
-  System.Math, System.Diagnostics, System.SyncObjs, PS2.IOP.Loader, HW.HostFPU;
+  Core.Emulation.Types, System.Math, System.Diagnostics, System.SyncObjs,
+  PS2.IOP.Loader, HW.HostFPU;
 
 const
   // EE cycles per IOP slice while IOP code has work.
@@ -1995,6 +1997,13 @@ begin
       IOPMachine.SetLineCycles(FLineCycles);
     end;
   end;
+end;
+
+function TPS2Console.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  if Address < PS2RAMSize then
+    Exit(ReadAchievementMemoryBlock(Address, Buffer, Count, Bus.RAM, PS2RAMSize));
+  Result := ReadAchievementMemoryBlock(Address - PS2RAMSize, Buffer, Count, CPU.Scratchpad, $4000);
 end;
 
 end.

@@ -3,8 +3,8 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.IniFiles, Core.Storage, Core.Emulation,
-  Core.InputConfig, SNES.Console, SNES.Emulation;
+  Core.Emulation.Types, System.SysUtils, System.Classes, System.IniFiles,
+  Core.Storage, Core.Emulation, Core.InputConfig, SNES.Console, SNES.Emulation;
 
 type
   TSnesKeyMap = array[TSnesButton] of UInt32;
@@ -26,10 +26,10 @@ type
     property Keys2: TSnesKeyMap read FKeys2;
   end;
 
-  TSnesCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics)
+  TSnesCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationAchievements)
   private
     FThread: TSnesWorker;
-    FData, FFirmware, FSufamiSlotA: TBytes;
+    FData, FFirmware, FSufamiSlotA, FAchievementROM: TBytes;
     FSnapshotDirectory: string;
     FStorage: IStorage;
     FSavePath, FError: string;
@@ -39,9 +39,11 @@ type
     FPaused, FCropOverscan: Boolean;
     procedure ApplySettings;
   public
+    function AchievementROM: TBytes;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     procedure ApplyLiveSettings;
     constructor Create(const FileName: string); overload;
-    constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string); overload;
+    constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; const SourceROM: TBytes = nil); overload;
     destructor Destroy; override;
     function GetSystemId: string;
     function GetName: string;
@@ -186,7 +188,7 @@ begin
   Result := SnesResourceFirmware('stbios');
 end;
 
-constructor TSnesCoreAdapter.Create(Stream: TStream; const Storage: IStorage; const RomName: string);
+constructor TSnesCoreAdapter.Create(Stream: TStream; const Storage: IStorage; const RomName: string; const SourceROM: TBytes);
 var
   Cart: TSnesCartridge;
   Config: TSnesConfig;
@@ -196,7 +198,11 @@ begin
   FStorage := Storage;
   if FStorage = nil then
     FStorage := TStorage.Default;
-  var Data := SNES.RomFormat.LoadImage(ReadRomData(Stream));
+  var Image := ReadRomData(Stream);
+  FAchievementROM := SourceROM;
+  if Length(FAchievementROM) = 0 then
+    FAchievementROM := Image;
+  var Data := SNES.RomFormat.LoadImage(Image);
   var CopierSize: Integer;
   if DetectSufamiTurbo(Data, CopierSize) = TSufamiImage.Cartridge then
   begin
@@ -461,6 +467,17 @@ begin
     raise EInvalidOpException.Create('Emulation worker is not running');
 
   FThread.LoadSnapshot(Name);
+end;
+
+function TSnesCoreAdapter.AchievementROM: TBytes;
+begin
+  Result := FAchievementROM;
+end;
+
+procedure TSnesCoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  if FThread <> nil then
+    FThread.SetAchievementObserver(Observer);
 end;
 
 end.

@@ -21,13 +21,13 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads, System.SysUtils, System.Classes, Core.Platforms,
-  Core.Emulation, Core.Platforms.NDS.Adapter, NDS.Cartridge, RM.Settings.Catalog,
-  RM.Platforms.NDS.Settings, RM.Platforms.NDS.Input, RM.Input, RM.Input.Runtime,
-  RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
-  RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
-  RM.Gamepad.Factory, RM.Platforms.SNES.Gamepads, RM.Platforms.Presentation,
-  Core.Snapshots;
+  RA.Console, Core.PlatformServices, RM.Input.Gamepads, System.SysUtils,
+  System.Classes, Core.Platforms, Core.Emulation, Core.Platforms.NDS.Adapter,
+  NDS.Cartridge, RM.Settings.Catalog, RM.Platforms.NDS.Settings,
+  RM.Platforms.NDS.Input, RM.Input, RM.Input.Runtime, RM.Session.Runtime,
+  RM.Window.Layout, RM.Settings.Runtime, RM.ControlsHelp.Content,
+  RM.Settings.Callouts, RM.Settings.Devices, RM.Gamepad.Factory,
+  RM.Platforms.SNES.Gamepads, RM.Platforms.Presentation, Core.Snapshots;
 
 const
   PlatformIcon =
@@ -163,6 +163,7 @@ begin
   RegisterPlatformGamepads('nds', TGamepadSNESStandart, []);
   RegisterPlatformPresentation('nds', 'nds', PlatformIcon);
   FRegistered := True;
+  RegisterPlatformAchievementMedia('nds', RAConsoleNintendoDS, TPlatformRegistry.Require('nds').Extensions);
 end;
 
 end.

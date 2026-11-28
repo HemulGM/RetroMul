@@ -51,6 +51,7 @@ type
     procedure UpdatePeripheralLines;
     function GetFPS: Double;
   public
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const Data: TBytes; Model: TMSXModel; MapperHint: Integer = -1; const BIOS: TBytes = nil; const SubROM: TBytes = nil);
     destructor Destroy; override;
     procedure Reset;
@@ -795,6 +796,11 @@ begin
       (FSamplePhase < 0) or (FSamplePhase >= 3579545) then
       raise EReadError.Create('Invalid MSX machine state');
   end;
+end;
+
+function TMSXConsole.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  Result := ReadAchievementMemoryBlock(Address, Buffer, Count, @FRAM, SizeOf(FRAM));
 end;
 
 end.

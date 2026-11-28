@@ -3,8 +3,9 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.IniFiles, Core.Storage, Core.Emulation,
-  Core.InputConfig, Core.Microphone, MD.Console, MD.Emulation;
+  Core.Emulation.Types, System.SysUtils, System.Classes, System.IniFiles,
+  Core.Storage, Core.Emulation, Core.InputConfig, Core.Microphone, MD.Console,
+  MD.Emulation;
 
 type
   TMDKeyMap = array[TMDButton] of UInt32;
@@ -30,10 +31,10 @@ type
     property Keys4: TMDKeyMap read FKeys4;
   end;
 
-  TMDCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationMicrophoneInput)
+  TMDCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationMicrophoneInput, IEmulationAchievements)
   private
     FThread: TMDWorker;
-    FData: TBytes;
+    FData, FAchievementROM: TBytes;
     FDiscLocation, FDisplayName, FSystemId, FCartridgeExtension: string;
     FMDConfig: TMDConfig;
     FMicrophone: IMicrophoneSource;
@@ -48,9 +49,11 @@ type
     FPaused: Boolean;
     procedure ApplySettings;
   public
+    function AchievementROM: TBytes;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     procedure ApplyLiveSettings;
     constructor Create(const FileName: string); overload;
-    constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; IsCD: Boolean = False; const ImageName: string = ''); overload;
+    constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; IsCD: Boolean = False; const ImageName: string = ''; const SourceROM: TBytes = nil); overload;
     destructor Destroy; override;
     function GetSystemId: string;
     function GetName: string;
@@ -163,7 +166,7 @@ begin
   end;
 end;
 
-constructor TMDCoreAdapter.Create(Stream: TStream; const Storage: IStorage; const RomName: string; IsCD: Boolean; const ImageName: string);
+constructor TMDCoreAdapter.Create(Stream: TStream; const Storage: IStorage; const RomName: string; IsCD: Boolean; const ImageName: string; const SourceROM: TBytes);
 var
   Cart: TMDCartridge;
   Config: TMDConfig;
@@ -192,6 +195,9 @@ begin
   else
   begin
     var Data := ReadRomData(Stream);
+    FAchievementROM := SourceROM;
+    if Length(FAchievementROM) = 0 then
+      FAchievementROM := Data;
     var Encoding: string;
     MD.RomFormat.TryDetectEncoding(Data, Encoding);
     var SourceName := ImageName;
@@ -482,6 +488,19 @@ begin
     raise EInvalidOpException.Create('Emulation worker is not running');
 
   FThread.LoadSnapshot(Name);
+end;
+
+function TMDCoreAdapter.AchievementROM: TBytes;
+begin
+  if FDiscLocation <> '' then
+    Exit(nil);
+  Result := FAchievementROM;
+end;
+
+procedure TMDCoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  if FThread <> nil then
+    FThread.SetAchievementObserver(Observer);
 end;
 
 end.

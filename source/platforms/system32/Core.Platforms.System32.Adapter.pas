@@ -3,9 +3,9 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.SyncObjs, System.IniFiles,
-  System.Types, Core.Storage, Core.Emulation, Core.InputConfig, S32.Cartridge,
-  S32.RomSets, Core.Snapshots, Core.CD.Disc, PCM.Audio;
+  Core.Emulation.Types, System.SysUtils, System.Classes, System.SyncObjs,
+  System.IniFiles, System.Types, Core.Storage, Core.Emulation, Core.InputConfig,
+  S32.Cartridge, S32.RomSets, Core.Snapshots, Core.CD.Disc, PCM.Audio;
 
 type
   TS32Keys = array[TEmulatorButton] of UInt32;
@@ -35,7 +35,7 @@ type
     procedure Submit(Audio: TPCMAudio; const Samples: TArray<SmallInt>; const Format: TPCMAudioFormat);
   end;
 
-  TS32Worker = class(TThread)
+  TS32Worker = class(TAchievementWorker)
   private
     FCart: TS32Cartridge;
     FDisc: TCDDisc;
@@ -71,7 +71,7 @@ type
     function TakeError: string;
   end;
 
-  TS32CoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationVirtualControls, IEmulationInputPorts, IEmulationAudioDiagnostics, IEmulationSnapshotLocation, IEmulationPointerInput, IEmulationMouseInput, IEmulationVideoRegions)
+  TS32CoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationVirtualControls, IEmulationInputPorts, IEmulationAudioDiagnostics, IEmulationSnapshotLocation, IEmulationPointerInput, IEmulationMouseInput, IEmulationVideoRegions, IEmulationAchievements, IEmulationArcadeAchievements)
   private
     FCart: TS32Cartridge;
     FDisc: TCDDisc;
@@ -99,6 +99,9 @@ type
     constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string);
     destructor Destroy; override;
     function GetSystemId: string;
+    function AchievementROM: TBytes;
+    function AchievementSetName: string;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     function GetName: string;
     function GetSupportsSnapshots: Boolean;
     function GetSnapshotDirectory: string;
@@ -419,6 +422,11 @@ begin
       end;
     end;
 
+  var ReadMemory: TEmulationAchievementRead :=
+    function(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal
+    begin
+      Result := Console.ReadAchievementRAM(Address, Buffer, Count);
+    end;
   try
     try
       Console := TS32Console.Create(FCart, 0, FDisc);
@@ -447,6 +455,7 @@ begin
               procedure(State: TStateArchive)
               begin
                 Console.SerializeState(State);
+                TransferAchievementProgress(State);
               end;
             if Loading then
             begin
@@ -481,6 +490,7 @@ begin
         if Reset then
         begin
           Console.Reset;
+          ResetAchievements;
           AudioBuffer.Clear(Audio);
         end;
         Console.SetInput(Input);
@@ -496,6 +506,7 @@ begin
           Continue;
         end;
         Console.RunFrame;
+        AchievementFrame(ReadMemory);
         Publish;
         if Enabled and not AudioFailed then
         try
@@ -829,6 +840,22 @@ begin
     Result.AliasButton(TEmulatorButton.Up, TEmulatorButton.A);
     Result.AliasButton(TEmulatorButton.Down, TEmulatorButton.B);
   end;
+end;
+
+function TS32CoreAdapter.AchievementROM: TBytes;
+begin
+  Result := nil;
+end;
+
+function TS32CoreAdapter.AchievementSetName: string;
+begin
+  Result := FCart.RomSet.Name;
+end;
+
+procedure TS32CoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  if FWorker <> nil then
+    FWorker.SetAchievementObserver(Observer);
 end;
 
 function TS32CoreAdapter.GetSystemId: string;

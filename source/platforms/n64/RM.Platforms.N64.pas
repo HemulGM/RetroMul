@@ -30,13 +30,14 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads, RM.Settings.Catalog, N64.RomFormat, Core.Snapshots,
-  System.StrUtils, Core.Emulation, Core.Platforms, Core.Platforms.N64.Adapter,
-  RM.Platforms.N64.Settings, RM.Platforms.Presentation, RM.Gamepad.Factory,
-  RM.Platforms.N64.Gamepads, RM.Input.Runtime, RM.Platforms.N64.Input,
-  RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
-  RM.ControlsHelp.Content, RM.Platforms.N64.Help, RM.Settings.Callouts,
-  RM.Platforms.N64.Devices, RM.Settings.Devices, System.Classes;
+  RA.Console, Core.PlatformServices, RM.Input.Gamepads, RM.Settings.Catalog,
+  N64.RomFormat, Core.Snapshots, System.StrUtils, Core.Emulation, Core.Platforms,
+  Core.Platforms.N64.Adapter, RM.Platforms.N64.Settings,
+  RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Platforms.N64.Gamepads,
+  RM.Input.Runtime, RM.Platforms.N64.Input, RM.Session.Runtime, RM.Window.Layout,
+  RM.Settings.Runtime, RM.ControlsHelp.Content, RM.Platforms.N64.Help,
+  RM.Settings.Callouts, RM.Platforms.N64.Devices, RM.Settings.Devices,
+  System.Classes;
 
 const
   PlatformIcon =
@@ -243,6 +244,7 @@ begin
   RegisterCore;
   RegisterClient;
   FRegistered := True;
+  RegisterPlatformAchievementMedia('n64', RAConsoleNintendo64, TPlatformRegistry.Require('n64').Extensions);
 end;
 
 end.

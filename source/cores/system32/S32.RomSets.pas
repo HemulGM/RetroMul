@@ -22,6 +22,7 @@ type
     Rotation: Integer;
     Regions: TArray<TS32Region>;
     Files: TArray<TS32RomFile>;
+    ArchiveProgramMatched: Boolean;
     class function Find(const Name: string; out RomSet: TS32RomSet): Boolean; static;
     class function Identify(const Archive: IArchiveContainer; const Hint: string; out RomSet: TS32RomSet): Boolean; static;
   end;
@@ -113,7 +114,10 @@ begin
     end;
   end;
   if Best >= 0 then
+  begin
+    RomSet.ArchiveProgramMatched := True;
     Exit(True);
+  end;
   // A named split or incomplete set gets a precise missing-ROM diagnostic.
   Result := Find(Name, RomSet);
 end;

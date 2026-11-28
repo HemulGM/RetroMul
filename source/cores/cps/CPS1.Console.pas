@@ -52,6 +52,7 @@ type
     procedure LoadBattery(const Data: TBytes); virtual;
     procedure Reset; virtual;
     procedure RunFrame;
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     function ReadWord(Address: Cardinal): Word; virtual;
     procedure WriteWord(Address: Cardinal; Value: Word; HighByte: Boolean = True; LowByte: Boolean = True); virtual;
     procedure SetInput(const Input: TEmulatorInput);
@@ -545,6 +546,12 @@ procedure TCPS1Console.LoadBattery(const Data: TBytes);
 begin
   if Length(Data) <> 0 then
     raise EReadError.Create('Unexpected CPS1 battery data');
+end;
+
+function TCPS1Console.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  // FBNeo CpsRamFF stores 68000 words low byte first.
+  Result := ReadAchievementMemoryBlock(Address, Buffer, Count, @FRAM, SizeOf(FRAM), 1);
 end;
 
 end.

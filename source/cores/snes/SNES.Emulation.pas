@@ -12,7 +12,7 @@ const
   AUDIO_BLOCK_COUNT = 4;
 
 type
-  TSnesWorker = class(TThread)
+  TSnesWorker = class(TAchievementWorker)
   private
     FInputPortsCommand: TInputPortsCommand;
     function GetInputPorts: TCoreInputPorts;
@@ -266,6 +266,11 @@ begin
   if Length(FSufamiSlotA) > 0 then
     SnapshotData := SnapshotData + FSufamiSlotA;
   var Console: TSnesConsole := nil;
+  var ReadAchievementMemory: TEmulationAchievementRead :=
+    function(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal
+    begin
+      Result := Console.ReadAchievementRAM(Address, Buffer, Count);
+    end;
   var Audio: TPCMAudio := nil;
   var FrameHints: TEmulationPerformanceHints := nil;
   var LastBattery: TBytes;
@@ -304,6 +309,7 @@ begin
               procedure(State: TStateArchive)
               begin
                 Console.SerializeState(State);
+                TransferAchievementProgress(State);
               end;
             if Loading then
             begin
@@ -353,6 +359,7 @@ begin
           FrameHints.Pause;
           SaveBattery(Console, LastBattery);
           Console.Reset;
+          ResetAchievements;
           if Audio <> nil then
             Audio.Clear;
           Deadline := TStopwatch.GetTimeStamp;
@@ -377,6 +384,7 @@ begin
         FrameHints.BeginWork;
         Console.SetInputs(Inputs);
         Console.RunFrame;
+        AchievementFrame(ReadAchievementMemory);
         if Terminated then
           Break;
 

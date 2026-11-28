@@ -43,6 +43,7 @@ type
     ProgramROM, FixedROM, AudioROM, SamplesA, SamplesB, SpriteROM: TBytes;
     BIOS, FixedBIOS, AudioBIOS, ZoomROM: TBytes;
     SetName: string;
+    AchievementSetName: string;
     FixedBankType: Integer;
     Protection: string;
     constructor Create(Stream: TStream; const Storage: IStorage; const Location: string); overload;
@@ -629,6 +630,7 @@ begin
     Region(SamplesA, Rows, 'A', StrToInt(Parts[6]));
     Region(SamplesB, Rows, 'B', StrToInt(Parts[7]));
     Region(SpriteROM, Rows, 'C', StrToInt(Parts[8]));
+    AchievementSetName := NeoGeoAchievementSetName(Description);
     var Decrypted := '';
     if Length(Parts) > 12 then
       Decrypted := Parts[12];

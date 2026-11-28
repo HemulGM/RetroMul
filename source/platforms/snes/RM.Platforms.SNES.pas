@@ -29,14 +29,14 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads, RM.Settings.Catalog, SNES.RomFormat, Core.Snapshots,
-  System.StrUtils, Core.Emulation, Core.Platforms, Core.Platforms.SNES.Adapter,
-  SNES.Cartridge, RM.Platforms.SNES.Settings, RM.Platforms.Presentation,
-  RM.Gamepad.Factory, RM.Platforms.SNES.Gamepads, SNES.Console, RM.Input.Runtime,
-  RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
-  RM.Platforms.SNES.SettingsHandler, RM.ControlsHelp.Content,
-  RM.Settings.Callouts, RM.Platforms.SNES.Callouts, RM.Settings.Devices,
-  System.Classes;
+  RA.Console, Core.PlatformServices, RM.Input.Gamepads, RM.Settings.Catalog,
+  SNES.RomFormat, Core.Snapshots, System.StrUtils, Core.Emulation,
+  Core.Platforms, Core.Platforms.SNES.Adapter, SNES.Cartridge,
+  RM.Platforms.SNES.Settings, RM.Platforms.Presentation, RM.Gamepad.Factory,
+  RM.Platforms.SNES.Gamepads, SNES.Console, RM.Input.Runtime, RM.Session.Runtime,
+  RM.Window.Layout, RM.Settings.Runtime, RM.Platforms.SNES.SettingsHandler,
+  RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Platforms.SNES.Callouts,
+  RM.Settings.Devices, System.Classes;
 
 const
   PlatformIcon =
@@ -143,7 +143,7 @@ begin
   Result := ImageMatch(Context, 'SNES',
     function(const Data: TBytes; Input: TStream): IEmulationCore
     begin
-      Result := TSnesCoreAdapter.Create(Input, Context.Storage, Context.RomName);
+      Result := TSnesCoreAdapter.Create(Input, Context.Storage, Context.RomName, Context.Data);
     end, True, 'snes', Encoding, SNES_IMAGE_MAX_SIZE);
 end;
 
@@ -248,6 +248,7 @@ begin
   RegisterCore;
   RegisterClient;
   FRegistered := True;
+  RegisterPlatformAchievementMedia('snes', RAConsoleSuperNintendo, TPlatformRegistry.Require('snes').Extensions);
 end;
 
 end.

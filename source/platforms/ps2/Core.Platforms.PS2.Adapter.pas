@@ -8,10 +8,11 @@
 interface
 
 uses
-  System.UITypes, PS2.Display.Pixels, Core.InputConfig, System.SysUtils,
-  System.Classes, System.IniFiles, System.SyncObjs, Core.Storage, Core.Emulation,
-  Core.Snapshots, Core.CD.Disc, Core.DVD.Image, PS2.Types, PS2.Console,
-  PS2.IOP.CDVD, Core.Platforms.PS2.Playback, RM.Vulkan.TexScale;
+  Core.Emulation.Types, System.UITypes, PS2.Display.Pixels, Core.InputConfig,
+  System.SysUtils, System.Classes, System.IniFiles, System.SyncObjs,
+  Core.Storage, Core.Emulation, Core.Snapshots, Core.CD.Disc, Core.DVD.Image,
+  PS2.Types, PS2.Console, PS2.IOP.CDVD, Core.Platforms.PS2.Playback,
+  RM.Vulkan.TexScale;
 
 {$SCOPEDENUMS ON}
 
@@ -93,7 +94,7 @@ type
     procedure SetPS2Controller(Port: Integer; const Pad: TPS2Pad);
   end;
 
-  TPS2Worker = class(TThread)
+  TPS2Worker = class(TAchievementWorker)
   private
     type
       TQueuedField = record
@@ -170,7 +171,7 @@ type
     procedure Snapshot(const Name: string; Loading: Boolean);
   end;
 
-  TPS2CoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationSnapshotLocation, IPS2ControllerInput, IEmulationAudioDiagnostics)
+  TPS2CoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationSnapshotLocation, IPS2ControllerInput, IEmulationAudioDiagnostics, IEmulationAchievements)
   private
     FStorage: IStorage;
     FConfig: IEmulatorConfig;
@@ -196,6 +197,8 @@ type
     procedure SelectBIOS(const RomName: string);
     function FindBIOS(const RomName: string): string;
   public
+    function AchievementROM: TBytes;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     // Disc images are opened from the stream and RomName (owned); otherwise
     // Stream holds a PS2 ELF program.
     constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; Disc: TDVDImage = nil);
@@ -862,6 +865,7 @@ begin
     procedure(State: TStateArchive)
     begin
       Console.SerializeState(State);
+      TransferAchievementProgress(State);
     end;
   if Loading then
   begin
@@ -896,6 +900,11 @@ end;
 
 procedure TPS2Worker.Execute;
 begin
+  var ReadAchievementMemory: TEmulationAchievementRead :=
+    function(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal
+    begin
+      Result := FConsole.ReadAchievementRAM(Address, Buffer, Count);
+    end;
   FConsole := nil;
   FAudio := nil;
   FAudioFailed := False;
@@ -999,6 +1008,7 @@ begin
             FLock.Release;
           end;
           FConsole.Reset;
+          ResetAchievements;
           Boot;
           FConsole.IOP.Hardware.SPU2.TakeSamples;
           ClearAudio;
@@ -1051,6 +1061,7 @@ begin
           FAudio.BeginWork(FDisplayExtra);
         try
           FConsole.RunFrame;
+          AchievementFrame(ReadAchievementMemory);
         finally
           if FAudio <> nil then
             FAudio.EndWork;
@@ -1669,6 +1680,17 @@ end;
 function TPS2CoreAdapter.IsPaused: Boolean;
 begin
   Result := FPaused;
+end;
+
+function TPS2CoreAdapter.AchievementROM: TBytes;
+begin
+  Result := nil;
+end;
+
+procedure TPS2CoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  if FWorker <> nil then
+    FWorker.SetAchievementObserver(Observer);
 end;
 
 end.

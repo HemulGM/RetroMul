@@ -57,6 +57,7 @@ type
     FBootROMData: TBytes;
     procedure DisableBootROM; virtual;
     function ProcessUnusedBits(Address, Value: Integer): Integer;
+    function ReadAchievementWorkByte(Offset: Cardinal; out Value: Byte): Boolean; virtual;
     function ReadWorkRAM(Offset: Integer): Byte; virtual;
     procedure WriteWorkRAM(Offset: Integer; Value: Byte); virtual;
     function ReadModelRegister(Address: Integer; out Value: Byte): Boolean; virtual;
@@ -105,6 +106,7 @@ type
     procedure WriteWord(Address: Integer; Value: Word);
 
     function ReadByte(Address: Integer): Byte; virtual;
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     function ReadWithIncrement(Address: Integer): Byte;
     procedure ProcessOAMCorruption(Address: Integer; Kind: TGBOAMCorruption);
     function ReadWord(Address: Integer): Word;
@@ -126,6 +128,57 @@ type
   end;
 
 implementation
+
+function TGBMemory.ReadAchievementWorkByte(Offset: Cardinal; out Value: Byte): Boolean;
+begin
+  Result := Offset < SizeOf(WRAM);
+  if Result then
+    Value := WRAM[Offset];
+end;
+
+function TGBMemory.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  Result := 0;
+  if Buffer = nil then
+    Exit;
+  while Result < Count do
+  begin
+    case Address of
+      $0000..$7FFF:
+        Buffer^ := Byte(FMBC.MbcRead(Address));
+      $8000..$9FFF:
+        Buffer^ := FGPU.ReadVRAM(Address - $8000);
+      $A000..$BFFF:
+        if not FMBC.ReadAchievementSaveByte(Address - $A000, Buffer^) then
+          Exit;
+      $C000..$DFFF:
+        if not ReadAchievementWorkByte(Address - $C000, Buffer^) then
+          Exit;
+      $E000..$FDFF:
+        if not ReadAchievementWorkByte(Address - $E000, Buffer^) then
+          Exit;
+      $FE00..$FE9F:
+        Buffer^ := OAM[Address - $FE00];
+      $FF00..$FF7F:
+        Buffer^ := ReadByte(Address);
+      $FF80..$FFFE:
+        Buffer^ := HRAM[Address - $FF80];
+      $FFFF:
+        Buffer^ := Byte(FInterruptManager.GetInterruptsEnabled);
+      $10000..$15FFF:
+        if not ReadAchievementWorkByte(Address - $E000, Buffer^) then
+          Exit;
+      $16000..$33FFF:
+        if not FMBC.ReadAchievementSaveByte(Address - $14000, Buffer^) then
+          Exit;
+    else
+      Exit;
+    end;
+    Inc(Address);
+    Inc(Buffer);
+    Inc(Result);
+  end;
+end;
 
 function GBBootModel(const Name: string): TGBBootModel;
 begin

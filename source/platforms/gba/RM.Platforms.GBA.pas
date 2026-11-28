@@ -112,8 +112,14 @@ end;
 type
   TGBAAchievementMedia = class(TInterfacedObject, IEmulationAchievementMedia)
     function GetConsoleId: Cardinal;
+    function IsDisc: Boolean;
     function AcceptsROM(const SourceName: string; Input: TStream): Boolean;
   end;
+
+function TGBAAchievementMedia.IsDisc: Boolean;
+begin
+  Result := False;
+end;
 
 function TGBAAchievementMedia.GetConsoleId: Cardinal;
 begin

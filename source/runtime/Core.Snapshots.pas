@@ -3,7 +3,8 @@
 interface
 
 uses
-  Core.Storage, System.SysUtils, System.Classes, System.SyncObjs;
+  Core.Storage, Core.Emulation.Types, System.SysUtils, System.Classes,
+  System.SyncObjs;
 
 type
   // Persist fields, never object references, callbacks or host audio handles.
@@ -28,6 +29,26 @@ type
   end;
 
   TStateTransfer = reference to procedure(State: TStateArchive);
+
+  TAchievementWorker = class(TThread)
+  private
+    FObserverLock: TCriticalSection;
+    FObserver: IEmulationAchievementObserver;
+    FPendingAchievementProgress: TBytes;
+    FHasPendingAchievementProgress: Boolean;
+    function GetAchievementObserver: IEmulationAchievementObserver;
+    procedure ApplyAchievementProgress(const Observer: IEmulationAchievementObserver);
+  protected
+    procedure AchievementFrame(const ReadMemory: TEmulationAchievementRead);
+    procedure ResetAchievements;
+    procedure TransferAchievementProgress(State: TStateArchive);
+    function CaptureAchievementProgress: TBytes;
+    procedure RestoreAchievementProgress(const Progress: TBytes);
+  public
+    constructor Create(CreateSuspended: Boolean);
+    destructor Destroy; override;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+  end;
 
   TSnapshotAction = reference to procedure(const Name: string; Loading: Boolean);
 
@@ -397,6 +418,96 @@ begin
   finally
     Stream.Free;
   end;
+end;
+
+constructor TAchievementWorker.Create(CreateSuspended: Boolean);
+begin
+  FObserverLock := TCriticalSection.Create;
+  inherited Create(CreateSuspended);
+end;
+
+destructor TAchievementWorker.Destroy;
+begin
+  inherited;
+  FObserverLock.Free;
+end;
+
+function TAchievementWorker.GetAchievementObserver: IEmulationAchievementObserver;
+begin
+  FObserverLock.Acquire;
+  try
+    Result := FObserver;
+  finally
+    FObserverLock.Release;
+  end;
+end;
+
+procedure TAchievementWorker.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  var Previous: IEmulationAchievementObserver;
+  FObserverLock.Acquire;
+  try
+    Previous := FObserver;
+    FObserver := Observer;
+  finally
+    FObserverLock.Release;
+  end;
+  Previous := nil;
+end;
+
+procedure TAchievementWorker.ApplyAchievementProgress(const Observer: IEmulationAchievementObserver);
+begin
+  if not FHasPendingAchievementProgress then
+    Exit;
+  Observer.RestoreProgress(FPendingAchievementProgress);
+  FPendingAchievementProgress := nil;
+  FHasPendingAchievementProgress := False;
+end;
+
+procedure TAchievementWorker.AchievementFrame(const ReadMemory: TEmulationAchievementRead);
+begin
+  var Observer := GetAchievementObserver;
+  if Observer = nil then
+    Exit;
+  ApplyAchievementProgress(Observer);
+  Observer.Frame(ReadMemory);
+end;
+
+procedure TAchievementWorker.ResetAchievements;
+begin
+  FPendingAchievementProgress := nil;
+  FHasPendingAchievementProgress := False;
+  var Observer := GetAchievementObserver;
+  if Observer <> nil then
+    Observer.Reset;
+end;
+
+function TAchievementWorker.CaptureAchievementProgress: TBytes;
+begin
+  var Observer := GetAchievementObserver;
+  if Observer = nil then
+    Exit(FPendingAchievementProgress);
+  ApplyAchievementProgress(Observer);
+  Result := Observer.CaptureProgress;
+end;
+
+procedure TAchievementWorker.RestoreAchievementProgress(const Progress: TBytes);
+begin
+  FPendingAchievementProgress := Progress;
+  FHasPendingAchievementProgress := True;
+  var Observer := GetAchievementObserver;
+  if Observer <> nil then
+    ApplyAchievementProgress(Observer);
+end;
+
+procedure TAchievementWorker.TransferAchievementProgress(State: TStateArchive);
+begin
+  var Progress: TBytes;
+  if not State.Loading then
+    Progress := CaptureAchievementProgress;
+  State.OptionalBytes(Progress, 16 * 1024 * 1024);
+  if State.Loading then
+    RestoreAchievementProgress(Progress);
 end;
 
 { TSnapshotQueue }

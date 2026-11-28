@@ -59,6 +59,7 @@ type
     property BatteryRevision: UInt64 read FBatteryRevision;
     procedure Reset;
     procedure RunFrame;
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     function Step: Integer;
     function Read(Address: Cardinal; Size: Integer; Instruction: Boolean = False): Cardinal;
     procedure Write(Address, Value: Cardinal; Size: Integer);
@@ -1033,6 +1034,12 @@ begin
     RebuildCode(0, Length(FProgram));
     FFlashDirty := True;
   end;
+end;
+
+function TCPS3Console.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  // FBNeo Main RAM stores SH-2 longwords low byte first.
+  Result := ReadAchievementMemoryBlock(Address, Buffer, Count, Pointer(FRAM), Length(FRAM), 3);
 end;
 
 end.

@@ -13,7 +13,7 @@ const
   AUDIO_BLOCK_COUNT = 4;
 
 type
-  TNeoGeoWorker = class(TThread)
+  TNeoGeoWorker = class(TAchievementWorker)
   private
     FInputPortsCommand: TInputPortsCommand;
     function GetInputPorts: TCoreInputPorts;
@@ -395,6 +395,11 @@ begin
   var LastBattery: TBytes;
   var AudioFailed := False;
   var Console: TNeoGeoConsole := nil;
+  var ReadAchievementMemory: TEmulationAchievementRead :=
+    function(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal
+    begin
+      Result := Console.ReadAchievementRAM(Address, Buffer, Count);
+    end;
   var Audio: TPCMAudio := nil;
   var FrameHints: TEmulationPerformanceHints := nil;
   try
@@ -439,6 +444,7 @@ begin
               procedure(State: TStateArchive)
               begin
                 Console.SerializeState(State);
+                TransferAchievementProgress(State);
               end;
             if Loading then
             begin
@@ -533,6 +539,7 @@ begin
           FrameHints.Pause;
           SaveBattery(Console, LastBattery);
           Console.Reset;
+          ResetAchievements;
           if Audio <> nil then
             Audio.Clear;
           Deadline := TStopwatch.GetTimeStamp;
@@ -581,6 +588,7 @@ begin
           FLock.Release;
         end;
         Console.RunFrame;
+        AchievementFrame(ReadAchievementMemory);
 
         if Terminated then
           Break;

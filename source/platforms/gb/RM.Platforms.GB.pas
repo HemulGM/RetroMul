@@ -31,9 +31,9 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads, GB.Cartridge, RM.Settings.Catalog,
-  RM.Platforms.GB.RomFormat, GB.RomFormat, Core.Snapshots, System.StrUtils,
-  Core.Emulation, Core.Platforms, Core.Platforms.GB.Adapter,
+  RA.Console, Core.PlatformServices, RM.Input.Gamepads, GB.Cartridge,
+  RM.Settings.Catalog, RM.Platforms.GB.RomFormat, GB.RomFormat, Core.Snapshots,
+  System.StrUtils, Core.Emulation, Core.Platforms, Core.Platforms.GB.Adapter,
   RM.Platforms.GB.Settings, RM.Platforms.Presentation, RM.Gamepad.Factory,
   RM.Platforms.GB.Gamepads, GB.Joypad, RM.Input.Runtime, RM.Session.Runtime,
   RM.Window.Layout, RM.Settings.Runtime, RM.ControlsHelp.Content,
@@ -205,6 +205,7 @@ begin
   RegisterCore;
   RegisterClient;
   FRegistered := True;
+  RegisterPlatformAchievementMedia('gb', RAConsoleGameBoy, TPlatformRegistry.Require('gb').Extensions);
 end;
 
 end.

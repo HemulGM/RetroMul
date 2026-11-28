@@ -29,7 +29,7 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads, RM.Settings.Catalog, RM.Platforms.SMS.Keyboard,
+  RA.Console, RM.Input.Gamepads, RM.Settings.Catalog, RM.Platforms.SMS.Keyboard,
   Core.Emulation, Core.Platforms, Core.PlatformServices, Core.Snapshots,
   Core.Platforms.SMS.Adapter, SG1000.Console, RM.Platforms.SMS.Settings,
   RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Platforms.SMS.Gamepads,
@@ -418,6 +418,8 @@ begin
   RegisterCore;
   RegisterClient;
   FRegistered := True;
+  RegisterPlatformAchievementMedia('sms', RAConsoleMasterSystem, TPlatformRegistry.Require('sms').Extensions);
+  RegisterPlatformAchievementMedia('gg', RAConsoleGameGear, TPlatformRegistry.Require('gg').Extensions);
 end;
 
 end.

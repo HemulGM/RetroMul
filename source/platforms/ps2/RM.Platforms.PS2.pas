@@ -25,14 +25,15 @@ type
 implementation
 
 uses
-  System.SysUtils, Core.Emulation, Core.Platforms, Core.PlatformServices,
-  Core.Snapshots, Core.DVD.Image, PS2.Console, Core.Platforms.PS2.Adapter,
-  Core.Platforms.PS1.Adapter, RM.Platforms.PS2.Settings, RM.Platforms.PS2.Input,
-  RM.Platforms.PS1.Input, RM.Platforms.PS1.Devices, RM.Platforms.PS1.Help,
-  RM.Platforms.PS1.Gamepads, RM.Settings.Platform, RM.Settings.Catalog,
-  RM.Settings.Devices, RM.Settings.Callouts, RM.ControlsHelp.Content,
-  RM.Settings.Runtime, RM.Session.Runtime, RM.Window.Layout, RM.Input.Runtime,
-  RM.Gamepad.Factory, RM.Platforms.Presentation;
+  RA.Console, System.SysUtils, Core.Emulation, Core.Platforms,
+  Core.PlatformServices, Core.Snapshots, Core.DVD.Image, PS2.Console,
+  Core.Platforms.PS2.Adapter, Core.Platforms.PS1.Adapter,
+  RM.Platforms.PS2.Settings, RM.Platforms.PS2.Input, RM.Platforms.PS1.Input,
+  RM.Platforms.PS1.Devices, RM.Platforms.PS1.Help, RM.Platforms.PS1.Gamepads,
+  RM.Settings.Platform, RM.Settings.Catalog, RM.Settings.Devices,
+  RM.Settings.Callouts, RM.ControlsHelp.Content, RM.Settings.Runtime,
+  RM.Session.Runtime, RM.Window.Layout, RM.Input.Runtime, RM.Gamepad.Factory,
+  RM.Platforms.Presentation;
 
 const
   PlatformIconPS2 =
@@ -223,6 +224,7 @@ begin
   Definition.SharedBindingOrder := 20;
   RegisterPlatformInput('ps2', Definition);
   FRegistered := True;
+  RegisterPlatformAchievementMedia('ps2', RAConsolePlayStation2, TPlatformRegistry.Require('ps2').Extensions, True);
 end;
 
 end.

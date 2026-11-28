@@ -3,9 +3,9 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.IniFiles, System.SyncObjs,
-  System.Types, Core.Storage, Core.Emulation, Core.Snapshots, NDS.Console,
-  Core.Platforms.NDS.Display;
+  Core.Emulation.Types, System.SysUtils, System.Classes, System.IniFiles,
+  System.SyncObjs, System.Types, Core.Storage, Core.Emulation, Core.Snapshots,
+  NDS.Console, Core.Platforms.NDS.Display;
 
 const
   NDS_BUTTONS: TEmulatorButtons = [TEmulatorButton.Up, TEmulatorButton.Down,
@@ -31,7 +31,7 @@ type
     property Keys: TNDSKeyMap read FKeys;
   end;
 
-  TNDSWorker = class(TThread)
+  TNDSWorker = class(TAchievementWorker)
   private
     FLock: TCriticalSection;
     FWake: TEvent;
@@ -64,7 +64,7 @@ type
     function HasFaulted: Boolean;
   end;
 
-  TNDSCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationPointerInput, IEmulationMouseInput, IEmulationLiveSettings, IEmulationGameActions, IEmulationAudioDiagnostics, IEmulationSnapshotLocation, IEmulationVideoRegions)
+  TNDSCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationPointerInput, IEmulationMouseInput, IEmulationLiveSettings, IEmulationGameActions, IEmulationAudioDiagnostics, IEmulationSnapshotLocation, IEmulationVideoRegions, IEmulationAchievements)
   private
     FData: TBytes;
     FStorage: IStorage;
@@ -79,6 +79,8 @@ type
     FSavePath, FSnapshotDirectory, FError, FAudioError: string;
     procedure Configure;
   public
+    function AchievementROM: TBytes;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string);
     destructor Destroy; override;
     function GetName: string;
@@ -283,6 +285,11 @@ var
   Audio: TPCMAudio;
   Performance: TEmulationPerformanceHints;
 begin
+  var ReadAchievementMemory: TEmulationAchievementRead :=
+    function(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal
+    begin
+      Result := FConsole.ReadAchievementRAM(Address, Buffer, Count);
+    end;
   Audio := nil;
   Performance := nil;
   var AudioFailed := False;
@@ -309,6 +316,7 @@ begin
                   procedure(State: TStateArchive)
                   begin
                     Candidate.SerializeState(State);
+                    TransferAchievementProgress(State);
                   end, FStorage);
                 var Previous := FConsole;
                 FConsole := Candidate;
@@ -344,6 +352,7 @@ begin
                 procedure(State: TStateArchive)
                 begin
                   FConsole.SerializeState(State);
+                  TransferAchievementProgress(State);
                 end, FStorage);
               SaveSnapshotPreview(Path, 256, 384, 256, @FConsole.Video.Pixels[0], FStorage);
             end;
@@ -370,6 +379,7 @@ begin
         begin
           Persist;
           FConsole.Reset;
+          ResetAchievements;
           if Audio <> nil then
             Audio.Clear;
           Deadline := TStopwatch.GetTimeStamp / TStopwatch.Frequency;
@@ -406,6 +416,7 @@ begin
         Performance.BeginWork;
         try
           FConsole.RunFrame;
+          AchievementFrame(ReadAchievementMemory);
         finally
           Performance.EndWork;
         end;
@@ -843,6 +854,17 @@ begin
   end;
   FConfigObject.ScreenMode := Mode;
   ApplyLiveSettings;
+end;
+
+function TNDSCoreAdapter.AchievementROM: TBytes;
+begin
+  Result := FData;
+end;
+
+procedure TNDSCoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  if FWorker <> nil then
+    FWorker.SetAchievementObserver(Observer);
 end;
 
 end.

@@ -1,0 +1,121 @@
+﻿// Same short name and required chip CRCs/sizes in RetroMul and the FBNeo 1.0.0.03 arcade DAT.
+// Excludes optional logic devices and the shared Neo Geo BIOS. CPS2 can use catalog-decoded keys.
+// https://github.com/libretro/FBNeo/tree/master/dats
+const
+  FBNeoCPS1 =
+    '|1941|1941j|1941r1|1941u|3wonders|3wondersb|3wondersh|3wondersr1|3wondersu|area88|' +
+    'area88r|captcomm|captcommb|captcommj|captcommjr1|captcommr1|captcommu|cawing|cawingb2|' +
+    'cawingbl|cawingj|cawingjr|cawingr1|cawingu|cawingur1|chikij|cworld2j|cworld2ja|' +
+    'cworld2jb|daimakai|daimakair|dino|dinoa|dinohunt|dinoj|dinou|dynwar|dynwara|dynwarj|' +
+    'dynwarjr|fcrash|ffight|ffighta|ffightae|ffightbl|ffightbla|ffightj|ffightj1|ffightj2|' +
+    'ffightj3|ffightj4|ffightjh|ffightu|ffightu1|ffightua|ffightub|ffightuc|forgottn|' +
+    'forgottna|forgottnj|forgottnu|forgottnua|forgottnuaa|forgottnuc|forgottnue|ganbare|' +
+    'ghouls|ghoulsu|gulunpa|knights|knightsb|knightsb2|knightsb3|knightsj|knightsja|' +
+    'knightsu|kod|kodb|kodj|kodja|kodr1|kodr2|kodu|lostwrld|lostwrldo|mbomberj|mbombrd|' +
+    'mbombrdj|megaman|megamana|mercs|mercsj|mercsu|mercsur1|mpumpkin|msword|mswordj|' +
+    'mswordr1|mswordu|mtwins|mtwinsb|nemo|nemoj|nemoja|nemor1|pang3b|pnickj|pokonyan|' +
+    'punisher|punisherbz|punisherh|punisherj|punisheru|qad|qadjr|qtono2j|rockmanj|sf2|' +
+    'sf2acc|sf2acca|sf2accp2|sf2b|sf2b2|sf2bhh|sf2ce|sf2ceb|sf2ceb2|sf2ceb3|sf2ceb4|' +
+    'sf2ceb5|sf2ceblp|sf2cebltw|sf2ceea|sf2ceec|sf2ceja|sf2cejb|sf2cejc|sf2cet|sf2ceua|' +
+    'sf2ceub|sf2ceuc|sf2ceupl|sf2dkot2|sf2dongb|sf2ea|sf2eb|sf2ed|sf2ee|sf2ef|sf2em|' +
+    'sf2en|sf2hf|sf2hfj|sf2hfu|sf2j|sf2j17|sf2ja|sf2jc|sf2jf|sf2jh|sf2jl|sf2mdt|sf2mdta|' +
+    'sf2mdtb|sf2qp1|sf2qp2|sf2rb|sf2rb2|sf2rb3|sf2re|sf2red|sf2reda|sf2redp2|sf2thndr|' +
+    'sf2thndr2|sf2ua|sf2ub|sf2uc|sf2ud|sf2ue|sf2uf|sf2ug|sf2uh|sf2ui|sf2uk|sf2um|' +
+    'sf2v004|sgyxz|slammast|slammastu|strider|striderj|striderjr|striderua|strideruc|' +
+    'unsquad|varth|varthb|varthb2|varthb3|varthj|varthjr|varthr1|varthu|willow|willowj|' +
+    'willowu|willowuo|wof|wofa|wofabl|wofhfh|wofj|wofr1|wofr1bl|wofu|wonder3|';
+  FBNeoCPS2 =
+    '|1944|1944d|1944j|1944u|19xx|19xxa|19xxar1|19xxb|19xxd|19xxh|19xxj|19xxjr1|19xxjr2|' +
+    '19xxu|armwar|armwar1d|armwara|armwarar1|armwarb|armwarr1|armwaru|armwaru1|avsp|avspa|' +
+    'avspd|avsph|avspj|avspu|batcir|batcira|batcird|batcirj|choko|chokop|csclub|csclub1|' +
+    'csclub1d|cscluba|csclubh|csclubj|csclubjy|cybots|cybotsj|cybotsjd|cybotsu|cybotsud|' +
+    'ddsom|ddsoma|ddsomar1|ddsomb|ddsomh|ddsomj|ddsomjr1|ddsomjr2|ddsomr1|ddsomr2|ddsomr3|' +
+    'ddsomu|ddsomud|ddsomur1|ddtod|ddtoda|ddtodar1|ddtodd|ddtodh|ddtodhr1|ddtodhr2|ddtodj|' +
+    'ddtodjr1|ddtodjr2|ddtodr1|ddtodu|ddtodur1|dimahoo|dimahoou|dimahoud|dstlk|dstlka|' +
+    'dstlkb|dstlkh|dstlku|dstlku1d|dstlkur1|ecofghtr|ecofghtra|ecofghtrd|ecofghtrh|' +
+    'ecofghtru|ecofghtru1|gigawing|gigawinga|gigawingb|gigawingd|gigawingh|gigawingj|' +
+    'gigawingjd|gmahou|hsf2|hsf2a|hsf2d|hsf2j|hsf2j1|hsf2j2|jyangoku|megaman2|megaman2a|' +
+    'megaman2h|megamn2d|mmancp2u|mmancp2ur1|mmancp2ur2|mmatrix|mmatrixa|mmatrixd|mmatrixj|' +
+    'mpang|mpanga|mpangj|mpangr1|mpangu|msh|msha|mshb|mshbr1|mshh|mshj|mshjr1|mshu|' +
+    'mshud|mshvsf|mshvsfa|mshvsfa1|mshvsfb|mshvsfb1|mshvsfh|mshvsfj|mshvsfj1|mshvsfj2|' +
+    'mshvsfu|mshvsfu1|mshvsfu1d|mvsc|mvsca|mvscar1|mvscb|mvsch|mvscj|mvscjr1|mvscjsing|' +
+    'mvscr1|mvscu|mvscud|mvscur1|nwarr|nwarra|nwarrb|nwarrh|nwarru|nwarrud|pfghtj|pgear|' +
+    'pgearr1|progear|progeara|progearj|progearjbl|progearjd|progearu|progearud|pzloop2|' +
+    'pzloop2j|pzloop2jd|pzloop2jp|pzloop2jr1|qndream|ringdest|ringdesta|ringdestb|ringdesth|' +
+    'ringdstd|rmancp2j|rockman2j|sfa|sfa2|sfa2u|sfa2ur1|sfa3|sfa3b|sfa3h|sfa3hr1|sfa3u|' +
+    'sfa3ud|sfa3ur1|sfa3us|sfad|sfar1|sfar2|sfar3|sfau|sfz2a|sfz2ad|sfz2al|sfz2alb|' +
+    'sfz2ald|sfz2alh|sfz2alj|sfz2alr1|sfz2b|sfz2br1|sfz2h|sfz2j|sfz2jd|sfz2jr1|sfz2n|' +
+    'sfz3a|sfz3ar1|sfz3j|sfz3jr1|sfz3jr2|sfz3jr2d|sfza|sfzar1|sfzb|sfzbr1|sfzh|sfzhr1|' +
+    'sfzj|sfzjr1|sfzjr2|sgemf|sgemfa|sgemfd|sgemfh|smbomb|smbombr1|spf2t|spf2ta|spf2td|' +
+    'spf2th|spf2tu|spf2xj|spf2xjd|ssf2|ssf2a|ssf2ar1|ssf2h|ssf2j|ssf2jr1|ssf2jr2|ssf2r1|' +
+    'ssf2t|ssf2ta|ssf2tad|ssf2tb|ssf2tba|ssf2tbd|ssf2tbh|ssf2tbj|ssf2tbj1|ssf2tbr1|' +
+    'ssf2tbu|ssf2th|ssf2tu|ssf2tur1|ssf2u|ssf2ud|ssf2xj|ssf2xjr1|ssf2xjr1d|ssf2xjr1r|' +
+    'uecology|vampj|vampja|vampjr1|vhunt2|vhunt2d|vhunt2r1|vhuntj|vhuntjr1|vhuntjr1s|' +
+    'vhuntjr2|vsav|vsav2|vsav2d|vsava|vsavb|vsavd|vsavh|vsavj|vsavu|xmcota|xmcotaa|' +
+    'xmcotaar1|xmcotaar2|xmcotab|xmcotah|xmcotahr1|xmcotaj|xmcotaj1|xmcotaj2|xmcotaj3|' +
+    'xmcotajr|xmcotar1|xmcotar1d|xmcotau|xmvsf|xmvsfa|xmvsfar1|xmvsfar2|xmvsfar3|xmvsfb|' +
+    'xmvsfh|xmvsfj|xmvsfjr1|xmvsfjr2|xmvsfjr3|xmvsfjr4|xmvsfr1|xmvsfu|xmvsfu1d|xmvsfur1|' +
+    'xmvsfur2|';
+  FBNeoCPS3 =
+    '|jojoba|jojoban|jojobaner1|jojobaner2|jojobanr1|jojobanr2|jojon|jojonr1|jojonr2|' +
+    'redearthn|redearthnr1|sfiii2n|sfiii3n|sfiii3na|sfiii3nar1|sfiii3nr1|sfiiin|sfiiina|' +
+    'jojo|jojoa|jojoar1|jojoar2|jojobajr1|jojobajr2|jojobar1|jojobar2|jojoj|jojojr1|' +
+    'jojojr2|jojor1|jojor2|jojou|jojour1|jojour2|redearth|redearthr1|sfiii|sfiii2|sfiii2a|' +
+    'sfiii2h|sfiii2j|sfiii3|sfiii3j|sfiii3jr1|sfiii3r1|sfiii3u|sfiii3ur1|sfiiia|sfiiih|' +
+    'sfiiij|sfiiiu|warzard|warzardr1|';
+  FBNeoNeoGeo =
+    '|2020bb|2020bba|2020bbh|3countb|alpham2|androdun|aodk|aof|aof2|aof2a|aof3|aof3k|b2b|' +
+    'bakatono|bangbead|bangbedp|bjourney|bjourneyh|blazstar|breakers|breakrev|bstars|' +
+    'bstars2|bstarsh|burningf|burningfh|captainbarrel|crswd2bl|crsword|ct2k3sa|ct2k3sp|' +
+    'cthd2003|ctomaday|cyberlip|cyborgforce|diggerma|doubledr|dragonsh|eightman|fatfursp|' +
+    'fatfurspa|fatfury1|fatfury2|fatfury3|fbfrenzy|fightfev|fightfeva|flipshot|froman2b|' +
+    'fswords|galaxyfg|ganryu|garou|garoubl|garouh|garouha|garoup|ghostlop|gladmort|goalx3|' +
+    'gowcaizr|gpilots|gpilotsh|gururin|ironclad|ironclado|janshin|jockeygp|jockeygpa|' +
+    'joyjoy|kabukikl|karnovr|kf10thep|kf2k2mp|kf2k2mp2|kf2k2pla|kf2k2pls|kf2k3bl|kf2k3bla|' +
+    'kf2k3pl|kf2k3upl|kf2k5uni|kizuna|knightsch|kof10th|kof2000|kof2000n|kof2001|kof2001h|' +
+    'kof2002|kof2002b|kof2003|kof2003h|kof2k4se|kof94|kof95|kof95a|kof95h|kof96|kof96a|' +
+    'kof96h|kof97|kof97h|kof97k|kof97pls|kof98|kof98a|kof98h|kof98k|kof98ka|kof99|kof99e|' +
+    'kof99h|kof99k|kof99ka|kof99p|kog|kotm|kotm2|kotm2a|kotmh|lans2004|lastblad|' +
+    'lastbladh|lastbld2|lasthope|lastsold|lbowling|legendos|lresort|magdrop2|magdrop3|' +
+    'maglord|maglordh|mahretsu|marukodq|matrim|matrimbl|miexchng|minasan|moshougi|ms4plus|' +
+    'ms5plus|mslug|mslug2|mslug2t|mslug3|mslug3a|mslug3b6|mslug3h|mslug4|mslug4h|mslug5|' +
+    'mslug5h|mslugx|mutnat|nam1975|ncombat|ncombath|ncommand|neobombe|neocup98|neodrift|' +
+    'neomrdo|neonopon|neopong|ninjamas|nitd|nitdbl|overtop|panicbom|pbobbl2n|pbobblen|' +
+    'pbobblenb|pgoal|pnyaa|pnyaaa|popbounc|preisle2|pspikes2|pulstar|puzzldpr|puzzledp|' +
+    'quizdai2|quizdais|quizdaisk|quizkof|quizkofk|ragnagrd|rbff1|rbff1a|rbff1k|rbff1ka|' +
+    'rbff2|rbff2h|rbff2k|rbffspec|rbffspeck|roboarmy|roboarmya|rotd|rotdh|s1945p|samsh5sp|' +
+    'samsh5sph|samsh5spho|samsho|samsho2|samsho2k|samsho2ka|samsho3|samsho3h|samsho4|' +
+    'samsho4k|samsho5|samsho5a|samsho5b|samsho5h|samshoh|savagere|sdodgeb|sengoku|sengoku2|' +
+    'sengoku3|sengoku3a|sengokuh|shocktr2|shocktro|shocktroa|socbrawl|socbrawlh|sonicwi2|' +
+    'sonicwi3|spinmast|ssideki|ssideki2|ssideki3|ssideki4|stakwin|stakwin2|strhoop|' +
+    'superspy|svc|svcboot|svcplus|svcplusa|svcsplus|syscheck|teot|tophuntr|tophuntrh|' +
+    'tpgolf|trally|turfmast|twinspri|twsoc96|viewpoin|vliner|vliner53|vliner54|vliner6e|' +
+    'vliner7e|wakuwak7|wh1|wh1h|wh1ha|wh2|wh2h|wh2j|whp|wjammers|zedblade|zintrckb|' +
+    'zintrkcd|zupapa|';
+  FBNeoSystem16 =
+    '|afighter|afightera|afighterc|alexkidd|alexkidd1|aliensyn|aliensyn2|aliensyn3|aliensyn5|' +
+    'aliensyn7|aliensynjo|altbeast|altbeast2|altbeast4|altbeast5|altbeast5d|altbeast6|' +
+    'altbeastj|altbeastj1|altbeastj3|altbeastj3d|aurail|aurail1|aurail1d|aurailj|aurailjd|' +
+    'bayroute|bayroute1|bayrouted|bayroutej|bayroutejd|bodyslam|bullet|bulletd|cotton|' +
+    'cottond|cottonj|cottonja|cottonjad|cottonjd|cottonu|cottonud|ddux|ddux1|dduxd|dduxj|' +
+    'dduxjd|eswat|eswatd|eswatj|eswatj1|eswatj1d|eswatjd|eswatu|eswatud|fantzone|' +
+    'fantzone1|fantzonee|fantzonep|fantzonepr|fpoint|fpoint1|fpoint1d|fpointd|goldnaxe|' +
+    'goldnaxe1|goldnaxe1d|goldnaxe2|goldnaxe3|goldnaxe3d|goldnaxej|goldnaxejd|goldnaxeu|' +
+    'goldnaxeud|passsht|passshtd|quartet|quartet2|quartet2a|quarteta|shinobi|shinobi1|' +
+    'shinobi1d|shinobi2|shinobi2d|shinobi3|shinobi4|shinobi5|shinobi6|shinoblb|shinobls|' +
+    'sonicbom|sonicbomd|tetris|tetris1|tetris1d|tetris2|tetris2d|tetris3|tetris3d|tetrisd|' +
+    'timescan1|tturf|tturfu|wb3|wb31|wb31d|wb32|wb32d|wb33|wb33d|wb34|wb34d|wb35|wb35d|' +
+    'wrestwar|wrestwar1|wrestwar1d|wrestwar2|wrestwar2d|';
+  FBNeoSystem18 =
+    '|astorm|astorm3|astorm3d|astormj|astormjd|astormu|astormud|bloxeed|bloxeeda|bloxeedd|' +
+    'cltchitr|cltchitrd|cltchitrj|cltchitrjd|ddcrew|ddcrew1|ddcrew1d|ddcrew2|ddcrew2d|' +
+    'ddcrewd|ddcrewj|ddcrewj2|ddcrewj2d|ddcrewjd|ddcrewu|ddcrewud|desertbr|desertbrd|' +
+    'desertbrj|desertbrjd|hamaway|lghost|lghostd|lghostj|lghostu|lghostud|mwalk|mwalkd|' +
+    'mwalkj|mwalkjd|mwalku|mwalkud|shdancer|shdancer1|shdancerj|wwallyj|wwallyja|' +
+    'wwallyja3p|wwallyjad|wwallyjd|';
+  FBNeoSystem32 =
+    '|alien3|alien3j|alien3u|arabfgt|arabfgtj|arabfgtu|arescue|arescuej|arescueu|brival|' +
+    'brivalj|darkedge|darkedgej|dbzvrvs|f1en|f1enj|f1enu|f1lap|f1lapj|f1lapt|ga2|ga2j|' +
+    'ga2u|holo|jleague|jleagueo|jpark|jparkj|jparkja|jparkjc|kokoroj|kokoroj2|kokoroja|' +
+    'radm|radmu|radr|radrj|radru|slipstrm|slipstrmh|sonic|sonicp|spidman|spidmanj|' +
+    'spidmanu|svf|svfo|svs|';

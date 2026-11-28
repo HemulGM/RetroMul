@@ -30,8 +30,8 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads, RM.Platforms.Atari2600.Settings, RM.Settings.Catalog,
-  RM.Settings.Platform, Core.Emulation, Core.Platforms,
+  RA.Console, RM.Input.Gamepads, RM.Platforms.Atari2600.Settings,
+  RM.Settings.Catalog, RM.Settings.Platform, Core.Emulation, Core.Platforms,
   Core.Platforms.Atari2600.Adapter, RM.Platforms.Presentation,
   RM.Gamepad.Factory, RM.Platforms.Atari2600.Gamepads, RM.Input.Runtime,
   RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
@@ -288,6 +288,7 @@ begin
     'folder identifies the console. Choose the correct TV standard and, for Atari 2600 paddle ' +
     'games, configure the paddle controller.');
   FRegistered := True;
+  RegisterPlatformAchievementMedia('at2600', RAConsoleAtari2600, TPlatformRegistry.Require('at2600').Extensions);
 end;
 
 end.

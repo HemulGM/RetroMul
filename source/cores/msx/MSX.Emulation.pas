@@ -8,7 +8,7 @@ uses
   MSX.Machine;
 
 type
-  TMSXWorker = class(TThread)
+  TMSXWorker = class(TAchievementWorker)
   private
     FInputPortsCommand: TInputPortsCommand;
     function GetInputPorts: TCoreInputPorts;
@@ -295,6 +295,11 @@ var
   end;
 
 begin
+  var ReadAchievementMemory: TEmulationAchievementRead :=
+    function(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal
+    begin
+      Result := Console.ReadAchievementRAM(Address, Buffer, Count);
+    end;
   Console := nil;
   Audio := nil;
   Hints := nil;
@@ -403,6 +408,7 @@ begin
               procedure(State: TStateArchive)
               begin
                 Console.SerializeState(State);
+                TransferAchievementProgress(State);
               end;
             if Loading then
             begin
@@ -440,6 +446,7 @@ begin
         begin
           Hints.Pause;
           Console.Reset;
+          ResetAchievements;
           if Audio <> nil then
             Audio.Clear;
           Deadline := TStopwatch.GetTimeStamp;
@@ -466,6 +473,7 @@ begin
         Console.SetInput(Input, Keys);
         Console.SendMouseDelta(MouseDX, MouseDY, MouseButtons);
         Console.RunFrame;
+        AchievementFrame(ReadAchievementMemory);
 
         if Terminated then
           Break;

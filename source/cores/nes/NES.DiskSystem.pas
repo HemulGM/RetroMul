@@ -85,6 +85,7 @@ type
     property AutoSwitchSuspended: Boolean read FAutoSuspended;
     property RamReader: TFdsRamReader read FRamReader write FRamReader;
     function CpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
+    function CpuPeek(Address: UInt16; out Value: UInt8): Boolean; override;
     function CpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
     function PpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
     function PpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
@@ -626,6 +627,17 @@ end;
 function TMapperFds.MotorOn: Boolean;
 begin
   Result := (FControl and 2) = 0;
+end;
+
+function TMapperFds.CpuPeek(Address: UInt16; out Value: UInt8): Boolean;
+begin
+  Result := Address >= $6000;
+  if not Result then
+    Exit;
+  if Address >= $E000 then
+    Value := FBios[Address - $E000]
+  else
+    Value := FRam[Address - $6000];
 end;
 
 function TMapperFds.CpuRead(Address: UInt16; out Value: UInt8): Boolean;

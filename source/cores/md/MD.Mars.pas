@@ -76,6 +76,7 @@ type
     procedure StorePeripheral(CPU, Index: Integer; Value: Cardinal; Size: Integer);
     function PeripheralRead(CPU: Integer; Address: Cardinal; Size: Integer): Cardinal;
   public
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const ROM, Boot68k, BootMaster, BootSlave: TBytes; PAL: Boolean);
     destructor Destroy; override;
     procedure Reset;
@@ -93,7 +94,7 @@ type
 implementation
 
 uses
-  System.Math;
+  Core.Emulation.Types, System.Math;
 
 function SHRead(User: Pointer; Address: Cardinal; Size: Integer): Cardinal;
 begin
@@ -1218,6 +1219,11 @@ end;
 function TMD32X.CPUState(Index: Integer): TSH2State;
 begin
   Result := FCPU[Index].State;
+end;
+
+function TMD32X.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  Result := ReadAchievementMemoryBlock(Address, Buffer, Count, @FState.RAM, SizeOf(FState.RAM));
 end;
 
 end.

@@ -3,8 +3,9 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.IniFiles, Core.Storage,
-  Core.Emulation, NGP.Console, NGP.Emulation, Core.InputConfig, NGP.Cartridge;
+  Core.Emulation.Types, System.SysUtils, System.Classes, System.IniFiles,
+  Core.Storage, Core.Emulation, NGP.Console, NGP.Emulation, Core.InputConfig,
+  NGP.Cartridge;
 
 type
   TNGPKeyMap = array[TEmulatorButton] of UInt32;
@@ -23,7 +24,7 @@ type
     property Keys2: TNGPKeyMap read FKeys2;
   end;
 
-  TNGPCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics)
+  TNGPCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationAchievements)
   private
     FBIOS, FIdentity: TBytes;
     FCartridgeROM: TBytes;
@@ -38,6 +39,8 @@ type
     FError, FSnapshotDirectory, FSaveFile: string;
     procedure ApplySettings;
   public
+    function AchievementROM: TBytes;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     procedure ApplyLiveSettings;
     constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string);
     destructor Destroy; override;
@@ -340,6 +343,17 @@ end;
 function TNGPCoreAdapter.IsPaused: Boolean;
 begin
   Result := FPaused;
+end;
+
+function TNGPCoreAdapter.AchievementROM: TBytes;
+begin
+  Result := FCartridgeROM;
+end;
+
+procedure TNGPCoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  if FThread <> nil then
+    FThread.SetAchievementObserver(Observer);
 end;
 
 end.

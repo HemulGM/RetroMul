@@ -312,7 +312,7 @@ object SettingsView: TSettingsView
             WrapMode = Fit
           end
         end
-        object ListBoxItemAchievements: TListBoxItem
+        object ListBoxItemScraping: TListBoxItem
           TextSettings.Font.Size = 15.000000000000000000
           TextSettings.HorzAlign = Center
           StyledSettings = [Family, Style, FontColor]
@@ -322,6 +322,51 @@ object SettingsView: TSettingsView
           Size.PlatformDefault = False
           StyleLookup = 'listboxitemstyle'
           TabOrder = 5
+          Text = 'Scraping'
+          object PathCategoryScraping: TPath
+            Align = Left
+            Data.Path = {
+              2D000000000000000000504100004040020000000000504172A71C4002000000
+              39D648410000004002000000000040410000004002000000C729374100000040
+              020000000000304172A71C400200000000003041000040400100000000003041
+              705F714101000000A5A0F640B8AF3C41020000006C21EA403B70364102000000
+              94DED5403B703641020000005B5FC940B8AF3C410200000037E0BC4035EF4241
+              0200000037E0BC40CB104D41020000005B5FC9404850534101000000B8AF3441
+              24A891410200000035EF3A41E3C7944102000000CB104541E3C7944102000000
+              48504B4124A891410100000024A88D414850534102000000E3C79041CB104D41
+              02000000E3C7904135EF42410200000024A88D41B8AF3C410200000066888A41
+              3B703641020000009A7785413B70364102000000DC578241B8AF3C4101000000
+              00005041705F7141010000000000504100004040030000000000504100004040
+              000000000000A0400000A04102000000B9538E400000A0410200000000008040
+              E494A34102000000000080400000A84102000000000080401C6BAC4102000000
+              B9538E400000B041020000000000A0400000B04101000000000098410000B041
+              020000001C6B9C410000B041020000000000A0411C6BAC41020000000000A041
+              0000A841020000000000A041E494A341020000001C6B9C410000A04102000000
+              000098410000A041010000000000A0400000A041030000000000A0400000A041}
+            Fill.Color = xFFA9AAB9
+            HitTest = False
+            Margins.Left = 12.000000000000000000
+            Margins.Top = 14.000000000000000000
+            Margins.Bottom = 14.000000000000000000
+            Position.X = 12.000000000000000000
+            Position.Y = 14.000000000000000000
+            Size.Width = 24.000000000000000000
+            Size.Height = 24.000000000000000000
+            Size.PlatformDefault = False
+            Stroke.Kind = None
+            WrapMode = Fit
+          end
+        end
+        object ListBoxItemAchievements: TListBoxItem
+          TextSettings.Font.Size = 15.000000000000000000
+          TextSettings.HorzAlign = Center
+          StyledSettings = [Family, Style, FontColor]
+          Position.Y = 312.000000000000000000
+          Size.Width = 236.000000000000000000
+          Size.Height = 52.000000000000000000
+          Size.PlatformDefault = False
+          StyleLookup = 'listboxitemstyle'
+          TabOrder = 6
           Text = 'Achievements'
           object PathCategoryAchievements: TPath
             Align = Left
@@ -741,5 +786,9 @@ object SettingsView: TSettingsView
         end
       end
     end
+  end
+  object TimerScraperStatus: TTimer
+    Enabled = False
+    Interval = 250
   end
 end

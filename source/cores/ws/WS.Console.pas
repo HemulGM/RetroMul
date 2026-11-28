@@ -46,6 +46,7 @@ type
     function GetSampleFrames: Integer;
     function Keypad: Byte;
   public
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const ROM, BIOS: TBytes; Color: Boolean);
     destructor Destroy; override;
     procedure Reset;
@@ -946,6 +947,13 @@ begin
       (FSoundDMAClock < 0) or (FSoundDMAClock > 127) or (FDMACycles < 0) or
       (FDMACycles > $20000) then
       raise EReadError.Create('Invalid WonderSwan timing state');
+end;
+
+function TWSConsole.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  if Address < $10000 then
+    Exit(ReadAchievementMemoryBlock(Address, Buffer, Count, @FRAM, SizeOf(FRAM)));
+  Result := FCartridge.ReadAchievementRAM(Address - $10000, Buffer, Count);
 end;
 
 end.

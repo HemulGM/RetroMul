@@ -22,7 +22,7 @@ type
 implementation
 
 uses
-  System.Classes, System.IniFiles, System.SysUtils, System.StrUtils,
+  RA.Console, System.Classes, System.IniFiles, System.SysUtils, System.StrUtils,
   System.Types, System.UITypes, FMX.Types, Core.Emulation, Core.Emulation.Types,
   Core.Platforms, Core.PlatformServices, Core.Snapshots, Core.Storage,
   Core.Archive.Container, Core.CD.Disc, INTV.Cartridge, INTV.LuigiImage,
@@ -348,6 +348,7 @@ begin
   Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput(IntvPlatformId, Definition);
   FRegistered := True;
+  RegisterPlatformAchievementMedia('intellivision', RAConsoleIntellivision, TPlatformRegistry.Require('intellivision').Extensions);
 end;
 
 end.

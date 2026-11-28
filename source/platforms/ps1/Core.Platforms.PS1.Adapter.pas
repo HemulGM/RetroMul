@@ -3,9 +3,9 @@
 interface
 
 uses
-  Core.InputConfig, System.SysUtils, System.Classes, System.IniFiles,
-  System.SyncObjs, Core.Storage, Core.Emulation, Core.Snapshots, Core.CD.Disc,
-  PS1.Console, PS1.SIO, Core.Platforms.PS1.Playback;
+  Core.Emulation.Types, Core.InputConfig, System.SysUtils, System.Classes,
+  System.IniFiles, System.SyncObjs, Core.Storage, Core.Emulation, Core.Snapshots,
+  Core.CD.Disc, PS1.Console, PS1.SIO, Core.Platforms.PS1.Playback;
 
 {$SCOPEDENUMS ON}
 
@@ -57,7 +57,7 @@ type
 
   TPS1PadInputs = array[0..1] of TPS1PadInput;
 
-  TPS1Worker = class(TThread)
+  TPS1Worker = class(TAchievementWorker)
   private
     FLock: TCriticalSection;
     FWake: TEvent;
@@ -116,7 +116,7 @@ type
     property InputPorts: TCoreInputPorts read GetInputPorts write SetInputPorts;
   end;
 
-  TPS1CoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IPS1ControllerInput, IEmulationRumbleOutput, IEmulationDiscControl)
+  TPS1CoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IPS1ControllerInput, IEmulationRumbleOutput, IEmulationDiscControl, IEmulationAchievements)
   private
     FStorage: IStorage;
     FConfig: IEmulatorConfig;
@@ -139,6 +139,8 @@ type
     procedure LoadBIOS(const RomName: string);
     procedure Configure;
   public
+    function AchievementROM: TBytes;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     function GetDiscCount: Integer;
     function GetDiscName(Index: Integer): string;
     function GetDiscIndex: Integer;
@@ -625,6 +627,7 @@ begin
     procedure(State: TStateArchive)
     begin
       Console.SerializeState(State);
+      TransferAchievementProgress(State);
     end;
   if Loading then
   begin
@@ -655,6 +658,11 @@ end;
 
 procedure TPS1Worker.Execute;
 begin
+  var ReadAchievementMemory: TEmulationAchievementRead :=
+    function(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal
+    begin
+      Result := FConsole.ReadAchievementRAM(Address, Buffer, Count);
+    end;
   FConsole := nil;
   FAudio := nil;
   FAudioFailed := False;
@@ -703,6 +711,7 @@ begin
         begin
           SaveCards(FConsole);
           FConsole.Reset;
+          ResetAchievements;
           FConsole.SPU.TakeSamples;
           ClearAudio;
           Restart;
@@ -747,6 +756,7 @@ begin
         for var Port := 0 to 1 do
           FConsole.SetPad(Port, Inputs[Port], FKinds[Port], FConnected[Port]);
         FConsole.RunFrame;
+        AchievementFrame(ReadAchievementMemory);
         var Pad := FConsole.Pad(0);
         var Level := Pad.LargeMotor;
         if Pad.SmallMotor then
@@ -1301,6 +1311,17 @@ begin
   Result := 0;
   if GetHasRumble and FConfigObject.Rumble and not FPaused and (FWorker <> nil) then
     Result := FWorker.RumbleLevel;
+end;
+
+function TPS1CoreAdapter.AchievementROM: TBytes;
+begin
+  Result := nil;
+end;
+
+procedure TPS1CoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  if FWorker <> nil then
+    FWorker.SetAchievementObserver(Observer);
 end;
 
 end.

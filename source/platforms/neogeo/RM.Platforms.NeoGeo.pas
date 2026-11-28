@@ -28,13 +28,13 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads, NeoGeo.Cartridge, NeoGeo.RomSets, Core.Archive.Container,
-  RM.Settings.Catalog, Core.Snapshots, System.StrUtils, Core.Emulation,
-  Core.Platforms, Core.Platforms.NeoGeo.Adapter, RM.Platforms.NeoGeo.Settings,
-  RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Platforms.NeoGeo.Gamepads,
-  RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
-  RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
-  System.Classes;
+  RA.Console, Core.PlatformServices, RM.Input.Gamepads, NeoGeo.Cartridge,
+  NeoGeo.RomSets, Core.Archive.Container, RM.Settings.Catalog, Core.Snapshots,
+  System.StrUtils, Core.Emulation, Core.Platforms, Core.Platforms.NeoGeo.Adapter,
+  RM.Platforms.NeoGeo.Settings, RM.Platforms.Presentation, RM.Gamepad.Factory,
+  RM.Platforms.NeoGeo.Gamepads, RM.Input.Runtime, RM.Session.Runtime,
+  RM.Window.Layout, RM.Settings.Runtime, RM.ControlsHelp.Content,
+  RM.Settings.Callouts, RM.Settings.Devices, System.Classes;
 
 const
   PlatformIcon =
@@ -198,6 +198,7 @@ begin
           end;
         end);
       Result.ArchiveCandidate := False;
+      Result.AchievementSetName := NeoGeoAchievementSetName(Description);
       Exit;
     end;
   finally
@@ -317,7 +318,9 @@ begin
   RegisterServices;
   RegisterCore;
   RegisterClient;
+  RegisterPlatformAchievementMedia('neogeo', RAConsoleArcade, ['.zip', '.7z', '.neo']);
   FRegistered := True;
+  RegisterPlatformAchievementMedia('neogeocd', RAConsoleNeoGeoCD, TPlatformRegistry.Require('neogeocd').Extensions, True);
 end;
 
 end.

@@ -8,7 +8,7 @@ uses
   Saturn.SMPC, Core.CD.Disc;
 
 type
-  TSaturnWorker = class(TThread)
+  TSaturnWorker = class(TAchievementWorker)
   private
     FInputPortsCommand: TInputPortsCommand;
     function GetInputPorts: TCoreInputPorts;
@@ -266,6 +266,11 @@ var
   end;
 
 begin
+  var ReadAchievementMemory: TEmulationAchievementRead :=
+    function(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal
+    begin
+      Result := Console.ReadAchievementRAM(Address, Buffer, Count);
+    end;
   Console := nil;
   Hints := nil;
   Audio := nil;
@@ -319,6 +324,7 @@ begin
               procedure(State: TStateArchive)
               begin
                 Console.SerializeState(State);
+                TransferAchievementProgress(State);
               end;
             if Loading then
             begin
@@ -349,6 +355,7 @@ begin
         if ResetRequested then
         begin
           Console.Reset;
+          ResetAchievements;
           ClearAudio;
           Hints.Pause;
           Deadline := TStopwatch.GetTimeStamp;
@@ -426,6 +433,7 @@ begin
         var FrameStartedAt := Console.Time;
         var FrameClock := Console.ClockFrequency;
         Console.RunFrame;
+        AchievementFrame(ReadAchievementMemory);
         CoreFinished := TStopwatch.GetTimeStamp;
         Rate := Console.FramesPerSecond;
         if Terminated then

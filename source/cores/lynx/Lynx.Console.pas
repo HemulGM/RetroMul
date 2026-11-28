@@ -28,6 +28,7 @@ type
     function GetSampleFrames: Integer;
     procedure Advance(Ticks: Integer);
   public
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const ROM, BIOS: TBytes);
     destructor Destroy; override;
     procedure Reset;
@@ -303,6 +304,11 @@ begin
   FCartridge.SerializeState(State);
   FMikey.SerializeState(State);
   FSuzy.SerializeState(State);
+end;
+
+function TLynxConsole.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  Result := ReadAchievementMemoryBlock(Address, Buffer, Count, @FRAM, SizeOf(FRAM));
 end;
 
 end.

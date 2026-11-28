@@ -8,7 +8,7 @@ uses
   Lynx.Cartridge;
 
 type
-  TLynxWorker = class(TThread)
+  TLynxWorker = class(TAchievementWorker)
   private
     FInputPortsCommand: TInputPortsCommand;
     function GetInputPorts: TCoreInputPorts;
@@ -205,6 +205,11 @@ var
   Audio: TPCMAudio;
   AudioFailed: Boolean;
 begin
+  var ReadAchievementMemory: TEmulationAchievementRead :=
+    function(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal
+    begin
+      Result := Console.ReadAchievementRAM(Address, Buffer, Count);
+    end;
   Console := nil;
   Hints := nil;
   Audio := nil;
@@ -236,6 +241,7 @@ begin
               procedure(State: TStateArchive)
               begin
                 Console.SerializeState(State);
+                TransferAchievementProgress(State);
               end;
             if Loading then
             begin
@@ -268,6 +274,7 @@ begin
         if ResetRequested then
         begin
           Console.Reset;
+          ResetAchievements;
           if Audio <> nil then
             Audio.Clear;
           Hints.Pause;
@@ -291,6 +298,7 @@ begin
         else
           Console.SetInput(Input.Buttons);
         Console.RunFrame;
+        AchievementFrame(ReadAchievementMemory);
         Rate := Console.FramesPerSecond;
         if Terminated then
           Break;

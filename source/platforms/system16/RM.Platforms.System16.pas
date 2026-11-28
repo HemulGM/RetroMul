@@ -18,8 +18,9 @@ type
 implementation
 
 uses
-  System.Classes, Core.Emulation, Core.Platforms, Core.Snapshots, S16.RomSets,
-  Core.Platforms.System16.Adapter, RM.Platforms.SegaArcade;
+  Core.PlatformServices, RA.Console, System.Classes, Core.Emulation,
+  Core.Platforms, Core.Snapshots, S16.RomSets, Core.Platforms.System16.Adapter,
+  RM.Platforms.SegaArcade;
 
 type
   TSystem16Settings = class(TSegaArcadeSettings)
@@ -45,6 +46,8 @@ begin
         Result := TS16CoreAdapter.Create(Context.Stream, Context.Storage, Context.RomName);
       end);
     Result.Format.SystemId := 'system16';
+    if RomSet.ArchiveProgramMatched then
+      Result.AchievementSetName := RomSet.Name;
   end;
 end;
 
@@ -60,6 +63,7 @@ begin
   RegisterEmulationCore(Registration);
   RegisterSnapshotPolicy('system16', TSnapshotPolicy.Create(2));
   RegisterSegaArcadeServices('system16', TSystem16Settings);
+  RegisterPlatformAchievementMedia('system16', RAConsoleArcade, ['.zip', '.7z']);
   FRegistered := True;
 end;
 

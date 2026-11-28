@@ -37,6 +37,7 @@ type
     procedure CDIRQ(Line: Integer);
     procedure FastBootCD;
   public
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const Image, BIOS: TBytes; PAL: Boolean = False; UseBIOS: Boolean = True; Disc: TCDDisc = nil; CDHardware: Boolean = False);
     destructor Destroy; override;
     procedure Reset;
@@ -571,6 +572,11 @@ begin
     FCD.SerializeState(State);
     State.Field(FNVM[0], Length(FNVM));
   end;
+end;
+
+function TJaguarConsole.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  Result := ReadAchievementMemoryBlock(Address, Buffer, Count, FRAM);
 end;
 
 end.

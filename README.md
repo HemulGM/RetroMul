@@ -371,6 +371,12 @@ Desktop shortcuts during gameplay:
 
 These shortcuts are suspended while an emulated NES or Subor keyboard is active.
 
+### Background scraping
+
+Open **Settings → Scraping** to enable ScreenScraper, select anonymous access or save a personal account, and view the remaining daily quota. RetroMul adds games that have no entry in the ROM folder's `gamelist.xml` and stores their front covers in `media/images` for the `thumbnail` field. The open library applies results every 12 seconds.
+
+ScreenScraper requires developer credentials in both account modes. Set `ScreenScraperApplicationID` and `ScreenScraperApplicationPassword` as Pascal string constants in `credentials/ScreenScraper.Application.inc`. RetroMul reads this file at startup from the checkout root or from the `credentials` directory beside the executable. Keep the file outside version control. The `RETROMUL_SCREENSCRAPER_DEVID` and `RETROMUL_SCREENSCRAPER_DEVPASSWORD` environment variables take precedence when both are set.
+
 ## Source layout
 
 | Directory | Responsibility |

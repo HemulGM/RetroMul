@@ -71,6 +71,7 @@ type
   public
     ROMBankSelected: Integer;
     RAMBankSelected: Integer;
+    function ReadAchievementSaveByte(Address: Cardinal; out Value: Byte): Boolean;
     function MbcRead(Address: Integer): Integer;
     procedure MbcWrite(Address, Value: Integer);
     function IsCGBCartridge: Boolean;
@@ -98,6 +99,13 @@ implementation
 
 uses
   System.DateUtils, System.Math;
+
+function TGBMBC.ReadAchievementSaveByte(Address: Cardinal; out Value: Byte): Boolean;
+begin
+  Result := Address < Cardinal(Length(FRAM));
+  if Result then
+    Value := Byte(FRAM[Address]);
+end;
 
 { TGBMBC }
 

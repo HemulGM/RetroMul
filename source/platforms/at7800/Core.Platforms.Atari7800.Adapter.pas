@@ -3,8 +3,8 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.IniFiles, Core.Storage, Core.Emulation,
-  A7800.Console, A7800.Emulation, Core.InputConfig;
+  Core.Emulation.Types, System.SysUtils, System.Classes, System.IniFiles,
+  Core.Storage, Core.Emulation, A7800.Console, A7800.Emulation, Core.InputConfig;
 
 type
   TA7800KeyMap = array[TEmulatorButton] of UInt32;
@@ -21,7 +21,7 @@ type
     property Keys2: TA7800KeyMap read FKeys2;
   end;
 
-  TA7800CoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationVirtualControls)
+  TA7800CoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationVirtualControls, IEmulationAchievements)
   private
     FCartridge: TBytes;
     FThread: TA7800Worker;
@@ -33,6 +33,8 @@ type
     FError, FSnapshotDirectory: string;
     procedure ApplySettings;
   public
+    function AchievementROM: TBytes;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     procedure ApplyLiveSettings;
     constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; const ImageName: string = '');
     destructor Destroy; override;
@@ -304,6 +306,17 @@ end;
 function TA7800CoreAdapter.IsPaused: Boolean;
 begin
   Result := FPaused;
+end;
+
+function TA7800CoreAdapter.AchievementROM: TBytes;
+begin
+  Result := FCartridge;
+end;
+
+procedure TA7800CoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  if FThread <> nil then
+    FThread.SetAchievementObserver(Observer);
 end;
 
 end.

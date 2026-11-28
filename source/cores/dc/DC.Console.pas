@@ -68,6 +68,7 @@ type
     IOTraceLimit: Integer;
     // Diagnostics: waits for renders from VRAM accesses and the TA.
     RenderJoins: array[0..1] of Int64;
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const Config: TDCConsoleConfig);
     destructor Destroy; override;
     procedure Reset;
@@ -103,7 +104,7 @@ type
 implementation
 
 uses
-  System.Math, DC.ELF, DC.Font;
+  Core.Emulation.Types, System.Math, DC.ELF, DC.Font;
 
 procedure TraceIO(Console: TDCConsole; const Kind: string; Address: Cardinal; Value: UInt64; Size: Integer);
 begin
@@ -735,6 +736,11 @@ begin
   Flash.SerializeState(Archive);
   Archive.Field(FFrameCount, SizeOf(FFrameCount));
   Archive.Field(FHalted, SizeOf(FHalted));
+end;
+
+function TDCConsole.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  Result := ReadAchievementMemoryBlock(Address, Buffer, Count, Memory.RAM, DCRAMSize);
 end;
 
 end.

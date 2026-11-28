@@ -73,7 +73,8 @@ type
     procedure AddTrack(const Track: TCDTrack);
     procedure RequireISO9660;
     // Optional root-directory file; bounded to avoid trusting corrupt extents.
-    function ReadISOFile(const Name: string; MaximumSize: Integer = 65536): TBytes;
+    function ReadISOFile(const Name: string; MaximumSize: Integer = 65536): TBytes; overload;
+    function ReadISOFile(const Name: string; MaximumSize: Integer; out Found: Boolean): TBytes; overload;
     destructor Destroy; override;
     function TrackAt(LBA: Integer): Integer;
     function Track(Number: Integer): TCDTrack;
@@ -1967,6 +1968,12 @@ begin
 end;
 
 function TCDDisc.ReadISOFile(const Name: string; MaximumSize: Integer): TBytes;
+begin
+  var Found: Boolean;
+  Result := ReadISOFile(Name, MaximumSize, Found);
+end;
+
+function TCDDisc.ReadISOFile(const Name: string; MaximumSize: Integer; out Found: Boolean): TBytes;
 
   function LE32(const Bytes: TBytes; Offset: Integer): Cardinal;
   begin
@@ -1975,8 +1982,9 @@ function TCDDisc.ReadISOFile(const Name: string; MaximumSize: Integer): TBytes;
   end;
 
 begin
+  Found := False;
   Result := nil;
-  if (MaximumSize <= 0) or (MaximumSize > 65536) or (Length(FTracks) = 0) or FTracks[0].Audio then
+  if (MaximumSize <= 0) or (MaximumSize > 8 * 1024 * 1024) or (Length(FTracks) = 0) or FTracks[0].Audio then
     Exit;
   var First := FTracks[0];
   var Sectors := First.EndLBA - First.StartLBA;
@@ -2011,8 +2019,11 @@ begin
       var Version := Pos(';', Identifier);
       if Version > 0 then
         Identifier := Copy(Identifier, 1, Version - 1);
-      if SameText(Identifier, Name) and ((Sector[Cursor + 25] and $82) = 0) then
+      if SameText(Identifier, Name) then
       begin
+        Found := True;
+        if Sector[Cursor + 25] and $82 <> 0 then
+          Exit;
         var Extent := LE32(Sector, Cursor + 2);
         var FileSize := LE32(Sector, Cursor + 10);
         if (FileSize = 0) or (FileSize > Cardinal(MaximumSize)) or

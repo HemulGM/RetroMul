@@ -53,6 +53,12 @@ function ReadRALastProgressUser(Ini: TCustomIniFile): string;
 
 procedure WriteRAStoredCredentials(Ini: TCustomIniFile; const Settings: TRAAccountSettings; const Credentials: TRACredentials);
 
+{$IFDEF MSWINDOWS}
+function ProtectAccountSecret(const UserName, Token: string): string;
+
+function UnprotectAccountSecret(const UserName, protected: string): string;
+{$ENDIF}
+
 implementation
 
 uses
@@ -82,7 +88,7 @@ function CryptProtectData(var Input: TDataBlob; Description: PWideChar; Entropy,
 
 function CryptUnprotectData(var Input: TDataBlob; Description, Entropy, Reserved, Prompt: Pointer; Flags: DWORD; out Output: TDataBlob): BOOL; stdcall; external 'crypt32.dll';
 
-function ProtectToken(const UserName, Token: string): string;
+function ProtectAccountSecret(const UserName, Token: string): string;
 var
   Bytes: TBytes;
   Input, Output: TDataBlob;
@@ -102,7 +108,7 @@ begin
   end;
 end;
 
-function UnprotectToken(const UserName, protected: string): string;
+function UnprotectAccountSecret(const UserName, protected: string): string;
 var
   Bytes: TBytes;
   Input, Output: TDataBlob;
@@ -205,7 +211,7 @@ begin
   if Settings.Remember and (Settings.UserName <> '') then
   begin
     try
-      Result.Token := UnprotectToken(Settings.UserName, Ini.ReadString(RAAchievementsSection, ProtectedTokenKey, ''));
+      Result.Token := UnprotectAccountSecret(Settings.UserName, Ini.ReadString(RAAchievementsSection, ProtectedTokenKey, ''));
       if Result.Token <> '' then
         Result.UserName := Settings.UserName;
     except
@@ -222,7 +228,7 @@ begin
   if Settings.Remember and (Settings.UserName <> '') and SameText(Settings.UserName, Credentials.UserName) and
     (Credentials.Token <> '') then
   begin
-    Ini.WriteString(RAAchievementsSection, ProtectedTokenKey, ProtectToken(Settings.UserName, Credentials.Token));
+    Ini.WriteString(RAAchievementsSection, ProtectedTokenKey, ProtectAccountSecret(Settings.UserName, Credentials.Token));
     Exit;
   end;
   {$ENDIF}

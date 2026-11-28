@@ -8,7 +8,7 @@ uses
   A7800.Cartridge;
 
 type
-  TA7800Worker = class(TThread)
+  TA7800Worker = class(TAchievementWorker)
   private
     FInputPortsCommand: TInputPortsCommand;
     FLock: TCriticalSection;
@@ -210,6 +210,11 @@ var
   Deadline: Double;
   CoreId: string;
 begin
+  var ReadAchievementMemory: TEmulationAchievementRead :=
+    function(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal
+    begin
+      Result := Console.ReadAchievementRAM(Address, Buffer, Count);
+    end;
   Console := nil;
   Audio := nil;
   Hints := nil;
@@ -240,6 +245,7 @@ begin
               procedure(State: TStateArchive)
               begin
                 Console.SerializeState(State);
+                TransferAchievementProgress(State);
               end;
             if Loading then
             begin
@@ -271,6 +277,7 @@ begin
         begin
           Hints.Pause;
           Console.Reset;
+          ResetAchievements;
           if Audio <> nil then
             Audio.Clear;
           Deadline := TStopwatch.GetTimeStamp;
@@ -305,6 +312,7 @@ begin
         end;
         Console.SetInput(Input);
         Console.RunFrame;
+        AchievementFrame(ReadAchievementMemory);
 
         if Terminated then
           Break;

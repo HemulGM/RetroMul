@@ -4,7 +4,7 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.Generics.Collections, CPS.RomSets,
-  Core.Storage;
+  Core.Storage, Core.CD.Disc;
 
 type
   ECPSRom = class(EReadError);
@@ -25,6 +25,8 @@ type
 
 function CPSCRC32(const Data: TBytes): Cardinal;
 
+function VerifiedCPS3CDSet(const RomSet: TCPSRomSet; const BIOS: TBytes; Disc: TCDDisc): string;
+
 implementation
 
 uses
@@ -32,6 +34,80 @@ uses
 
 var
   CRCTable: array[0..255] of Cardinal;
+
+type
+  TCPS3CDSet = record
+    Name: string;
+    BIOS: Cardinal;
+    Layout: Integer;
+  end;
+
+{$I CPS3.FBNeoCD.inc}
+
+function VerifiedCPS3CDSet(const RomSet: TCPSRomSet; const BIOS: TBytes; Disc: TCDDisc): string;
+const
+  ChipSize = 2 * 1024 * 1024;
+begin
+  Result := '';
+  if (Disc = nil) or (Disc.TrackCount <> 1) or (Length(BIOS) <> $80000) then
+    Exit;
+  var BIOSCRC := CPSCRC32(BIOS);
+  var KnownBIOS := False;
+  for var Target in CPS3CDSets do
+    if Target.BIOS = BIOSCRC then
+    begin
+      KnownBIOS := True;
+      Break;
+    end;
+  if not KnownBIOS then
+    Exit;
+
+  var Layout := StringOfChar('-', 6 * 8 * 8);
+  for var Bank := 1 to 6 do
+    for var Part := 0 to 1 do
+    begin
+      var Found: Boolean;
+      var Data := Disc.ReadISOFile(IntToStr(Bank * 10 + Part), 4 * ChipSize, Found);
+      if not Found then
+        Continue;
+
+      // Program groups interleave four byte lanes. Graphics groups contain
+      // consecutive two-lane pairs. Compare every physical SIMM socket.
+      var Lanes := 2;
+      if Bank < 3 then
+        Lanes := 4;
+      if (Length(Data) = 0) or (Length(Data) mod (Lanes * ChipSize) <> 0) then
+        Exit;
+      var First := (Bank - 1) * 8 + Part * 4;
+      for var Chip := 0 to Length(Data) div ChipSize - 1 do
+      begin
+        var CRC: Cardinal := $FFFFFFFF;
+        var Offset := (Chip div Lanes) * Lanes * ChipSize + Chip mod Lanes;
+        for var I := 1 to ChipSize do
+        begin
+          CRC := (CRC shr 8) xor CRCTable[(CRC xor Data[Offset]) and $FF];
+          Inc(Offset, Lanes);
+        end;
+        var Hex := IntToHex(CRC xor $FFFFFFFF, 8);
+        Move(Hex[1], Layout[(First + Chip) * 8 + 1], 8 * SizeOf(Char));
+      end;
+    end;
+
+  var UniqueSet := '';
+  var Ambiguous := False;
+  for var Target in CPS3CDSets do
+    if (Target.BIOS = BIOSCRC) and (CPS3CDLayouts[Target.Layout] = Layout) then
+    begin
+      if Target.Name = RomSet.Name then
+        Exit(Target.Name);
+      if UniqueSet = '' then
+        UniqueSet := Target.Name
+      else if UniqueSet <> Target.Name then
+        Ambiguous := True;
+    end;
+  if not Ambiguous then
+    Result := UniqueSet;
+end;
 
 function CPSCRC32(const Data: TBytes): Cardinal;
 begin

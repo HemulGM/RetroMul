@@ -207,6 +207,7 @@ begin
   FView.RefreshAchievements(Sender);
   if FState.Browser.View <> nil then
   begin
+    FState.Browser.View.ApplyScrapingPreferences;
     FState.Browser.ReloadPending := True;
     if FState.Browser.ViewingLibrary then
     begin

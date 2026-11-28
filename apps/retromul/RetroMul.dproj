@@ -434,6 +434,7 @@
         <DCCReference Include="settings\RM.Settings.Builder.pas"/>
         <DCCReference Include="settings\RM.Settings.Binding.pas"/>
         <DCCReference Include="settings\RM.Settings.Session.pas"/>
+        <DCCReference Include="settings\RM.ScreenScraper.pas"/>
         <DCCReference Include="settings\RM.Settings.Callouts.pas"/>
         <DCCReference Include="settings\RM.Settings.Devices.pas"/>
         <DCCReference Include="settings\RM.Settings.PalettePreview.pas"/>

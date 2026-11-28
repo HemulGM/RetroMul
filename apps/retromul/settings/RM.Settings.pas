@@ -13,7 +13,7 @@ uses
   RM.Settings.Catalog, RM.ShaderBitmap, RM.BitmapShaders, RM.Settings.Builder,
   RM.Settings.Binding, RM.Settings.Session, RM.Settings.Rendering,
   RM.Settings.Template.Device, RM.Settings.Callouts, RM.Settings.Devices,
-  RM.Settings.PalettePreview, RA.Account, RA.Protocol;
+  RM.Settings.PalettePreview, RA.Account, RA.Protocol, RM.ScreenScraper;
 
 const
   SETTINGS_CATEGORY_GENERAL = RM.Settings.platform.SETTINGS_CATEGORY_GENERAL;
@@ -21,7 +21,8 @@ const
   SETTINGS_CATEGORY_VIDEO_AUDIO = RM.Settings.platform.SETTINGS_CATEGORY_VIDEO_AUDIO;
   SETTINGS_CATEGORY_CONTROLS = RM.Settings.platform.SETTINGS_CATEGORY_CONTROLS;
   SETTINGS_CATEGORY_PERIPHERALS = RM.Settings.platform.SETTINGS_CATEGORY_PERIPHERALS;
-  SETTINGS_CATEGORY_ACHIEVEMENTS = SETTINGS_CATEGORY_PERIPHERALS + 1;
+  SETTINGS_CATEGORY_SCRAPING = SETTINGS_CATEGORY_PERIPHERALS + 1;
+  SETTINGS_CATEGORY_ACHIEVEMENTS = SETTINGS_CATEGORY_SCRAPING + 1;
 
 const
   SETTINGS_SWITCH_WIDTH = 48;
@@ -33,7 +34,7 @@ const
 
 const
   SettingsCategoryNames: array[SETTINGS_CATEGORY_GENERAL..SETTINGS_CATEGORY_ACHIEVEMENTS] of string =
-    ('General', 'Library', 'Video and audio', 'Controls', 'Peripherals', 'Achievements');
+    ('General', 'Library', 'Video and audio', 'Controls', 'Peripherals', 'Scraping', 'Achievements');
 
 type
   TSettingsLocationPicker = reference to procedure(Folder: Boolean; const Current: string; const Callback: TStorageSelectionCallback);
@@ -86,7 +87,10 @@ type
     LayoutSettingsCompactReset, LayoutSettingsActions: TLayout;
     PathCategoryGeneral, PathCategoryLibrary, PathCategoryVideoAudio: TPath;
     PathCategoryControls, PathCategoryPeripherals, PathCategoryAchievements: TPath;
+    ListBoxItemScraping: TListBoxItem;
+    PathCategoryScraping: TPath;
     ListBoxItemAchievements: TListBoxItem;
+    TimerScraperStatus: TTimer;
     LabelBrand: TLabel;
     PathBrandIcon: TPath;
   private
@@ -94,6 +98,10 @@ type
     FAchievementAccount: IRAAccount;
     FSigningIn: Boolean;
     FAchievementStatus: string;
+    FCheckBoxScraperAnonymous: TCheckBox;
+    FEditScraperUserName, FEditScraperPassword: TEdit;
+    FLabelScraperQuota, FLabelScraperFailedQuota, FLabelScraperStatus: TLabel;
+    FButtonScraperQuota: TButton;
     FEditAchievementUserName, FEditAchievementPassword: TEdit;
     FCheckBoxRememberAchievementPassword: TCheckBox;
     FButtonAchievementSignIn, FButtonAchievementSignOut: TButton;
@@ -156,6 +164,10 @@ type
     FPendingButtonSet: Boolean;
     FPendingDeadline: UInt64;
     FOnApply, FOnClose: TNotifyEvent;
+    procedure BuildScrapingSettings;
+    procedure RefreshScrapingQuotaClick(Sender: TObject);
+    procedure ScraperStatusTick(Sender: TObject);
+    procedure UpdateScrapingControls;
     procedure BuildAchievementSettings;
     procedure UpdateAchievementControls;
     procedure AchievementSignInClick(Sender: TObject);
@@ -587,6 +599,7 @@ begin
     ListBoxNavigation.ListItems[SETTINGS_CATEGORY_GENERAL].Visible := False;
     ListBoxNavigation.ListItems[SETTINGS_CATEGORY_LIBRARY].Visible := False;
   end;
+  ListBoxItemScraping.Visible := FFixedPlatformPage = '';
   ListBoxItemAchievements.Visible := (FFixedPlatformPage = '') and (FAchievementAccount <> nil);
   ButtonSidebarBack.OnClick := BackClick;
   ButtonSidebarBack.StylesData['text.Margins.Left'] := 36;
@@ -840,8 +853,8 @@ begin
   FSearch.TextPrompt := Translate('Search this section');
   FPagePicker := TComboBox(CreateInSlot(LayoutSettingsPagePickerSlot, TSettingsComboBox));
   for var Category := Ord(FFixedPlatformPage <> '') * SETTINGS_CATEGORY_VIDEO_AUDIO to High(SettingsCategoryNames) do
-    if (Category <> SETTINGS_CATEGORY_ACHIEVEMENTS) or
-      ((FFixedPlatformPage = '') and (FAchievementAccount <> nil)) then
+    if ((FFixedPlatformPage = '') or IsPlatformCategory(Category)) and
+      ((Category <> SETTINGS_CATEGORY_ACHIEVEMENTS) or (FAchievementAccount <> nil)) then
       FPagePicker.Items.Add(Translate(SettingsCategoryNames[Category]));
   FPlatformSearch := TEdit(CreateInSlot(LayoutPlatformSearchSlot, TSearchEdit));
   FPlatformPicker := TComboBox(CreateInSlot(LayoutPlatformPickerSlot, TSettingsComboBox));
@@ -850,6 +863,7 @@ begin
   FCategoryIcons[2] := PathCategoryVideoAudio;
   FCategoryIcons[3] := PathCategoryControls;
   FCategoryIcons[4] := PathCategoryPeripherals;
+  FCategoryIcons[SETTINGS_CATEGORY_SCRAPING] := PathCategoryScraping;
   FCategoryIcons[SETTINGS_CATEGORY_ACHIEVEMENTS] := PathCategoryAchievements;
 end;
 
@@ -1040,6 +1054,8 @@ begin
       FContext.AddInformation('RowCoversanddescriptions', 'Covers and descriptions',
         'Each platform folder lists only formats supported by that platform. Optional gamelist.xml adds descriptions and artwork.', '');
     end
+    else if FCategory = SETTINGS_CATEGORY_SCRAPING then
+      BuildScrapingSettings
     else if FCategory = SETTINGS_CATEGORY_ACHIEVEMENTS then
       BuildAchievementSettings
     else
@@ -1309,6 +1325,8 @@ begin
     Exit;
   for var Field in FFields do
     Field.Pull;
+  if FEditScraperPassword <> nil then
+    WriteScraperPassword(FSession.Drafts['main'], FEditScraperUserName.Text.Trim, FEditScraperPassword.Text);
   if FEditAchievementUserName <> nil then
     FSession.Drafts['main'].WriteString(RAAchievementsSection, 'UserName', FEditAchievementUserName.Text.Trim);
   if (FPage <> 'main') and (FInput <> nil) then
@@ -1364,10 +1382,24 @@ end;
 
 procedure TSettingsView.ReleasePage;
 begin
+  if TimerScraperStatus <> nil then
+  begin
+    TimerScraperStatus.Enabled := False;
+    TimerScraperStatus.OnTimer := nil;
+  end;
   DisconnectPreview;
   FLastRow := nil;
   FNextRow := nil;
   FNextEditor := nil;
+  FCheckBoxScraperAnonymous := nil;
+  FEditScraperUserName := nil;
+  if FEditScraperPassword <> nil then
+    FEditScraperPassword.Text := '';
+  FEditScraperPassword := nil;
+  FLabelScraperQuota := nil;
+  FLabelScraperFailedQuota := nil;
+  FLabelScraperStatus := nil;
+  FButtonScraperQuota := nil;
   FEditAchievementUserName := nil;
   if FEditAchievementPassword <> nil then
     FEditAchievementPassword.Text := '';
@@ -1774,8 +1806,8 @@ begin
       if i = FCategory then
         Color := ThemeAccentTextColor;
       TPath(FCategoryIcons[i]).Stroke.Color := Color;
-      if i = SETTINGS_CATEGORY_ACHIEVEMENTS then
-        PathCategoryAchievements.Fill.Color := Color;
+      if i in [SETTINGS_CATEGORY_SCRAPING, SETTINGS_CATEGORY_ACHIEVEMENTS] then
+        TPath(FCategoryIcons[i]).Fill.Color := Color;
     end;
     var CompactSearch := LayoutHeader.Width < 740;
     var HeadingRow := LayoutSettingsHeading;
@@ -2132,10 +2164,102 @@ begin
   Result := (Index >= SETTINGS_CATEGORY_VIDEO_AUDIO) and (Index <= SETTINGS_CATEGORY_PERIPHERALS);
 end;
 
+procedure TSettingsView.BuildScrapingSettings;
+begin
+  Heading('GroupScreenScraper', 'ScreenScraper');
+  Check('RowBackgroundScraping', 'Background scraping',
+    'Add information and front covers for games without a gamelist.xml entry.',
+    ScraperSection, 'Enabled', False);
+  FCheckBoxScraperAnonymous := Check('RowScraperAnonymous', 'Use ScreenScraper anonymously',
+    'Use the service without a personal account. Turn this off to use your ScreenScraper username and password.',
+    ScraperSection, 'Anonymous', True);
+  FEditScraperUserName := EditText('RowScraperUserName', 'Username',
+    'Your ScreenScraper username for personal account mode.', ScraperSection, 'UserName', '');
+  {$IFDEF MSWINDOWS}
+  Row('RowScraperPassword', 'Password', 'Saved with Windows account protection.');
+  {$ELSE}
+  Row('RowScraperPassword', 'Password', 'Saved in the local RetroMul configuration.');
+  {$ENDIF}
+  FEditScraperPassword := TEdit.Create(FLastRow.Template);
+  FEditScraperPassword.Name := 'EditScraperPassword';
+  FEditScraperPassword.Parent := TSettingsRowTemplate(FLastRow.Template).LayoutSettingEditorSlot;
+  TControl(FEditScraperPassword.Parent).Margins.Rect := TRectF.Empty;
+  FEditScraperPassword.Align := TAlignLayout.Client;
+  FEditScraperPassword.Password := True;
+  FEditScraperPassword.Text := TScraperOptions.Read(FSession.Drafts['main']).Password;
+  FLastRow.Editor := FEditScraperPassword;
+  Heading('GroupScraperQuota', 'Daily quota');
+  FContext.AddInformation('RowScraperQuota', 'Requests remaining',
+    'ScreenScraper applies daily quotas by account, public IP address, or both.', '—');
+  FLabelScraperQuota := TLabel(FLastRow.Editor);
+  FContext.AddInformation('RowScraperFailedQuota', 'Unmatched requests remaining',
+    'A separate limit for lookups that find no matching game or ROM.', '—');
+  FLabelScraperFailedQuota := TLabel(FLastRow.Editor);
+  FContext.AddInformation('RowScraperStatus', 'ScreenScraper status', '', '—');
+  FLabelScraperStatus := TLabel(FLastRow.Editor);
+  FContext.AddAction('RowRefreshScraperQuota', 'Refresh quota',
+    'Check the quota for the account mode shown above.', 'Refresh', RefreshScrapingQuotaClick);
+  FButtonScraperQuota := TButton(FLastRow.Editor);
+  TimerScraperStatus.OnTimer := ScraperStatusTick;
+  TimerScraperStatus.Enabled := True;
+  UpdateScrapingControls;
+end;
+
+procedure TSettingsView.RefreshScrapingQuotaClick(Sender: TObject);
+begin
+  var Options := Default(TScraperOptions);
+  Options.Anonymous := FCheckBoxScraperAnonymous.IsChecked;
+  Options.UserName := FEditScraperUserName.Text.Trim;
+  Options.Password := FEditScraperPassword.Text;
+  RefreshScreenScraperQuota(FStorage, Options);
+  UpdateScrapingControls;
+end;
+
+procedure TSettingsView.ScraperStatusTick(Sender: TObject);
+begin
+  UpdateScrapingControls;
+end;
+
+procedure TSettingsView.UpdateScrapingControls;
+
+  function QuotaText(Remaining, Limit: Integer): string;
+  begin
+    if (Remaining < 0) or (Limit < 0) then
+      Result := '—'
+    else
+      Result := Format('%d / %d', [Remaining, Limit]);
+  end;
+
+begin
+  if FLabelScraperQuota = nil then
+    Exit;
+  var Options := Default(TScraperOptions);
+  Options.Anonymous := FCheckBoxScraperAnonymous.IsChecked;
+  Options.UserName := FEditScraperUserName.Text.Trim;
+  Options.Password := FEditScraperPassword.Text;
+  var Status := ScreenScraperStatus(Options);
+  FEditScraperUserName.Enabled := not Options.Anonymous;
+  FEditScraperPassword.Enabled := not Options.Anonymous;
+  FButtonScraperQuota.Enabled := not Status.Checking;
+  FLabelScraperQuota.Text := QuotaText(Status.Remaining, Status.Limit);
+  FLabelScraperFailedQuota.Text := QuotaText(Status.FailedRemaining, Status.FailedLimit);
+  if not ScraperApplicationConfigured then
+    FLabelScraperStatus.Text := Translate('ScreenScraper developer credentials are missing.')
+  else if Status.Checking then
+    FLabelScraperStatus.Text := Translate('Checking quota…')
+  else if Status.HTTPStatusCode <> 0 then
+    FLabelScraperStatus.Text := Format(Translate('ScreenScraper returned HTTP %d.'), [Status.HTTPStatusCode])
+  else if Status.Error <> '' then
+    FLabelScraperStatus.Text := Translate(Status.Error)
+  else
+    FLabelScraperStatus.Text := '—';
+end;
+
 procedure TSettingsView.BuildAchievementSettings;
 begin
   Heading('GroupAchievementAccount', 'RetroAchievements account');
-  FEditAchievementUserName := EditText('RowAchievementUserName', 'Username', '', RAAchievementsSection, 'UserName', '');
+  FEditAchievementUserName := EditText('RowAchievementUserName', 'Username',
+    'Use the name registered with RetroAchievements.', RAAchievementsSection, 'UserName', '');
   FEditAchievementUserName.MaxLength := 64;
 
   Row('RowAchievementPassword', 'Password', '');
@@ -2154,29 +2278,34 @@ begin
     RememberDescription, RAAchievementsSection, 'Remember', False);
   FContext.AddAction('RowAchievementSignIn', 'Sign in to RetroAchievements', '', 'Sign in', AchievementSignInClick);
   FButtonAchievementSignIn := TButton(FLastRow.Editor);
-  FContext.AddAction('RowAchievementSignOut', 'Sign out of RetroAchievements', '', 'Sign out', AchievementSignOutClick);
+  FContext.AddAction('RowAchievementSignOut', 'Sign out of RetroAchievements',
+    'Sign out and remove the saved sign-in token.', 'Sign out', AchievementSignOutClick);
   FButtonAchievementSignOut := TButton(FLastRow.Editor);
   FContext.AddInformation('RowAchievementAccountStatus', 'Account status', '', 'Not signed in');
   FLabelAchievementAccountStatus := TLabel(FLastRow.Editor);
 
   Heading('GroupAchievementOptions', 'Achievement options');
-  Check('RowEnableAchievements', 'Enable RetroAchievements', 'Available for NES and Game Boy Advance in Casual mode.',
+  Check('RowEnableAchievements', 'Enable RetroAchievements', 'Available in Casual mode on supported platforms.',
     RAAchievementsSection, 'Enabled', False);
   Check('RowScanLibraryROMs', 'Scan library ROMs for achievements',
     'Check for available achievements when loading the game library.',
     RAAchievementsSection, RAScanLibraryROMsKey, RAScanLibraryROMsDefault);
-  Check('RowAchievementRichPresence', 'Share game status (Rich Presence)', '',
+  Check('RowAchievementRichPresence', 'Share game status (Rich Presence)',
+    'Send supported games'' activity to your RetroAchievements profile.',
     RAAchievementsSection, 'RichPresence', True);
 
   Heading('GroupAchievementNotifications', 'Achievement notifications');
-  var Notifications := FContext.AddBoolean('RowAchievementNotifications', 'Show achievement notifications', '',
+  var Notifications := FContext.AddBoolean('RowAchievementNotifications', 'Show achievement notifications',
+    'Show a pop-up when you unlock an achievement.',
     RAAchievementsSection, 'Notifications', True);
-  var Corners := FContext.AddChoice('RowAchievementNoticeCorner', 'Notification corner', '',
+  var Corners := FContext.AddChoice('RowAchievementNoticeCorner', 'Notification corner',
+    'Choose where achievement notifications appear.',
     RAAchievementsSection, RANotificationCornerKey,
     SettingChoices(['Top right', 'Top left', 'Bottom right', 'Bottom left'], RANotificationCornerValues),
     RANotificationCornerValues[TRAAchievementCorner.TopRight]);
   Corners.EnabledWhen := Notifications.IsTrue();
-  var Duration := FContext.AddSlider('RowAchievementNoticeDuration', 'Notification duration (seconds)', '',
+  var Duration := FContext.AddSlider('RowAchievementNoticeDuration', 'Notification duration (seconds)',
+    'Choose how long each notification stays visible.',
     RAAchievementsSection, RANotificationDurationKey, RANotificationDefaultDuration,
     RANotificationMinDuration / 1000, RANotificationMaxDuration / 1000, 0.001, True);
   Duration.DecimalDigits := 1;
@@ -3193,6 +3322,10 @@ begin
   try
     CancelCapture;
     StorePage;
+    var ScraperOptions := TScraperOptions.Read(FSession.Drafts['main']);
+    if ScraperOptions.Enabled and not ScraperOptions.Anonymous and
+      ((ScraperOptions.UserName = '') or (ScraperOptions.Password = '')) then
+      raise Exception.Create(Translate('Enter your ScreenScraper username and password.'));
     FContext.Validate;
     var Translation := FormStyles.LoadTranslation(FStorage,
       FSession.Drafts['main'].ReadString('General', 'TranslationFile', '').Trim,
@@ -3238,7 +3371,7 @@ end;
 
 procedure TSettingsView.UpdateGameSettingsPanel;
 begin
-  PanelGameSettings.Visible := (FGameName <> '') and (FCategory <> SETTINGS_CATEGORY_ACHIEVEMENTS);
+  PanelGameSettings.Visible := (FGameName <> '') and not (FCategory in [SETTINGS_CATEGORY_SCRAPING, SETTINGS_CATEGORY_ACHIEVEMENTS]);
   CheckBoxSaveForGame.Text := Format(Translate('Save only for %s'), [FGameName]);
   ButtonResetGameSettings.Text := Format(Translate('Reset for %s'), [FGameName]);
   var Specific := FSession.HasGameSettings;

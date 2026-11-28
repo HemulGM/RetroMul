@@ -36,15 +36,15 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads, RM.Settings.Catalog, RM.Platforms.SG1000.Keyboard,
-  Core.PlatformServices, Core.Platforms.SG1000.Adapter, Core.Snapshots,
-  System.StrUtils, Core.Emulation, Core.Platforms, SG1000.Console,
-  RM.Platforms.SG1000.Settings, RM.Platforms.Presentation, RM.Gamepad.Factory,
-  RM.Platforms.SG1000.Gamepads, System.UITypes, RM.Input.Runtime,
-  RM.Keyboard.Input, RM.Session.Runtime, RM.Keyboard.Session, RM.Window.Layout,
-  RM.Keyboard.Window, RM.Settings.Runtime, RM.Keyboard.Settings,
-  RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
-  System.Classes;
+  RA.Console, RM.Input.Gamepads, RM.Settings.Catalog,
+  RM.Platforms.SG1000.Keyboard, Core.PlatformServices,
+  Core.Platforms.SG1000.Adapter, Core.Snapshots, System.StrUtils, Core.Emulation,
+  Core.Platforms, SG1000.Console, RM.Platforms.SG1000.Settings,
+  RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Platforms.SG1000.Gamepads,
+  System.UITypes, RM.Input.Runtime, RM.Keyboard.Input, RM.Session.Runtime,
+  RM.Keyboard.Session, RM.Window.Layout, RM.Keyboard.Window, RM.Settings.Runtime,
+  RM.Keyboard.Settings, RM.ControlsHelp.Content, RM.Settings.Callouts,
+  RM.Settings.Devices, System.Classes;
 
 const
   PlatformIconOMV =
@@ -160,6 +160,16 @@ begin
     end, True, SystemId, Encoding);
 end;
 
+function IsMultivisionSource(Context: TCoreLoadContext): Boolean;
+begin
+  if Context.SelectedPlatform <> '' then
+    Exit(SameText(Context.SelectedPlatform, ROM_SYSTEM_OMV));
+
+  // RomName keeps the outer path after SourceName becomes the archive entry.
+  var Path := '/' + Context.RomName.ToLower.Replace('\', '/');
+  Result := Path.Contains('/omv/');
+end;
+
 class function TSG1000Platform.ExtensionHint(Context: TCoreLoadContext): TCoreMatch;
 begin
   Result := nil;
@@ -180,8 +190,12 @@ begin
   end
   else if Context.HasExtension(['.sf7', '.sf', '.dsk']) then
     SystemId := 'sf7000'
-  else if Context.HasExtension(['.mv']) then
-    SystemId := 'omv';
+  else if Context.HasExtension(['.mv']) or
+    (Context.HasExtension(['.bin']) and IsMultivisionSource(Context)) then
+  begin
+    SystemId := ROM_SYSTEM_OMV;
+    Encoding := '';
+  end;
   if SystemId <> '' then
     Result := Match(Context, SystemId, Encoding);
 end;
@@ -229,7 +243,7 @@ begin
     ['.sf7', '.sf', '.dsk'],
     'SF7000', 'sf7000', 2, 'sg1000');
   TPlatformRegistry.RegisterPlatform('omv', 'Multivision', 'Multivision',
-    'Tsukuda Original', 'OMV Othello Multivision', 'omv', ['omv', 'sg1000'],
+    'Tsukuda Original', 'OMV Othello Multivision', 'omv', ['omv', 'multivision', 'sg1000'],
     ['.mv'],
     'Multivision', 'omv', 2, 'sg1000');
 end;
@@ -243,7 +257,9 @@ begin
   Registration.ExtraArchiveCandidate :=
     function(Context: TCoreLoadContext; const Name: string; Size: UInt64): Boolean
     begin
-      Result := SameText(ExtractFileExt(Name), '.bin') and (Size = $2000) and Name.ToLower.Contains('initial program loader');
+      Result := SameText(ExtractFileExt(Name), '.bin') and
+        (((Size = $2000) and Name.ToLower.Contains('initial program loader')) or
+        IsMultivisionSource(Context));
     end;
   Registration.ArchiveImageName :=
     function(const Name: string): string
@@ -385,6 +401,7 @@ begin
   RegisterCore;
   RegisterClient;
   FRegistered := True;
+  RegisterPlatformAchievementMedia('sg1000', RAConsoleSG1000, TPlatformRegistry.Require('sg1000').Extensions);
 end;
 
 end.

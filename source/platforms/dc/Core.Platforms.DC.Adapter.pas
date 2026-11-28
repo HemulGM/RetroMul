@@ -3,10 +3,10 @@
 interface
 
 uses
-  Core.Input.Keyboard, Core.InputConfig, System.SysUtils, System.Classes,
-  System.IniFiles, System.SyncObjs, System.Threading, Core.Storage,
-  Core.Emulation, Core.Snapshots, Core.CD.Disc, DC.Types, DC.Flash, DC.Maple,
-  DC.Console, Core.Platforms.DC.Playback;
+  Core.Emulation.Types, Core.Input.Keyboard, Core.InputConfig, System.SysUtils,
+  System.Classes, System.IniFiles, System.SyncObjs, System.Threading,
+  Core.Storage, Core.Emulation, Core.Snapshots, Core.CD.Disc, DC.Types, DC.Flash,
+  DC.Maple, DC.Console, Core.Platforms.DC.Playback;
 
 {$SCOPEDENUMS ON}
 
@@ -98,7 +98,7 @@ type
     function VMUScreenCorner: string;
   end;
 
-  TDCWorker = class(TThread)
+  TDCWorker = class(TAchievementWorker)
   private
     FLock: TCriticalSection;
     FWake: TEvent;
@@ -172,7 +172,7 @@ type
     property InputPorts: TCoreInputPorts read GetInputPorts write SetInputPorts;
   end;
 
-  TDCCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationRumbleOutput, IDCControllerInput, IDCVMUScreen, IEmulationDiscControl, IEmulationKeyboard, IEmulationMouseInput, IEmulationPointerInput)
+  TDCCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationRumbleOutput, IDCControllerInput, IDCVMUScreen, IEmulationDiscControl, IEmulationKeyboard, IEmulationMouseInput, IEmulationPointerInput, IEmulationAchievements)
   private
     FStorage: IStorage;
     FConfig: IEmulatorConfig;
@@ -209,6 +209,8 @@ type
     procedure ReplaceDisc(const Location: string; Index: Integer);
     procedure WaitDiscTask;
   public
+    function AchievementROM: TBytes;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     // Stream holds an ELF or binary program when no disc is given.
     constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; OwnedDisc: TCDDisc = nil);
     destructor Destroy; override;
@@ -830,6 +832,7 @@ begin
     procedure(State: TStateArchive)
     begin
       Console.SerializeState(State);
+      TransferAchievementProgress(State);
     end;
   if Loading then
   begin
@@ -881,6 +884,11 @@ end;
 
 procedure TDCWorker.Execute;
 begin
+  var ReadAchievementMemory: TEmulationAchievementRead :=
+    function(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal
+    begin
+      Result := FConsole.ReadAchievementRAM(Address, Buffer, Count);
+    end;
   FConsole := nil;
   FAudio := nil;
   FAudioFailed := False;
@@ -941,6 +949,7 @@ begin
         begin
           SaveMemories;
           FConsole.Reset;
+          ResetAchievements;
           StartMachine;
           FConsole.AICA.TakeSamples;
           ClearAudio;
@@ -1024,6 +1033,7 @@ begin
           end;
         end;
         FConsole.RunFrame;
+        AchievementFrame(ReadAchievementMemory);
         if FConsole.Halted then
         begin
           ReportError('Dreamcast: the program returned to the system menu');
@@ -1755,6 +1765,17 @@ begin
   Result := FConfigObject.VMUScreen;
   if not FConfigObject.ShowVMU then
     Result := 'off';
+end;
+
+function TDCCoreAdapter.AchievementROM: TBytes;
+begin
+  Result := nil;
+end;
+
+procedure TDCCoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  if FWorker <> nil then
+    FWorker.SetAchievementObserver(Observer);
 end;
 
 end.

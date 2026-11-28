@@ -416,6 +416,7 @@ uses
   RM.Settings.Builder in 'settings\RM.Settings.Builder.pas',
   RM.Settings.Binding in 'settings\RM.Settings.Binding.pas',
   RM.Settings.Session in 'settings\RM.Settings.Session.pas',
+  RM.ScreenScraper in 'settings\RM.ScreenScraper.pas',
   RM.Settings.Callouts in 'settings\RM.Settings.Callouts.pas',
   RM.Settings.Devices in 'settings\RM.Settings.Devices.pas',
   RM.Settings.PalettePreview in 'settings\RM.Settings.PalettePreview.pas',

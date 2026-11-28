@@ -40,6 +40,7 @@ type
     procedure EndAudioFrame; override;
     procedure RunAudio; override;
     procedure SerializeAudio(State: TStateArchive); override;
+    function ReadAchievementSoundRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal; override;
     procedure SerializeBoardState(State: TStateArchive); override;
     procedure StartScanline(Line: Integer); override;
     procedure EndScanline(Line: Integer); override;
@@ -692,6 +693,11 @@ begin
   State.Field(FGunPosition, SizeOf(FGunPosition));
   if FADCPlayer > 2 then
     raise EReadError.Create('Invalid System 18 ADC state');
+end;
+
+function TS18Console.ReadAchievementSoundRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  Result := ReadAchievementMemoryBlock(Address, Buffer, Count, @FAudio.Shared, SizeOf(FAudio.Shared));
 end;
 
 end.

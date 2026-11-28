@@ -25,7 +25,7 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads, System.SysUtils, System.Classes, System.UITypes,
+  RA.Console, RM.Input.Gamepads, System.SysUtils, System.Classes, System.UITypes,
   Core.Emulation, Core.Platforms, Core.Snapshots, Core.PlatformServices,
   CV.Cartridge, Core.Platforms.ColecoVision.Adapter,
   RM.Platforms.ColecoVision.Input, RM.Platforms.ColecoVision.Gamepads,
@@ -172,6 +172,7 @@ begin
   Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('colecovision', Definition);
   FRegistered := True;
+  RegisterPlatformAchievementMedia('colecovision', RAConsoleColecoVision, TPlatformRegistry.Require('colecovision').Extensions);
 end;
 
 end.

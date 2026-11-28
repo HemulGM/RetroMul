@@ -39,6 +39,7 @@ type
     function PadRead: Byte;
     procedure PadWrite(Value: Byte);
   public
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(Cartridge: TPCECartridge; Model: TPCEModel; Disc: TCDDisc = nil; const SavedData: TBytes = nil);
     destructor Destroy; override;
     procedure Reset;
@@ -513,6 +514,19 @@ begin
   if State.Loading and ((FLine < 0) or (FLine >= FVideo.Lines) or (FPadPort > 5) or
     (FTimerValue < 0) or (FTimerValue > 127)) then
     raise EReadError.Create('Invalid PC Engine timing state');
+end;
+
+function TPCEConsole.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  if Address < $2000 then
+    Exit(ReadAchievementMemoryBlock(Address, Buffer, Count, @FRAM, $2000));
+  if FCD = nil then
+    Exit(0);
+  if Address < $12000 then
+    Exit(ReadAchievementMemoryBlock(Address - $2000, Buffer, Count, @FCDRAM, SizeOf(FCDRAM)));
+  if Address < $42000 then
+    Exit(ReadAchievementMemoryBlock(Address - $12000, Buffer, Count, FCardRAM));
+  Result := FCD.ReadAchievementRAM(Address - $42000, Buffer, Count);
 end;
 
 end.

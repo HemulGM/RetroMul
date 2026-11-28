@@ -33,13 +33,14 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads, RM.Settings.Catalog, Core.PlatformServices, Core.Snapshots,
-  System.StrUtils, Core.Emulation, Core.Platforms, Core.Platforms.PS1.Adapter,
-  RM.Platforms.PS1.Settings, RM.Platforms.Presentation, RM.Gamepad.Factory,
-  RM.Platforms.PS1.Gamepads, RM.Input.Runtime, RM.Platforms.PS1.Input,
-  RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
-  RM.ControlsHelp.Content, RM.Platforms.PS1.Help, RM.Settings.Callouts,
-  RM.Platforms.PS1.Devices, RM.Settings.Devices, System.Classes;
+  RA.Console, RM.Input.Gamepads, RM.Settings.Catalog, Core.PlatformServices,
+  Core.Snapshots, System.StrUtils, Core.Emulation, Core.Platforms,
+  Core.Platforms.PS1.Adapter, RM.Platforms.PS1.Settings,
+  RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Platforms.PS1.Gamepads,
+  RM.Input.Runtime, RM.Platforms.PS1.Input, RM.Session.Runtime, RM.Window.Layout,
+  RM.Settings.Runtime, RM.ControlsHelp.Content, RM.Platforms.PS1.Help,
+  RM.Settings.Callouts, RM.Platforms.PS1.Devices, RM.Settings.Devices,
+  System.Classes;
 
 const
   PlatformIcon = 'M94.6900024414063,67.379997253418 C94.695556640625,67.33349609375 94.695556640625,67.2864990234375 94.6900024414063,67.2399978637695 L90.5100021362305,41.6199989318848 C90.5100021362305,41.6199989318848 ' +
@@ -287,6 +288,7 @@ begin
   RegisterCore;
   RegisterClient;
   FRegistered := True;
+  RegisterPlatformAchievementMedia('ps1', RAConsolePlayStation, TPlatformRegistry.Require('ps1').Extensions, True);
 end;
 
 end.

@@ -25,13 +25,14 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads, RM.Settings.Catalog, RM.Settings.Platform, System.StrUtils,
-  Core.Emulation, Core.Platforms, Core.Platforms.PSP.Adapter,
-  Core.Platforms.PSP.Archive, PSP.Media, RM.Platforms.Presentation,
-  RM.Gamepad.Factory, RM.Platforms.PSP.Gamepads, RM.Platforms.PSP.Settings,
-  RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
-  RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
-  RM.Platforms.PSP.Input, System.Classes;
+  RA.Console, Core.PlatformServices, RM.Input.Gamepads, RM.Settings.Catalog,
+  RM.Settings.Platform, System.StrUtils, Core.Emulation, Core.Platforms,
+  Core.Platforms.PSP.Adapter, Core.Platforms.PSP.Archive, PSP.Media,
+  RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Platforms.PSP.Gamepads,
+  RM.Platforms.PSP.Settings, RM.Input.Runtime, RM.Session.Runtime,
+  RM.Window.Layout, RM.Settings.Runtime, RM.ControlsHelp.Content,
+  RM.Settings.Callouts, RM.Settings.Devices, RM.Platforms.PSP.Input,
+  System.Classes;
 
 const
   PlatformIcon =
@@ -213,6 +214,7 @@ begin
   RegisterCore;
   RegisterClient;
   FRegistered := True;
+  RegisterPlatformAchievementMedia('psp', RAConsolePSP, ['.iso', '.cso'], True);
 end;
 
 end.

@@ -24,12 +24,12 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads, System.Classes, Core.Emulation, Core.Platforms,
-  Core.Snapshots, Core.Platforms.Lynx.Adapter, RM.Platforms.Lynx.Settings,
-  RM.Platforms.Lynx.Gamepads, RM.Settings.Catalog, RM.Platforms.Presentation,
-  RM.Gamepad.Factory, RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout,
-  RM.Settings.Runtime, RM.ControlsHelp.Content, RM.Settings.Callouts,
-  RM.Settings.Devices;
+  RA.Console, Core.PlatformServices, RM.Input.Gamepads, System.Classes,
+  Core.Emulation, Core.Platforms, Core.Snapshots, Core.Platforms.Lynx.Adapter,
+  RM.Platforms.Lynx.Settings, RM.Platforms.Lynx.Gamepads, RM.Settings.Catalog,
+  RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Input.Runtime,
+  RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
+  RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices;
 
 const
   PlatformIcon =
@@ -117,6 +117,7 @@ begin
   RegisterPlatformGamepads('lynx', TGamepadLynxStandard, []);
   RegisterPlatformPresentation('lynx', 'lynx', PlatformIcon);
   FRegistered := True;
+  RegisterPlatformAchievementMedia('lynx', RAConsoleAtariLynx, TPlatformRegistry.Require('lynx').Extensions);
 end;
 
 end.

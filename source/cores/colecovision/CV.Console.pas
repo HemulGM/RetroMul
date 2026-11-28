@@ -47,6 +47,7 @@ type
     procedure UpdateNMI;
     function GetFPS: Double;
   public
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const Data, BIOS: TBytes; PAL: Boolean = False; MapperHint: Integer = -1; VideoHint: Integer = -1);
     destructor Destroy; override;
     procedure Reset;
@@ -584,6 +585,17 @@ begin
       (FCPU.RegisterMode > 2) or (FCPU.InterruptMode > 2) then
       raise EReadError.Create('Invalid ColecoVision snapshot timing or CPU state');
   end;
+end;
+
+function TCVConsole.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  if Address < $400 then
+    Exit(ReadAchievementMemoryBlock(Address, Buffer, Count, @FRAM, SizeOf(FRAM)));
+  if not FOptions.SGMEnabled then
+    Exit(0);
+  if Address < $2400 then
+    Exit(ReadAchievementMemoryBlock(Address - $400, Buffer, Count, @FSGMRAM[0], $2000));
+  Result := ReadAchievementMemoryBlock(Address - $2400, Buffer, Count, @FSGMRAM[$2000], $6000);
 end;
 
 end.

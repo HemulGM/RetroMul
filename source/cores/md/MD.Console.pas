@@ -80,6 +80,7 @@ type
     function SRAMIndex(Address: Cardinal; out Index: Cardinal): Boolean;
     function GetBatteryDirty: Boolean;
   public
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const Data: TBytes; const Extension: string; Disc: TCDDisc = nil);
     destructor Destroy; override;
     property CDVolume: Integer read FCDVolume write FCDVolume;
@@ -114,7 +115,7 @@ type
 implementation
 
 uses
-  System.Math, MD.Firmware;
+  Core.Emulation.Types, System.Math, MD.Firmware;
 
 function DMARead(User: Pointer; Address, Cycle: Cardinal): Cardinal; forward;
 
@@ -1200,6 +1201,21 @@ begin
   FSRAMDirty := Length(FSRAM) > 0;
   if FEEPROM <> nil then
     FEEPROM.Dirty := True;
+end;
+
+function TMDConsole.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  if Address < $10000 then
+    Exit(ReadAchievementMemoryBlock(Address, Buffer, Count, @FRAM, SizeOf(FRAM)));
+  if FCD <> nil then
+    Exit(FCD.ReadAchievementRAM(Address - $10000, Buffer, Count));
+  if F32X <> nil then
+  begin
+    if Address < $50000 then
+      Exit(F32X.ReadAchievementRAM(Address - $10000, Buffer, Count));
+    Dec(Address, $40000);
+  end;
+  Result := ReadAchievementMemoryBlock(Address - $10000, Buffer, Count, FSRAM);
 end;
 
 initialization

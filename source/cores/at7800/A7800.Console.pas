@@ -31,6 +31,7 @@ type
     function PortB: Byte;
     procedure Tick(RunCPU: Boolean);
   public
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const Image: TBytes);
     destructor Destroy; override;
     procedure Reset;
@@ -342,6 +343,28 @@ begin
   begin
     FSamples := nil;
     FSampleCount := 0;
+  end;
+end;
+
+function TA7800Console.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  Result := 0;
+  if Buffer = nil then
+    Exit;
+  while (Result < Count) and (Address <= $FFFF) do
+  begin
+    if (Address >= $1800) and (Address < $2800) then
+      Buffer^ := FRAM[Address - $1800]
+    else if (Address >= $2800) and (Address < $3000) then
+      Buffer^ := FRAM[Address - $2000]
+    else if (Address >= $3000) and not ((FCartridge.PokeyAddress <> 0) and
+      (Address and $FFF0 = FCartridge.PokeyAddress)) then
+      Buffer^ := FCartridge.Read(Address)
+    else
+      Exit;
+    Inc(Result);
+    Inc(Address);
+    Inc(Buffer);
   end;
 end;
 

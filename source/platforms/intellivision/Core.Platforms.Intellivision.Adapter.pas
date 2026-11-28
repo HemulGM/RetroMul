@@ -36,7 +36,7 @@ type
     class procedure DefaultKeys(out Keys: TIntvKeyMap); static;
   end;
 
-  TIntvCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationInputPorts, IEmulationLiveSettings, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IIntvKeypadInput, IEmulationKeyboard, IEmulationMicrophoneInput)
+  TIntvCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationInputPorts, IEmulationLiveSettings, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IIntvKeypadInput, IEmulationKeyboard, IEmulationMicrophoneInput, IEmulationAchievements)
   private
     FWorker: TIntvWorker;
     FData, FExec, FGROM, FIdentity, FECSROM, FVoiceROM: TBytes;
@@ -58,6 +58,8 @@ type
     FPaused, FPAL, FSTIC1A: Boolean;
     procedure UpdateWorker;
   public
+    function AchievementROM: TBytes;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     constructor Create(const Data: TBytes; const Storage: IStorage; const RomName, Mapping: string);
     destructor Destroy; override;
     procedure ApplyLiveSettings;
@@ -747,6 +749,17 @@ end;
 function TIntvCoreAdapter.IsPaused: Boolean;
 begin
   Result := FPaused;
+end;
+
+function TIntvCoreAdapter.AchievementROM: TBytes;
+begin
+  Result := FData;
+end;
+
+procedure TIntvCoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  if FWorker <> nil then
+    FWorker.SetAchievementObserver(Observer);
 end;
 
 end.

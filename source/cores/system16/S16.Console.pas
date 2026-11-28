@@ -25,6 +25,7 @@ type
     procedure EndAudioFrame; override;
     procedure RunAudio; override;
     procedure SerializeAudio(State: TStateArchive); override;
+    function ReadAchievementSoundRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal; override;
     function HasNVRAM: Boolean; override;
     function LineDeadline(Line: Integer): Int64; override;
     function MCURead(Address: Word): Byte; override;
@@ -607,6 +608,11 @@ begin
         end;
       end;
   end;
+end;
+
+function TS16Console.ReadAchievementSoundRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  Result := Sound.ReadAchievementRAM(Address, Buffer, Count);
 end;
 
 end.

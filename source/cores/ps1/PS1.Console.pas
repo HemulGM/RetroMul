@@ -1,4 +1,4 @@
-unit PS1.Console;
+﻿unit PS1.Console;
 
 interface
 
@@ -49,6 +49,7 @@ type
     procedure ConnectPorts;
     function CDROMAddress(Address: Cardinal; Index: Integer): Cardinal;
   public
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const BIOS: TBytes; PAL: Boolean);
     destructor Destroy; override;
     procedure Reset;
@@ -95,7 +96,7 @@ type
 implementation
 
 uses
-  System.Hash, System.Math;
+  Core.Emulation.Types, System.Hash, System.Math;
 
 const
   StateMagic = $53315350; // 'PS1S'
@@ -552,6 +553,14 @@ begin
     UpdateIRQ;
     FGPU.Output(FPixels, FFrameWidth, FFrameHeight);
   end;
+end;
+
+function TPS1Console.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  if Address < PS1RAMSize then
+    Exit(ReadAchievementMemoryBlock(Address, Buffer, Count, @FBus.RAM, SizeOf(FBus.RAM)));
+  Result := ReadAchievementMemoryBlock(Address - PS1RAMSize, Buffer, Count,
+    @FBus.Scratchpad, SizeOf(FBus.Scratchpad));
 end;
 
 end.

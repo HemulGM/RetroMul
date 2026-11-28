@@ -29,8 +29,8 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads, RM.Settings.Catalog, Core.PlatformServices, System.StrUtils,
-  Core.Emulation, Core.Platforms, Core.Platforms.PCE.Adapter,
+  RA.Console, RM.Input.Gamepads, RM.Settings.Catalog, Core.PlatformServices,
+  System.StrUtils, Core.Emulation, Core.Platforms, Core.Platforms.PCE.Adapter,
   RM.Platforms.PCE.Settings, RM.Platforms.Presentation, RM.Gamepad.Factory,
   RM.Platforms.PCE.Gamepads, RM.Input.Runtime, RM.Session.Runtime,
   RM.Window.Layout, RM.Settings.Runtime, RM.Platforms.PCE.SettingsHandler,
@@ -414,6 +414,9 @@ begin
   RegisterCore;
   RegisterClient;
   FRegistered := True;
+  RegisterPlatformAchievementMedia('pce', RAConsolePCEngine, TPlatformRegistry.Require('pce').Extensions);
+  RegisterPlatformAchievementMedia('sgx', RAConsolePCEngine, TPlatformRegistry.Require('sgx').Extensions);
+  RegisterPlatformAchievementMedia('pcecd', RAConsolePCEngineCD, TPlatformRegistry.Require('pcecd').Extensions, True);
 end;
 
 end.

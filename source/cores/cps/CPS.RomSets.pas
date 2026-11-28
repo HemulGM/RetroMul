@@ -38,6 +38,9 @@ type
   end;
 
   TCPSRomSet = record
+  private
+    FChipDescriptor: string;
+  public
     Name: string;
     Generation: TCPSGeneration;
     Regions: TArray<TCPSRegion>;
@@ -50,6 +53,8 @@ type
     Machine, Inputs, Init: string;
     Rotation, Clock: Integer;
     DIPs: array[0..2] of Byte;
+    ArchiveProgramMatched: Boolean;
+    function AchievementSetName: string;
     class function Find(const Name: string; out RomSet: TCPSRomSet): Boolean; static;
     // Central-directory metadata only. Loading verifies the actual content.
     class function Identify(Archive: IArchiveContainer; const Hint: string; out RomSet: TCPSRomSet): Boolean; static;
@@ -61,9 +66,21 @@ type
 implementation
 
 uses
-  Core.MediaArchive;
+  System.Hash, Core.MediaArchive;
 
 {$I CPS.RomData.inc}
+{$I CPS.FBNeoSets.inc}
+
+function TCPSRomSet.AchievementSetName: string;
+begin
+  Result := Name;
+  if FBNeoVariantNames.Contains('|' + Name + '|') then
+  begin
+    var Signature := THashSHA1.GetHashString(FChipDescriptor).ToUpperInvariant;
+    if not FBNeoVariantSignatures.Contains('|' + Signature + '|') then
+      Result := '';
+  end;
+end;
 
 function Int(const S: string): Integer;
 begin
@@ -162,6 +179,7 @@ begin
     end;
   end;
   var Files := Parts[6].Split([';']);
+  Result.FChipDescriptor := Parts[6];
   SetLength(Result.Files, Length(Files));
   for var i := 0 to High(Files) do
   begin
@@ -250,7 +268,10 @@ begin
     end;
   end;
   if BestScore >= 0 then
+  begin
+    RomSet.ArchiveProgramMatched := True;
     Exit(True);
+  end;
 
   if HasHint then
   begin

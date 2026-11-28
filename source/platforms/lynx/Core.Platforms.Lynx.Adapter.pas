@@ -3,8 +3,9 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.IniFiles, Core.Storage, Core.Emulation,
-  Lynx.Console, Lynx.Emulation, Core.InputConfig, Lynx.Cartridge;
+  Core.Emulation.Types, System.SysUtils, System.Classes, System.IniFiles,
+  Core.Storage, Core.Emulation, Lynx.Console, Lynx.Emulation, Core.InputConfig,
+  Lynx.Cartridge;
 
 type
   TLynxKeyMap = array[TEmulatorButton] of UInt32;
@@ -24,7 +25,7 @@ type
     property Keys: TLynxKeyMap read FKeys;
   end;
 
-  TLynxCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics)
+  TLynxCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationAchievements)
   private
     FBIOS, FIdentity: TBytes;
     FCartridgeROM: TBytes;
@@ -38,6 +39,8 @@ type
     FError, FSnapshotDirectory, FSaveFile: string;
     procedure ApplySettings;
   public
+    function AchievementROM: TBytes;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     procedure ApplyLiveSettings;
     constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string);
     destructor Destroy; override;
@@ -305,6 +308,17 @@ end;
 function TLynxCoreAdapter.IsPaused: Boolean;
 begin
   Result := FPaused;
+end;
+
+function TLynxCoreAdapter.AchievementROM: TBytes;
+begin
+  Result := FCartridgeROM;
+end;
+
+procedure TLynxCoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  if FThread <> nil then
+    FThread.SetAchievementObserver(Observer);
 end;
 
 end.

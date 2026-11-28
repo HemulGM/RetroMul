@@ -33,14 +33,14 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads, RM.Settings.Catalog, Core.CD.Disc, Core.PlatformServices,
-  System.StrUtils, Core.Emulation, Core.Platforms, Core.Platforms.DC.Adapter,
-  Core.Snapshots, DC.ELF, RM.Platforms.DC.Settings, RM.Platforms.Presentation,
-  RM.Gamepad.Factory, RM.Platforms.DC.Gamepads, RM.Input.Runtime,
-  RM.Platforms.DC.Runtime, RM.Session.Runtime, RM.Window.Layout,
-  RM.Settings.Runtime, RM.ControlsHelp.Content, RM.Platforms.DC.Help,
-  RM.Settings.Callouts, RM.Settings.Devices, RM.Platforms.DC.Devices,
-  System.Classes;
+  RA.Console, RM.Input.Gamepads, RM.Settings.Catalog, Core.CD.Disc,
+  Core.PlatformServices, System.StrUtils, Core.Emulation, Core.Platforms,
+  Core.Platforms.DC.Adapter, Core.Snapshots, DC.ELF, RM.Platforms.DC.Settings,
+  RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Platforms.DC.Gamepads,
+  RM.Input.Runtime, RM.Platforms.DC.Runtime, RM.Session.Runtime,
+  RM.Window.Layout, RM.Settings.Runtime, RM.ControlsHelp.Content,
+  RM.Platforms.DC.Help, RM.Settings.Callouts, RM.Settings.Devices,
+  RM.Platforms.DC.Devices, System.Classes;
 
 const
   PlatformIcon =
@@ -259,6 +259,7 @@ begin
   RegisterCore;
   RegisterClient;
   FRegistered := True;
+  RegisterPlatformAchievementMedia('dc', RAConsoleDreamcast, TPlatformRegistry.Require('dc').Extensions, True);
 end;
 
 end.

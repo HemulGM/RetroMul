@@ -15,7 +15,7 @@ type
   end;
 
   // Run one session at a time: the core's timer, joypad and interrupts are singletons.
-  TGBEmulationThread = class(TThread)
+  TGBEmulationThread = class(TAchievementWorker)
   private
     FSnapshots: TSnapshotQueue;
     FSnapshotDirectory: string;
@@ -97,8 +97,8 @@ type
 implementation
 
 uses
-  GB.Cartridge, Core.SavePaths, Core.PerformanceHints, System.IOUtils,
-  System.Math;
+  Core.Emulation.Types, GB.Cartridge, Core.SavePaths, Core.PerformanceHints,
+  System.IOUtils, System.Math;
 
 function TGBEmulationThread.CoreID: string;
 begin
@@ -557,6 +557,12 @@ begin
   var MBC: TGBMBC := nil;
   var GPU: TGBVideo := nil;
   var Memory: TGBMemory := nil;
+  var ReadAchievementMemory: TEmulationAchievementRead :=
+    function(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal
+    begin
+      Result := Memory.ReadAchievementRAM(Address, Buffer, Count);
+    end;
+  ResetAchievements;
   var Sound: TGBSound := nil;
   var FrameHints: TEmulationPerformanceHints := nil;
   var HintNextCycles: UInt64;
@@ -621,6 +627,7 @@ begin
                 GetTimer.SerializeState(State);
                 GetInterruptManager.SerializeState(State);
                 GetJoypad.SerializeState(State);
+                TransferAchievementProgress(State);
               end;
             if Loading then
             begin
@@ -711,7 +718,10 @@ begin
         var HintComplete := CPU.Cycles >= HintNextCycles;
         FrameHints.EndWork(HintComplete);
         if HintComplete then
+        begin
           Inc(HintNextCycles, FrameCycles);
+          AchievementFrame(ReadAchievementMemory);
+        end;
 
         var TargetTicks := Round((CPU.Cycles - StartCycles) * (TStopwatch.Frequency / CPUClockFrequency));
         var Remaining := PacingStart + TargetTicks - TStopwatch.GetTimeStamp;

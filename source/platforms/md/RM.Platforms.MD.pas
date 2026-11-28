@@ -33,13 +33,13 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads, MD.Cartridge, RM.Settings.Catalog, MD.RomFormat,
-  Core.Snapshots, System.StrUtils, Core.Emulation, Core.Platforms,
-  Core.Platforms.MD.Adapter, RM.Platforms.MD.Settings, RM.Platforms.Presentation,
-  RM.Gamepad.Factory, RM.Platforms.MD.Gamepads, MD.Console, RM.Input.Runtime,
-  RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
-  RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
-  System.Classes;
+  RA.Console, Core.PlatformServices, RM.Input.Gamepads, MD.Cartridge,
+  RM.Settings.Catalog, MD.RomFormat, Core.Snapshots, System.StrUtils,
+  Core.Emulation, Core.Platforms, Core.Platforms.MD.Adapter,
+  RM.Platforms.MD.Settings, RM.Platforms.Presentation, RM.Gamepad.Factory,
+  RM.Platforms.MD.Gamepads, MD.Console, RM.Input.Runtime, RM.Session.Runtime,
+  RM.Window.Layout, RM.Settings.Runtime, RM.ControlsHelp.Content,
+  RM.Settings.Callouts, RM.Settings.Devices, System.Classes;
 
 const
   PlatformIcon =
@@ -133,7 +133,7 @@ begin
   Result := ImageMatch(Context, 'MD',
     function(const Data: TBytes; Input: TStream): IEmulationCore
     begin
-      Result := TMDCoreAdapter.Create(Input, Context.Storage, Context.RomName, False, Context.SourceName);
+      Result := TMDCoreAdapter.Create(Input, Context.Storage, Context.RomName, False, Context.SourceName, Context.Data);
     end, True, SystemId, Encoding, MD_IMAGE_MAX_SIZE);
 end;
 
@@ -276,6 +276,9 @@ begin
   RegisterCore;
   RegisterClient;
   FRegistered := True;
+  RegisterPlatformAchievementMedia('md', RAConsoleMegaDrive, TPlatformRegistry.Require('md').Extensions);
+  RegisterPlatformAchievementMedia('sega32x', RAConsoleSega32X, TPlatformRegistry.Require('sega32x').Extensions);
+  RegisterPlatformAchievementMedia('segacd', RAConsoleSegaCD, TPlatformRegistry.Require('segacd').Extensions, True);
 end;
 
 end.

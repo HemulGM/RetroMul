@@ -3,9 +3,9 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.IniFiles, Core.Storage,
-  Core.Emulation, Saturn.Console, Saturn.Emulation, Core.InputConfig,
-  Core.CD.Disc;
+  Core.Emulation.Types, System.SysUtils, System.Classes, System.IniFiles,
+  Core.Storage, Core.Emulation, Saturn.Console, Saturn.Emulation,
+  Core.InputConfig, Core.CD.Disc;
 
 type
   TSaturnKeyMap = array[TEmulatorButton] of UInt32;
@@ -35,7 +35,7 @@ type
     property Keys2: TSaturnKeyMap read FKeys2;
   end;
 
-  TSaturnCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics)
+  TSaturnCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationAchievements)
   private
     FBIOS, FIdentity: TBytes;
     FCartROM: TBytes;
@@ -49,6 +49,8 @@ type
     FError, FSnapshotDirectory, FSaveFile: string;
     procedure ApplySettings;
   public
+    function AchievementROM: TBytes;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     procedure ApplyLiveSettings;
     constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; OwnedDisc: TCDDisc = nil);
     destructor Destroy; override;
@@ -81,7 +83,8 @@ type
 implementation
 
 uses
-  RM.Platforms.Saturn, System.UITypes, System.IOUtils, Core.Snapshots, Saturn.Firmware;
+  RM.Platforms.Saturn, System.UITypes, System.IOUtils, Core.Snapshots,
+  Saturn.Firmware;
 
 const
   KeyNames: array[TEmulatorButton] of string = ('Up', 'Down', 'Left', 'Right', 'A', 'B', 'Select', 'Start', 'C', 'X', 'Y', 'Z', 'Mode');
@@ -378,6 +381,17 @@ end;
 function TSaturnCoreAdapter.IsPaused: Boolean;
 begin
   Result := FPaused;
+end;
+
+function TSaturnCoreAdapter.AchievementROM: TBytes;
+begin
+  Result := nil;
+end;
+
+procedure TSaturnCoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  if FThread <> nil then
+    FThread.SetAchievementObserver(Observer);
 end;
 
 end.

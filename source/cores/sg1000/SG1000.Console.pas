@@ -61,6 +61,7 @@ type
     function GetCPUClock: Integer;
     function GetFPS: Double;
   public
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const Data: TBytes; SC3000: Boolean; PAL: Boolean = False);
     constructor CreateSF7000(const IPL, Disk: TBytes; PAL: Boolean = False; WarmBoot: Boolean = True);
     constructor CreateModel(const Data: TBytes; Model: TSGModel; PAL: Boolean = False; MapperHint: Integer = -1);
@@ -890,6 +891,21 @@ begin
 
     FSampleCountdown := (FCPUClock - FSamplePhase + 44099) div 44100;
   end;
+end;
+
+function TSGConsole.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  if FSMSCartridge <> nil then
+  begin
+    if Address < $2000 then
+    begin
+      if FSMSCartridge.ExpandedRAM then
+        Exit(FSMSCartridge.ReadAchievementRAM(Address, Buffer, Count));
+      Exit(ReadAchievementMemoryBlock(Address, Buffer, Count, @FWorkRAM, SizeOf(FWorkRAM)));
+    end;
+    Exit(FSMSCartridge.ReadAchievementRAM(Address - $2000, Buffer, Count));
+  end;
+  Result := ReadAchievementMemoryBlock(Address, Buffer, Count, @FRAM, $400);
 end;
 
 end.

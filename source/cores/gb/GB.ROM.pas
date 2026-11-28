@@ -11,6 +11,7 @@ type
   TGBROM = class
   private
     FCartridge: TGBCartridge;
+    FSourceData: TBytes;
   public
     ROMData: TArray<Byte>;
     // Preserve authoritative GBX metadata when the adapter recreates a worker.
@@ -24,6 +25,7 @@ type
     function GetCartridgeType: TCartridgeType;
     // Owned by this ROM; replaced after each successful ReadROM.
     property Cartridge: TGBCartridge read FCartridge;
+    property SourceData: TBytes read FSourceData;
   end;
 
 implementation
@@ -123,6 +125,7 @@ begin
     HeaderOffset := MenuOffset
   else if (MenuOffset >= 0) and (Data[$147] in [$0B..$0D]) and (not Footer.Present or (Footer.Mapper = 'MMM1')) then
   begin
+    Data := Copy(Data);
     var Menu := Copy(Data, 0, $8000);
     if MenuOffset > 0 then
       Move(Data[$8000], Data[0], MenuOffset);
@@ -144,6 +147,7 @@ begin
   // Commit only after the whole stream and header have been read successfully.
   FCartridge.Free;
   FCartridge := ParsedCartridge;
+  FSourceData := Image;
   ROMData := Data;
   ImageData := Data;
   if Footer.Present then

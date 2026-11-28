@@ -3,9 +3,9 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.SyncObjs, System.IniFiles,
-  Core.Storage, Core.Emulation, Core.InputConfig, SegaArcade.Cartridge,
-  Core.Snapshots, PCM.Audio, SegaArcade.Console;
+  Core.Emulation.Types, System.SysUtils, System.Classes, System.SyncObjs,
+  System.IniFiles, Core.Storage, Core.Emulation, Core.InputConfig,
+  SegaArcade.Cartridge, Core.Snapshots, PCM.Audio, SegaArcade.Console;
 
 type
   TSegaArcadeKeys = array[TEmulatorButton] of UInt32;
@@ -34,7 +34,7 @@ type
     procedure Submit(Audio: TPCMAudio; const Samples: TArray<SmallInt>; const Format: TPCMAudioFormat);
   end;
 
-  TSegaArcadeWorker = class(TThread)
+  TSegaArcadeWorker = class(TAchievementWorker)
   private
     FCart: TSegaArcadeCartridge;
     FStorage: IStorage;
@@ -70,7 +70,7 @@ type
     function TakeError: string;
   end;
 
-  TSegaArcadeCoreAdapter = class abstract(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationVirtualControls, IEmulationInputPorts, IEmulationAudioDiagnostics, IEmulationSnapshotLocation)
+  TSegaArcadeCoreAdapter = class abstract(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationVirtualControls, IEmulationInputPorts, IEmulationAudioDiagnostics, IEmulationSnapshotLocation, IEmulationAchievements, IEmulationArcadeAchievements)
   private
     FStorage: IStorage;
     FIdentity: TBytes;
@@ -95,6 +95,9 @@ type
     procedure ApplyLiveSettings;
     destructor Destroy; override;
     function GetSystemId: string;
+    function AchievementROM: TBytes;
+    function AchievementSetName: string;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     function GetName: string;
     function GetSupportsSnapshots: Boolean;
     function GetSnapshotDirectory: string;
@@ -124,8 +127,8 @@ type
 implementation
 
 uses
-  System.UITypes, System.Diagnostics, System.Math, SegaArcade.Video, Core.SavePaths,
-  System.IOUtils;
+  System.UITypes, System.Diagnostics, System.Math, SegaArcade.Video,
+  Core.SavePaths, System.IOUtils;
 
 const
   KeyNames: array[TEmulatorButton] of string = ('Up', 'Down', 'Left', 'Right', 'A', 'B', 'Select', 'Start', 'C', 'X', 'Y', 'Z', 'Mode');
@@ -417,6 +420,11 @@ begin
       end;
     end;
 
+  var ReadMemory: TEmulationAchievementRead :=
+    function(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal
+    begin
+      Result := Console.ReadAchievementRAM(Address, Buffer, Count);
+    end;
   try
     try
       Console := FConsoleClass.Create(FCart);
@@ -444,6 +452,7 @@ begin
               procedure(State: TStateArchive)
               begin
                 Console.SerializeState(State);
+                TransferAchievementProgress(State);
               end;
             if Loading then
             begin
@@ -482,6 +491,7 @@ begin
         if Reset then
         begin
           Console.Reset;
+          ResetAchievements;
           AudioBuffer.Clear(Audio);
         end;
         Console.SetInput(Input);
@@ -499,6 +509,7 @@ begin
         if (PointerX <> 0) or (PointerY <> 0) then
           Console.AddPointerMotion(PointerX, PointerY);
         Console.RunFrame;
+        AchievementFrame(ReadMemory);
         Publish;
         if Enabled and not AudioFailed then
         try
@@ -751,6 +762,22 @@ begin
     Result.Buttons3 := [];
   if FPorts.Devices[3] = 'none' then
     Result.Buttons4 := [];
+end;
+
+function TSegaArcadeCoreAdapter.AchievementROM: TBytes;
+begin
+  Result := nil;
+end;
+
+function TSegaArcadeCoreAdapter.AchievementSetName: string;
+begin
+  Result := FCart.RomSet.Name;
+end;
+
+procedure TSegaArcadeCoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  if FWorker <> nil then
+    FWorker.SetAchievementObserver(Observer);
 end;
 
 function TSegaArcadeCoreAdapter.GetSystemId: string;

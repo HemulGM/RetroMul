@@ -31,6 +31,7 @@ type
     procedure UpdatePaddleConnections;
   public
     ConsoleSwitches: Byte;
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const Data: TBytes; PAL: Boolean = False; const Mapper: string = ''; VideoEnabled: Boolean = True);
     destructor Destroy; override;
     procedure Reset;
@@ -252,6 +253,12 @@ begin
     FTIA.SerializeInputs(State);
     FController.SerializeState(State);
   end;
+end;
+
+function TA2600Console.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  var Riot := FRIOT.SnapshotState;
+  Result := ReadAchievementMemoryBlock(Address, Buffer, Count, @Riot.RAM, SizeOf(Riot.RAM));
 end;
 
 end.

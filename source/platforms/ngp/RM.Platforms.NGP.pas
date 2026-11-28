@@ -29,12 +29,13 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads, RM.Settings.Catalog, Core.Snapshots, System.StrUtils,
-  Core.Emulation, Core.Platforms, Core.Platforms.NGP.Adapter,
-  RM.Platforms.NGP.Settings, RM.Platforms.Presentation, RM.Gamepad.Factory,
-  RM.Platforms.NGP.Gamepads, RM.Input.Runtime, RM.Session.Runtime,
-  RM.Window.Layout, RM.Settings.Runtime, RM.ControlsHelp.Content,
-  RM.Settings.Callouts, RM.Settings.Devices, System.Classes;
+  RA.Console, Core.PlatformServices, RM.Input.Gamepads, RM.Settings.Catalog,
+  Core.Snapshots, System.StrUtils, Core.Emulation, Core.Platforms,
+  Core.Platforms.NGP.Adapter, RM.Platforms.NGP.Settings,
+  RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Platforms.NGP.Gamepads,
+  RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
+  RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
+  System.Classes;
 
 const
   PlatformIcon =
@@ -165,6 +166,8 @@ begin
   RegisterCore;
   RegisterClient;
   FRegistered := True;
+  RegisterPlatformAchievementMedia('ngp', RAConsoleNeoGeoPocket, TPlatformRegistry.Require('ngp').Extensions);
+  RegisterPlatformAchievementMedia('ngpc', RAConsoleNeoGeoPocket, TPlatformRegistry.Require('ngpc').Extensions);
 end;
 
 end.

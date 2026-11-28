@@ -19,6 +19,7 @@ type
     procedure ExecuteHDMABlock;
   protected
     procedure DisableBootROM; override;
+    function ReadAchievementWorkByte(Offset: Cardinal; out Value: Byte): Boolean; override;
     function ReadWorkRAM(Offset: Integer): Byte; override;
     procedure WriteWorkRAM(Offset: Integer; Value: Byte); override;
     function ReadModelRegister(Address: Integer; out Value: Byte): Boolean; override;
@@ -62,6 +63,15 @@ end;
 function TGBCMemory.StopHalts: Boolean;
 begin
   Result := not PerformSpeedSwitch;
+end;
+
+function TGBCMemory.ReadAchievementWorkByte(Offset: Cardinal; out Value: Byte): Boolean;
+begin
+  if Offset < $1000 then
+    Exit(inherited ReadAchievementWorkByte(Offset, Value));
+  Result := Offset < $8000;
+  if Result then
+    Value := FWRAMBanks[Offset shr 12, Offset and $FFF];
 end;
 
 function TGBCMemory.ReadWorkRAM(Offset: Integer): Byte;

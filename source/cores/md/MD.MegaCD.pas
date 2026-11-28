@@ -74,6 +74,7 @@ type
   public
     // The board owns Disc, including all its track streams.
     class function Requires32X(Disc: TCDDisc): Boolean; static;
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const BIOS: TBytes; Disc: TCDDisc; MasterClock: Integer);
     destructor Destroy; override;
     procedure Reset;
@@ -95,7 +96,7 @@ type
 implementation
 
 uses
-  System.Math;
+  Core.Emulation.Types, System.Math;
 
 function SubReadCallback(User: Pointer; Address: Cardinal; Hi, Lo: Byte; Cycle: Cardinal; var Early: Byte): Cardinal;
 begin
@@ -1325,6 +1326,13 @@ end;
 function TMDMegaCD.CPUState: TM68kState;
 begin
   Result := FState.CPU;
+end;
+
+function TMDMegaCD.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  if Address < $80000 then
+    Exit(ReadAchievementMemoryBlock(Address, Buffer, Count, @FState.PRG, SizeOf(FState.PRG)));
+  Result := ReadAchievementMemoryBlock(Address - $80000, Buffer, Count, @FState.RAM, $20000);
 end;
 
 end.

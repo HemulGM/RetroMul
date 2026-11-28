@@ -29,13 +29,13 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads, RM.Settings.Catalog, Core.Snapshots, System.StrUtils,
-  Core.Emulation, Core.Platforms, Core.Platforms.WS.Adapter,
-  RM.Platforms.WS.Settings, RM.Platforms.Presentation, RM.Gamepad.Factory,
-  RM.Platforms.WS.Gamepads, RM.Input.Runtime, RM.Session.Runtime,
-  RM.Window.Layout, RM.Settings.Runtime, RM.ControlsHelp.Content,
-  RM.Settings.Callouts, RM.Settings.Devices, System.Classes, WS.Cartridge,
-  RM.Platforms.WS.Help;
+  RA.Console, Core.PlatformServices, RM.Input.Gamepads, RM.Settings.Catalog,
+  Core.Snapshots, System.StrUtils, Core.Emulation, Core.Platforms,
+  Core.Platforms.WS.Adapter, RM.Platforms.WS.Settings, RM.Platforms.Presentation,
+  RM.Gamepad.Factory, RM.Platforms.WS.Gamepads, RM.Input.Runtime,
+  RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
+  RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
+  System.Classes, WS.Cartridge, RM.Platforms.WS.Help;
 
 const
   PlatformIcon =
@@ -193,6 +193,8 @@ begin
   RegisterCore;
   RegisterClient;
   FRegistered := True;
+  RegisterPlatformAchievementMedia('ws', RAConsoleWonderSwan, TPlatformRegistry.Require('ws').Extensions);
+  RegisterPlatformAchievementMedia('wsc', RAConsoleWonderSwan, TPlatformRegistry.Require('wsc').Extensions);
 end;
 
 end.

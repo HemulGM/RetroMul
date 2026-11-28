@@ -3,8 +3,8 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.IniFiles, Core.Storage, Core.Emulation,
-  A2600.Console, A2600.Emulation, Core.InputConfig;
+  Core.Emulation.Types, System.SysUtils, System.Classes, System.IniFiles,
+  Core.Storage, Core.Emulation, A2600.Console, A2600.Emulation, Core.InputConfig;
 
 const
   IntvSystemChangerId = 'intv-system-changer';
@@ -30,7 +30,7 @@ type
     property Keys2: TA2600KeyMap read FKeys2;
   end;
 
-  TA2600CoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationVirtualControls, IEmulationMouseInput)
+  TA2600CoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationVirtualControls, IEmulationMouseInput, IEmulationAchievements)
   private
     FCartridge: TBytes;
     FThread: TA2600Worker;
@@ -42,6 +42,8 @@ type
     FError, FSnapshotDirectory: string;
     procedure ApplySettings;
   public
+    function AchievementROM: TBytes;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     procedure ApplyLiveSettings;
     procedure SendMouseDelta(DX, DY: Integer; Buttons: Byte);
     constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; const ImageName: string = ''; SystemChanger: Boolean = False);
@@ -365,6 +367,17 @@ end;
 function TA2600CoreAdapter.IsPaused: Boolean;
 begin
   Result := FPaused;
+end;
+
+function TA2600CoreAdapter.AchievementROM: TBytes;
+begin
+  Result := FCartridge;
+end;
+
+procedure TA2600CoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  if FThread <> nil then
+    FThread.SetAchievementObserver(Observer);
 end;
 
 end.

@@ -130,6 +130,7 @@ type
     Video: TNDSVideo;
     Sound: TNDSSound;
     RTC: TNDSRTC;
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const Data: TBytes; SaveSize: Integer = 0);
     destructor Destroy; override;
     procedure Reset;
@@ -2261,6 +2262,15 @@ begin
     else
       FCPU[0].VectorBase := 0;
   end;
+end;
+
+function TNDSConsole.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  if Address < $400000 then
+    Exit(ReadAchievementMemoryBlock(Address, Buffer, Count, @FMain, SizeOf(FMain)));
+  if Address < $1000000 then
+    Exit(0);
+  Result := ReadAchievementMemoryBlock(Address - $1000000, Buffer, Count, @FDTCM, SizeOf(FDTCM));
 end;
 
 end.

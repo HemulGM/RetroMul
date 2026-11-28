@@ -20,7 +20,7 @@ uses
   System.SysUtils, FMX.Types, Core.Platforms, Core.MediaArchive;
 
 const
-  GeneralSections: array[0..12] of THelpSection = (
+  GeneralSections: array[0..13] of THelpSection = (
     (Title: 'How the library is built';
       Text: 'In Settings → Library, assign a ROM folder to each platform. RetroMul scans that ' +
       'folder and its subfolders and lists files with extensions registered for that ' +
@@ -28,12 +28,19 @@ const
       'grid and list views, filter by platform or letter, or open Recent and Favorites. ' +
       'Use refresh after adding, moving or renaming files.'),
     (Title: 'Covers and game information';
-      Text: 'Use a tool such as RetroScraper to scan the same ROM folders and export an ' +
-      'EmulationStation gamelist.xml with artwork. In RetroScraper, choose the platforms ' +
-      'and folders, connect to ScreenScraper, then select descriptions and media and run ' +
-      'the scrape. Keep gamelist.xml at the root of each platform folder and keep the ' +
-      'exported artwork in the folders referenced by the XML. Refresh the RetroMul ' +
-      'library after exporting.'),
+      Text: 'In Settings → Scraping, enable Background scraping and click Apply to add ' +
+      'games without a gamelist.xml entry. RetroMul writes game information to gamelist.xml ' +
+      'and front covers to media/images. Choose anonymous access or enter a ScreenScraper ' +
+      'username and password. Refresh quota shows the remaining daily requests, including ' +
+      'the separate limit for lookups with no match. ScreenScraper applies quotas by account, ' +
+      'public IP address, or both. You can also import a gamelist.xml exported by RetroScraper ' +
+      'and refresh the library after exporting.'),
+    (Title: 'Achievements';
+      Text: 'In Settings → Achievements, sign in to RetroAchievements and enable achievements ' +
+      'for supported games in Casual mode. On Windows, Remember password stores a protected ' +
+      'sign-in token. Library scanning checks which ROMs have achievements. Rich Presence ' +
+      'shares supported game activity with your RetroAchievements profile. You can turn ' +
+      'unlock notifications on or off and choose their screen corner and duration.'),
     (Title: 'When artwork is missing';
       Text: 'Each game entry uses path to match the ROM, for example ./Sonic.md or ./Sonic.zip. ' +
       'The paths in image, thumbnail and box point to artwork, for example ' +

@@ -39,7 +39,7 @@ type
     property Options: TCVOptions read FOptions;
   end;
 
-  TCVCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationKeyboard, IEmulationMouseInput, IColecoKeypadInput)
+  TCVCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationKeyboard, IEmulationMouseInput, IColecoKeypadInput, IEmulationAchievements)
   private
     FThread: TCVWorker;
     FData, FBootROM: TBytes;
@@ -56,6 +56,8 @@ type
     FAnalog: array[0..1] of TEmulatorAnalogPad;
     procedure ApplySettings;
   public
+    function AchievementROM: TBytes;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     procedure ApplyLiveSettings;
     constructor Create(const FileName: string); overload;
     constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string); overload;
@@ -483,6 +485,17 @@ begin
     raise EInvalidOpException.Create('Emulation worker is not running');
 
   FThread.LoadSnapshot(Name);
+end;
+
+function TCVCoreAdapter.AchievementROM: TBytes;
+begin
+  Result := FData;
+end;
+
+procedure TCVCoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  if FThread <> nil then
+    FThread.SetAchievementObserver(Observer);
 end;
 
 end.

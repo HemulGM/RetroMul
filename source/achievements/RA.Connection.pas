@@ -4,8 +4,8 @@ interface
 
 uses
   Core.Emulation.Types, Core.Storage, System.Classes,
-  System.Generics.Collections, System.SyncObjs, System.SysUtils, RA.GameData,
-  RA.Hash, RA.Http, RA.Protocol, RA.Runtime, RA.Session;
+  System.Generics.Collections, System.IniFiles, System.SyncObjs, System.SysUtils,
+  RA.GameData, RA.Hash, RA.Http, RA.Protocol, RA.Runtime, RA.Session;
 
 type
   IRAConnection = interface(IEmulationAchievementObserver)
@@ -19,7 +19,11 @@ type
     procedure SetShareRichPresence(Value: Boolean);
   end;
 
+function TryHashRAArcadeSet(const SystemId, SetName: string; out Digest: string): Boolean;
+
 function TryHashRAFile(const Storage: IStorage; const SystemId, Location: string; const Media: IEmulationAchievementMedia; out Digest: string): Boolean;
+
+function CachedRAFileHash(const Storage: IStorage; Cache: TMemIniFile; const SystemId, Location: string; const Media: IEmulationAchievementMedia; ScanROMs: Boolean): string;
 
 // Loads catalog definitions without starting an emulation session.
 function LoadRAGameAchievementCache(const Storage: IStorage; const Digest: string; ConsoleId: Cardinal; out GameIds: TArray<Cardinal>): TArray<TRAAchievementDefinition>;
@@ -37,6 +41,8 @@ procedure LoadRAUnlockDates(const Storage: IStorage; const Digest, UserName: str
 function LoadRABadgePNG(const Storage: IStorage; Client: TRAHttpClient; const URL: string): TBytes;
 
 // Call on a background worker, then attach the returned observer on the frontend thread.
+function OpenRAHashedConnection(ConsoleId: Cardinal; const Digest: string; const Credentials: TRACredentials; const UserAgent: string; ShareRichPresence: Boolean): IRAConnection;
+
 function OpenRAConnection(Console: TRARomConsole; const ROM: TBytes; const Credentials: TRACredentials; const UserAgent: string; ShareRichPresence: Boolean = True): IRAConnection; overload;
 
 function OpenRAConnection(Console: TRARomConsole; const ROM: TBytes; const Credentials: TRACredentials; const Post: TRAPost): IRAConnection; overload;
@@ -45,17 +51,227 @@ implementation
 
 uses
   System.Hash, System.IOUtils, System.JSON, Core.EmulatorRegistry,
-  Core.MediaArchive, RA.Info, RA.Memory;
+  Core.PlatformServices, Core.MediaArchive, Core.CD.Disc, PSP.Media, RA.Console,
+  RA.DiscHash, RA.Info, RA.MediaHash, RA.Memory;
+
+{$I RA.FBNeoSets.inc}
+
+function TryHashRAArcadeSet(const SystemId, SetName: string; out Digest: string): Boolean;
+begin
+  Digest := '';
+  if (SetName = '') or SetName.Contains('|') then
+    Exit(False);
+  var Names: string;
+  if SystemId = 'cps1' then
+    Names := FBNeoCPS1
+  else if SystemId = 'cps2' then
+    Names := FBNeoCPS2
+  else if SystemId = 'cps3' then
+    Names := FBNeoCPS3
+  else if SystemId = 'neogeo' then
+    Names := FBNeoNeoGeo
+  else if SystemId = 'system16' then
+    Names := FBNeoSystem16
+  else if SystemId = 'system18' then
+    Names := FBNeoSystem18
+  else if SystemId = 'system32' then
+    Names := FBNeoSystem32
+  else
+    Exit(False);
+  if not Names.Contains('|' + SetName + '|') then
+    Exit(False);
+  Result := TryHashRAMediaFile(RAConsoleArcade, SetName + '.zip', Default(TRAMediaHashOptions), Digest);
+end;
+
+function HashPSPMedia(const Storage: IStorage; const Location: string; out Digest: string): Boolean;
+begin
+  var Stream := Storage.OpenRead(Location);
+  try
+    if not TPSPDisc.Recognizes(Stream) then
+      Exit(False);
+    var Disc := TPSPDisc.Create(Stream);
+    try
+      Result := TryHashRADisc(TRADiscConsole.PlayStationPortable,
+        function(Sector: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal
+        begin
+          var Offset := Int64(Sector) * 2048;
+          if (Buffer = nil) or (Count = 0) or (Offset >= Disc.Size) then
+            Exit(0);
+          Result := Count;
+          if Disc.Size - Offset < Result then
+            Result := Disc.Size - Offset;
+          Disc.ReadAt(Offset, Buffer^, Result);
+        end, Digest);
+    finally
+      Disc.Free;
+    end;
+  finally
+    Stream.Free;
+  end;
+end;
+
+function HashDiscMedia(const Storage: IStorage; const SystemId, Location: string; ConsoleId: Cardinal; out Digest: string): Boolean;
+begin
+  var Console: TRADiscConsole;
+  case ConsoleId of
+    RAConsolePlayStation:
+      Console := TRADiscConsole.PlayStation;
+    RAConsolePlayStation2:
+      Console := TRADiscConsole.PlayStation2;
+    RAConsoleSegaCD:
+      Console := TRADiscConsole.SegaCD;
+    RAConsoleSaturn:
+      Console := TRADiscConsole.Saturn;
+    RAConsoleDreamcast:
+      Console := TRADiscConsole.Dreamcast;
+    RAConsolePCEngineCD:
+      Console := TRADiscConsole.PCEngineCD;
+    RAConsoleAtariJaguarCD:
+      Console := TRADiscConsole.JaguarCD;
+    RAConsoleNeoGeoCD:
+      Console := TRADiscConsole.NeoGeoCD;
+  else
+    Exit(False);
+  end;
+  var DiscLocation := Location;
+  var Stream := Storage.OpenRead(DiscLocation);
+  var Disc: TCDDisc;
+  try
+    if SameText(ExtractFileExt(Storage.Describe(Location).Name), '.m3u') then
+    begin
+      var Playlist := ReadCDPlaylist(Stream, Storage, Location, SystemId);
+      if Length(Playlist) = 0 then
+        Exit(False);
+      DiscLocation := Playlist[0];
+      FreeAndNil(Stream);
+      Stream := Storage.OpenRead(DiscLocation);
+    end;
+    Disc := TCDDisc.Create(Stream, Storage, DiscLocation, True);
+  finally
+    Stream.Free;
+  end;
+  try
+    Result := TryHashRADisc(Console,
+      function(Selector: Cardinal; out Track: TRADiscTrack): Boolean
+      begin
+        Track := Default(TRADiscTrack);
+        var Selected := 0;
+        var Largest := -1;
+        for var Index := 1 to Disc.TrackCount do
+        begin
+          var Candidate := Disc.Track(Index);
+          case Selector of
+            RAFirstDataTrack:
+              if not Candidate.Audio then
+              begin
+                Selected := Index;
+                Break;
+              end;
+            RALastTrack:
+              Selected := Index;
+            RALargestTrack:
+              if not Candidate.Audio and (Candidate.EndLBA - Candidate.StartLBA > Largest) then
+              begin
+                Selected := Index;
+                Largest := Candidate.EndLBA - Candidate.StartLBA;
+              end;
+            RASecondSessionTrack:
+              if Candidate.Session >= 2 then
+              begin
+                Selected := Index;
+                Break;
+              end;
+          else
+            if Cardinal(Candidate.Number) = Selector then
+            begin
+              Selected := Index;
+              Break;
+            end;
+          end;
+        end;
+        if Selected = 0 then
+          Exit(False);
+        var Item := Disc.Track(Selected);
+        if (Item.StartLBA < 0) or (Item.Audio and (Console <> TRADiscConsole.JaguarCD)) then
+          Exit(False);
+        Track.FirstSector := Item.StartLBA;
+        Track.Read :=
+          function(Sector: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal
+          begin
+            Result := 0;
+            var Data: TBytes;
+            while (Result < Count) and (Sector <= Cardinal(High(Integer))) and
+              (Disc.TrackAt(Sector) >= 0) do
+            begin
+              if Console = TRADiscConsole.JaguarCD then
+              begin
+                if Disc.IsData(Sector) then
+                  Disc.ReadRawData(Sector, Data)
+                else
+                  Disc.ReadAudio(Sector, Data);
+              end
+              else
+              begin
+                if not Disc.IsData(Sector) then
+                  Exit;
+                Disc.ReadData(Sector, Data);
+              end;
+              var Size := Cardinal(Length(Data));
+              if Size = 0 then
+                Exit;
+              if Size > Count - Result then
+                Size := Count - Result;
+              Move(Data[0], (Buffer + Result)^, Size);
+              Inc(Result, Size);
+              Inc(Sector);
+            end;
+          end;
+        Result := True;
+      end, Digest);
+  finally
+    Disc.Free;
+  end;
+end;
 
 function TryHashRAFile(const Storage: IStorage; const SystemId, Location: string; const Media: IEmulationAchievementMedia; out Digest: string): Boolean;
 begin
   Digest := '';
   if Media = nil then
     Exit(False);
+  if Media.ConsoleId = RAConsolePSP then
+    Exit(HashPSPMedia(Storage, Location, Digest));
+  if Media.IsDisc then
+    Exit(HashDiscMedia(Storage, SystemId, Location, Media.ConsoleId, Digest));
+  var PrepareArcade := PlatformServices(SystemId).PrepareArcadeAchievements;
+  if (Media.ConsoleId = RAConsoleArcade) and Assigned(PrepareArcade) then
+  begin
+    var Companions: TArray<string>;
+    var ResolveSet: TFunc<string>;
+    PrepareArcade(Storage, Location, Companions, ResolveSet);
+    Exit(Assigned(ResolveSet) and TryHashRAArcadeSet(SystemId, ResolveSet(), Digest));
+  end;
   var Stream := Storage.OpenRead(Location);
   try
     var Context := TCoreLoadContext.Create(Stream, Storage, Location);
     try
+      if Media.ConsoleId = RAConsoleArcade then
+      begin
+        if (SystemId = 'neogeo') and SameText(ExtractFileExt(Context.SourceName), '.neo') then
+        begin
+          Stream.Position := 0;
+          Exit(TryHashRARom(TRARomConsole.NeoGeoCartridge, Stream, Digest));
+        end;
+        if not IsMediaArchive(Context.SourceName) then
+          Exit(False);
+        var Match := ResolveEmulationCore(Context, SystemId, '');
+        try
+          Result := (Match <> nil) and (Match.PlatformId = SystemId) and
+            TryHashRAArcadeSet(SystemId, Match.AchievementSetName, Digest);
+        finally
+          Match.Free;
+        end;
+        Exit;
+      end;
       if IsMediaArchive(Context.SourceName) then
       begin
         var Match := ResolveEmulationCore(Context, SystemId, '');
@@ -76,6 +292,80 @@ begin
   finally
     Stream.Free;
   end;
+end;
+
+function RAAchievementSourceStamp(const Storage: IStorage; const Location: string): string;
+begin
+  Result := '';
+  try
+    var Modified := Storage.ModifiedTime(Location);
+    if Modified <= 0 then
+      Exit;
+    var Size := Storage.Describe(Location).Size;
+    if Size > 0 then
+      Result := IntToStr(Size) + ':' + FloatToStrF(Modified, ffGeneral, 17, 0, TFormatSettings.Invariant) + ':';
+  except
+    // Providers can omit file metadata. In that case use the ROM contents.
+  end;
+end;
+
+function CachedRAFileHash(const Storage: IStorage; Cache: TMemIniFile; const SystemId, Location: string; const Media: IEmulationAchievementMedia; ScanROMs: Boolean): string;
+
+  function MediaStamp(const Companions: TArray<string>): string;
+  begin
+    Result := RAAchievementSourceStamp(Storage, Location);
+    if (Result = '') or (Length(Companions) = 0) then
+      Exit;
+    for var Companion in Companions do
+    begin
+      var Stamp := RAAchievementSourceStamp(Storage, Companion);
+      if Stamp = '' then
+        Exit('');
+      Result := Result + THashSHA2.GetHashString(Companion) + ':' + Stamp;
+    end;
+    Result := 'v2:' + THashSHA2.GetHashString(Result) + ':';
+  end;
+
+begin
+  Result := '';
+  if Media = nil then
+    Exit;
+  var Section := 'ROM hashes';
+  if Media.ConsoleId <> RAConsoleGameBoyAdvance then
+    Section := Section + ' ' + UIntToStr(Media.ConsoleId);
+  var Key := THashSHA2.GetHashString(Location);
+  var Entry := Cache.ReadString(Section, Key, '');
+  if not ScanROMs and (Entry = '') then
+    Exit;
+  var Companions: TArray<string>;
+  var ResolveSet: TFunc<string>;
+  var PrepareArcade := PlatformServices(SystemId).PrepareArcadeAchievements;
+  if Assigned(PrepareArcade) then
+  begin
+    PrepareArcade(Storage, Location, Companions, ResolveSet);
+    if not Assigned(ResolveSet) then
+      Exit;
+  end;
+  var Stamp := MediaStamp(Companions);
+  if Stamp <> '' then
+  begin
+    if (Length(Entry) = Length(Stamp) + 32) and Entry.StartsWith(Stamp) then
+      Exit(Entry.Substring(Length(Stamp)));
+  end;
+  if not ScanROMs then
+    Exit('');
+  if Assigned(ResolveSet) then
+  begin
+    if not TryHashRAArcadeSet(SystemId, ResolveSet(), Result) then
+      Exit('');
+  end
+  else if not TryHashRAFile(Storage, SystemId, Location, Media, Result) then
+    Exit('');
+  if Stamp = '' then
+    Exit;
+  if Stamp <> MediaStamp(Companions) then
+    Exit('');
+  Cache.WriteString(Section, Key, Stamp + Result);
 end;
 
 function RAAchievementCachePath(const Storage: IStorage; const Kind, Key: string): string;
@@ -329,11 +619,11 @@ type
     FError, FGameHash, FUserName: string;
     FConsoleId: Cardinal;
     FEmulationFailed: Boolean;
-    procedure BeginSession(Console: TRARomConsole; const ROM: TBytes; const Credentials: TRACredentials; const Post: TRAPost; ShareRichPresence: Boolean);
+    procedure BeginSession(ConsoleId: Cardinal; const Digest: string; const Credentials: TRACredentials; const Post: TRAPost; ShareRichPresence: Boolean);
     procedure NetworkLoop;
     procedure ReportError(const Message: string);
   public
-    constructor Create(Console: TRARomConsole; const ROM: TBytes; const Credentials: TRACredentials; const UserAgent: string; ShareRichPresence: Boolean); overload;
+    constructor Create(ConsoleId: Cardinal; const Digest: string; const Credentials: TRACredentials; const UserAgent: string; ShareRichPresence: Boolean); overload;
     constructor Create(Console: TRARomConsole; const ROM: TBytes; const Credentials: TRACredentials; const Post: TRAPost); overload;
     destructor Destroy; override;
     procedure Frame(const ReadMemory: TEmulationAchievementRead);
@@ -349,27 +639,31 @@ type
     procedure SetShareRichPresence(Value: Boolean);
   end;
 
-constructor TRAConnection.Create(Console: TRARomConsole; const ROM: TBytes; const Credentials: TRACredentials; const UserAgent: string; ShareRichPresence: Boolean);
+constructor TRAConnection.Create(ConsoleId: Cardinal; const Digest: string; const Credentials: TRACredentials; const UserAgent: string; ShareRichPresence: Boolean);
 begin
   inherited Create;
   FHTTP := TRAHttpClient.Create(UserAgent);
-  BeginSession(Console, ROM, Credentials, nil, ShareRichPresence);
+  BeginSession(ConsoleId, Digest, Credentials, nil, ShareRichPresence);
 end;
 
 constructor TRAConnection.Create(Console: TRARomConsole; const ROM: TBytes; const Credentials: TRACredentials; const Post: TRAPost);
 begin
   inherited Create;
-  BeginSession(Console, ROM, Credentials, Post, True);
+  var Digest: string;
+  if not TryHashRARom(Console, ROM, Digest) then
+    raise ERARomNotRecognized.Create('Could not identify the ROM for RetroAchievements');
+  BeginSession(Ord(Console), Digest, Credentials, Post, True);
 end;
 
-procedure TRAConnection.BeginSession(Console: TRARomConsole; const ROM: TBytes; const Credentials: TRACredentials; const Post: TRAPost; ShareRichPresence: Boolean);
+procedure TRAConnection.BeginSession(ConsoleId: Cardinal; const Digest: string; const Credentials: TRACredentials; const Post: TRAPost; ShareRichPresence: Boolean);
 begin
-  if (Length(ROM) = 0) or not TryHashRARom(Console, ROM, FGameHash) then
-    raise ERARomNotRecognized.Create('Could not identify the ROM for RetroAchievements');
+  if Digest = '' then
+    raise ERARomNotRecognized.Create('Could not identify the media for RetroAchievements');
+  FGameHash := Digest;
   FLock := TCriticalSection.Create;
   FWake := TEvent.Create(nil, False, False, '');
   FUserName := Credentials.UserName;
-  FConsoleId := Ord(Console);
+  FConsoleId := ConsoleId;
   FRuntimeEvents := TList<TRARuntimeEvent>.Create;
   FSubmissions := TList<TRASubmission>.Create;
   if FHTTP <> nil then
@@ -574,7 +868,20 @@ end;
 
 function OpenRAConnection(Console: TRARomConsole; const ROM: TBytes; const Credentials: TRACredentials; const UserAgent: string; ShareRichPresence: Boolean): IRAConnection;
 begin
-  Result := TRAConnection.Create(Console, ROM, Credentials, UserAgent, ShareRichPresence);
+  var Digest: string;
+  var Stream := TBytesStream.Create(ROM);
+  try
+    if not TryHashRAEmulatedROM(Console, Stream, Digest) then
+      raise ERARomNotRecognized.Create('Could not identify the ROM for RetroAchievements');
+  finally
+    Stream.Free;
+  end;
+  Result := TRAConnection.Create(Ord(Console), Digest, Credentials, UserAgent, ShareRichPresence);
+end;
+
+function OpenRAHashedConnection(ConsoleId: Cardinal; const Digest: string; const Credentials: TRACredentials; const UserAgent: string; ShareRichPresence: Boolean): IRAConnection;
+begin
+  Result := TRAConnection.Create(ConsoleId, Digest, Credentials, UserAgent, ShareRichPresence);
 end;
 
 function OpenRAConnection(Console: TRARomConsole; const ROM: TBytes; const Credentials: TRACredentials; const Post: TRAPost): IRAConnection;

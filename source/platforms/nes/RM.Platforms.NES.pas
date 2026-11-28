@@ -160,8 +160,14 @@ end;
 type
   TNESAchievementMedia = class(TInterfacedObject, IEmulationAchievementMedia)
     function GetConsoleId: Cardinal;
+    function IsDisc: Boolean;
     function AcceptsROM(const SourceName: string; Input: TStream): Boolean;
   end;
+
+function TNESAchievementMedia.IsDisc: Boolean;
+begin
+  Result := False;
+end;
 
 function TNESAchievementMedia.GetConsoleId: Cardinal;
 begin
@@ -201,6 +207,7 @@ begin
   Service.DocumentSelection.FileFilter := 'NES disk images (*.fds;*.qd;*.img;*.ima)|*.fds;*.qd;*.img;*.ima|All files|*.*';
   Service.DocumentSelection.AllowedExtensions := ['.fds', '.qd'];
   RegisterPlatformServices('fds', Service);
+  RegisterPlatformAchievementMedia('fds', 7, ['.fds', '.qd']);
 end;
 
 class procedure TNESPlatform.LoadLegacyKeys(var Keys: TPlatformInputKeyMap);

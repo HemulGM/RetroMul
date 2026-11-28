@@ -3,9 +3,9 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.IniFiles, Core.Storage,
-  Core.InputConfig, Core.Emulation, GB.EmulationThread, GB.Joypad, GB.GPU,
-  GB.Camera, GB.Memory, GB.Palettes;
+  Core.Emulation.Types, System.SysUtils, System.Classes, System.IniFiles,
+  Core.Storage, Core.InputConfig, Core.Emulation, GB.EmulationThread, GB.Joypad,
+  GB.GPU, GB.Camera, GB.Memory, GB.Palettes;
 
 type
   TGBKeyMap = record
@@ -66,9 +66,10 @@ type
     procedure SetScreenPalette(const Value: Integer);
   end;
 
-  TGBCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IGBCameraInput, IEmulationMotionInput, IEmulationRumbleOutput)
+  TGBCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IGBCameraInput, IEmulationMotionInput, IEmulationRumbleOutput, IEmulationAchievements)
   protected
     FThread: TGBEmulationThread;
+    FAchievementObserver: IEmulationAchievementObserver;
     FColorHardware: Boolean;
     FBootROMData: TBytes;
     FCameraSource: IGBCameraFrameSource;
@@ -77,7 +78,7 @@ type
     FSnapshotDirectory: string;
     FSavePath: string;
     FStorage: IStorage;
-    FROMData: TArray<Byte>;
+    FROMData, FAchievementROM: TBytes;
     FGamepadInput: TEmulatorInput;
     FKeyboardInput: TEmulatorInput;
     FControllerEnabled: Boolean;
@@ -93,6 +94,8 @@ type
     function GetName: string; virtual;
     function GetSupportsSnapshots: Boolean;
   public
+    function AchievementROM: TBytes;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     procedure ApplyLiveSettings;
     constructor Create(const FileName: string); overload;
     constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string); overload;
@@ -229,6 +232,7 @@ begin
   try
     ROM.ReadROM(Stream);
     FROMData := ROM.ImageData;
+    FAchievementROM := ROM.SourceData;
     if ROM.GetCartridgeType.MapperType = TMapperType.PocketCamera then
       FCameraSource := TGBCameraFrameSource.Create;
     FHasAccelerometer := ROM.GetCartridgeType.HasAccelerometer;
@@ -284,6 +288,7 @@ end;
 procedure TGBCoreAdapter.CreateThread;
 begin
   FThread := CreateWorker;
+  FThread.SetAchievementObserver(FAchievementObserver);
   FThread.ConfigureBootROM(FConfig.BootModel, FBootROMData);
   FThread.Storage := FStorage;
   FThread.SnapshotDirectory := FSnapshotDirectory;
@@ -640,6 +645,18 @@ end;
 procedure TGBEmulatorConfig.SetScreenPalette(const Value: Integer);
 begin
   FScreenPalette := EnsureRange(Value, 0, SCREEN_PALETTE_COUNT - 1);
+end;
+
+function TGBCoreAdapter.AchievementROM: TBytes;
+begin
+  Result := FAchievementROM;
+end;
+
+procedure TGBCoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  FAchievementObserver := Observer;
+  if FThread <> nil then
+    FThread.SetAchievementObserver(Observer);
 end;
 
 end.

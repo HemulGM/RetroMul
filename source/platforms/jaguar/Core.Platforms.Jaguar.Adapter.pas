@@ -3,8 +3,9 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.IniFiles, Core.Storage, Core.Emulation,
-  Jaguar.Console, Jaguar.Emulation, Core.InputConfig, Jaguar.Jerry, Core.CD.Disc;
+  Core.Emulation.Types, System.SysUtils, System.Classes, System.IniFiles,
+  Core.Storage, Core.Emulation, Jaguar.Console, Jaguar.Emulation,
+  Core.InputConfig, Jaguar.Jerry, Core.CD.Disc;
 
 type
   IJaguarKeypadInput = interface
@@ -29,7 +30,7 @@ type
     property Keys2: TJaguarKeyMap read FKeys2;
   end;
 
-  TJaguarCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationVirtualControls, IJaguarKeypadInput, IEmulationDiscControl)
+  TJaguarCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationVirtualControls, IJaguarKeypadInput, IEmulationDiscControl, IEmulationAchievements)
   private
     FCartridge: TBytes;
     FDisc: TCDDisc;
@@ -47,6 +48,8 @@ type
     procedure ApplySettings;
     procedure ReplaceDisc(const Location: string; Index: Integer);
   public
+    function AchievementROM: TBytes;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     function GetDiscCount: Integer;
     function GetDiscName(Index: Integer): string;
     function GetDiscIndex: Integer;
@@ -459,6 +462,19 @@ end;
 function TJaguarCoreAdapter.IsPaused: Boolean;
 begin
   Result := FPaused;
+end;
+
+function TJaguarCoreAdapter.AchievementROM: TBytes;
+begin
+  if FCDHardware then
+    Exit(nil);
+  Result := FCartridge;
+end;
+
+procedure TJaguarCoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  if FThread <> nil then
+    FThread.SetAchievementObserver(Observer);
 end;
 
 end.

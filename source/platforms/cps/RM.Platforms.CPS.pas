@@ -25,11 +25,11 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads, RM.Settings.Catalog, RM.Settings.Platform, Core.Snapshots,
-  System.StrUtils, Core.Emulation, Core.Platforms, Core.PlatformServices,
-  Core.Platforms.CPS.Adapter, CPS.RomSets, RM.Platforms.Presentation,
-  RM.Gamepad.Factory, RM.Platforms.CPS.Gamepads, RM.Input.Runtime,
-  RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
+  RA.Console, RM.Input.Gamepads, RM.Settings.Catalog, RM.Settings.Platform,
+  Core.Snapshots, System.StrUtils, Core.Emulation, Core.Platforms,
+  Core.PlatformServices, Core.Platforms.CPS.Adapter, CPS.RomSets,
+  RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Platforms.CPS.Gamepads,
+  RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
   RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
   System.Classes;
 
@@ -90,6 +90,8 @@ begin
         Result := TCPSCoreAdapter.Create(Context.Stream, Context.Storage, Context.RomName);
       end);
     Result.Format.SystemId := 'cps' + IntToStr(Ord(RomSet.Generation));
+    if RomSet.ArchiveProgramMatched and (RomSet.DiscName = '') then
+      Result.AchievementSetName := RomSet.AchievementSetName;
   end;
 end;
 
@@ -226,6 +228,10 @@ begin
   RegisterServices;
   RegisterCore;
   RegisterClient;
+  RegisterPlatformAchievementMedia('cps1', RAConsoleArcade, ['.zip', '.7z']);
+  RegisterPlatformAchievementMedia('cps2', RAConsoleArcade, ['.zip', '.7z']);
+  RegisterPlatformAchievementMedia('cps3', RAConsoleArcade, ['.zip', '.7z'], False,
+    TCPSCoreAdapter.PrepareArcadeAchievements);
   FRegistered := True;
 end;
 

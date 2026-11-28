@@ -3,8 +3,9 @@
 interface
 
 uses
-  Core.Input.Keyboard, System.SysUtils, System.Classes, System.IniFiles,
-  Core.Storage, Core.Emulation, Core.InputConfig, MSX.Machine, MSX.Emulation;
+  Core.Emulation.Types, Core.Input.Keyboard, System.SysUtils, System.Classes,
+  System.IniFiles, Core.Storage, Core.Emulation, Core.InputConfig, MSX.Machine,
+  MSX.Emulation;
 
 type
   TMSXConfig = class(TEmulatorConfigBase)
@@ -19,7 +20,7 @@ type
     procedure SaveCoreSettings(Ini: TCustomIniFile); override;
   end;
 
-  TMSXCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationKeyboard, IEmulationMouseInput, IEmulationDiscControl)
+  TMSXCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IEmulationKeyboard, IEmulationMouseInput, IEmulationDiscControl, IEmulationAchievements)
   private
     FThread: TMSXWorker;
     FData, FBIOS, FSubROM: TBytes;
@@ -39,6 +40,8 @@ type
     FDiscIndex: Integer;
     procedure ApplySettings;
   public
+    function AchievementROM: TBytes;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     constructor Create(const Data: TBytes; Model: TMSXModel; const Storage: IStorage; const RomName: string; MediaKind: TMSXMediaKind = CartridgeMedia);
     destructor Destroy; override;
     procedure ApplyLiveSettings;
@@ -555,6 +558,17 @@ begin
   Result := '';
   if FThread <> nil then
     Result := FThread.TakeAudioError;
+end;
+
+function TMSXCoreAdapter.AchievementROM: TBytes;
+begin
+  Result := FData;
+end;
+
+procedure TMSXCoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  if FThread <> nil then
+    FThread.SetAchievementObserver(Observer);
 end;
 
 end.

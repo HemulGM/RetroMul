@@ -42,6 +42,7 @@ type
     function DataByte: Byte;
     procedure ADWrite(Value: Byte);
   public
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(Disc: TCDDisc; SuperCD: Boolean);
     procedure Reset;
     function Read(Address: Word): Byte;
@@ -59,7 +60,7 @@ type
 implementation
 
 uses
-  System.Math;
+  Core.Emulation.Types, System.Math;
 
 function BCD(Value: Integer): Byte;
 begin
@@ -687,6 +688,11 @@ begin
       (FState.AudioPosition < 0) or (FState.AudioPosition >= 588) then
       raise EReadError.Create('Invalid PC Engine CD state');
   end;
+end;
+
+function TPCECDROM.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  Result := ReadAchievementMemoryBlock(Address, Buffer, Count, @FBRAM, SizeOf(FBRAM));
 end;
 
 end.

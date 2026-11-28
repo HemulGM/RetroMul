@@ -63,6 +63,7 @@ type
     Id: string;
     Format: TRomFormatInfo;
     ArchiveCandidate: Boolean;
+    AchievementSetName: string;
     Confidence: TCoreMatchConfidence;
     function PlatformId: string;
     constructor Create(const CoreId: string; const Creator: TCoreCreator);

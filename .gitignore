@@ -45,3 +45,4 @@ __recovery/
 /apps/retromul/PS2GS.Pascal.res
 /source/gpu/shaders/PS2GS.Pascal.res
 tests/*
+/credentials/ScreenScraper.Application.inc

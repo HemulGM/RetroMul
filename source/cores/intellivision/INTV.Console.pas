@@ -50,6 +50,7 @@ type
     function FirstVideoRow: Integer;
     function GraphicsAccessible: Boolean;
   public
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const Cart, Exec, GROM: TBytes; const Mapping: string; PAL: Boolean; STIC1A: Boolean = False);
     destructor Destroy; override;
     procedure EnableECS(const ROM: TBytes; const Storage: IStorage = nil; const MediaFolder: string = '');
@@ -662,6 +663,56 @@ begin
     FCPU.State := CPUState;
     for var Channel := 0 to 2 do
       FPSG.SetEnvelopeShift(Channel, (3 - (FVolumeRegisters[Channel] shr 4)) and 3);
+  end;
+end;
+
+function TIntvConsole.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  Result := 0;
+  if Buffer = nil then
+    Exit;
+  while Result < Count do
+  begin
+    var WordAddress: Cardinal;
+    case Address of
+      $0..$7F:
+        WordAddress := (Address shr 1) + $3800;
+      $80..$27F:
+        WordAddress := (Address - $80) shr 1;
+      $480..$DFF:
+        WordAddress := ((Address - $480) shr 1) + $100;
+      $1080..$407F:
+        WordAddress := ((Address - $1080) shr 1) + $400;
+      $8080..$C07F:
+        WordAddress := ((Address - $8080) shr 1) + $2000;
+      $C080..$1007F:
+        WordAddress := ((Address - $C080) shr 1) + $3000;
+      $10080..$4007F:
+        WordAddress := ((Address - $10080) shr 1) + $4000;
+    else
+      Exit;
+    end;
+    var Value: Word;
+    case WordAddress of
+      $00..$3F:
+        Value := FSTIC.ReadRegister(WordAddress);
+      $100..$1EF:
+        Value := FScratch[WordAddress - $100];
+      $1F0..$1FF:
+        Value := FPSG.ReadRegister(PSGRegisters[WordAddress - $1F0]);
+      $200..$35F:
+        Value := FSystemRAM[WordAddress - $200];
+      $3000..$37FF:
+        Value := FGROM[WordAddress and $7FF];
+      $3800..$3FFF:
+        Value := FGRAM[WordAddress and FGRAMMask];
+    else
+      Value := FCartridge.ReadWord(WordAddress);
+    end;
+    Buffer^ := Byte(Value shr (8 * (Address and 1)));
+    Inc(Address);
+    Inc(Buffer);
+    Inc(Result);
   end;
 end;
 

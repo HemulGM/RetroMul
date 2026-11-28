@@ -9,19 +9,27 @@ uses
   System.DateUtils, System.Generics.Collections, System.IniFiles, FMX.Types,
   FMX.Controls, FMX.Forms, FMX.Layouts, FMX.StdCtrls, FMX.Edit, FMX.Objects,
   Core.Storage, FMX.Controls.Presentation, FMX.ListBox, FMXInput,
-  RM.LibraryNavigation, FMX.Ani, Core.RomMetadata, RA.Account, RA.GameData;
+  RM.LibraryNavigation, FMX.Ani, Core.RomMetadata, RA.Account, RA.GameData,
+  RM.ScreenScraper;
 
 type
   TLibraryGame = class
   public
     FileInfo: TStorageFile;
     SystemId, Title, Cover, BoxCover, Description, Developer, Genre, Players: string;
+    ScrapeJob: TScraperJob;
     Favorite: Boolean;
     AchievementHash: string;
+    AchievementChecked: Boolean;
     InLibrary: Boolean;
     LastPlayed: TDateTime;
     function Key: string;
     function GamepadCover: string;
+  end;
+
+  TLibraryAchievementCatalog = record
+    Loaded: Boolean;
+    Hashes: TArray<string>;
   end;
 
   TLibraryLoader = class(TThread)
@@ -42,6 +50,7 @@ type
 
   TLibraryCard = class(TPanel)
     Cover: TImage;
+    TitleLabel: TLabel;
     platform: TLabel;
     Selection: TRectangle;
     TextLayout, TitleLayout: TLayout;
@@ -209,7 +218,15 @@ type
     procedure ChangePadPlatform(Delta: Integer);
   private
     FLoadThread: TLibraryLoader;
-    FStopAchievementScan: TProc;
+    FTimerScraping: TTimer;
+    FScraper: TScreenScraperWorker;
+    FScraperOptions: TScraperOptions;
+    FScrapePending: Boolean;
+    FScrapeRetryAt: UInt64;
+    FScrapeGames: TDictionary<string, TLibraryGame>;
+    FScrapeAttempted: THashSet<string>;
+    FStopAchievementScan, FStopAchievementSchedule: TProc;
+    FVisibleAchievementCatalogs: TArray<TPair<Cardinal, TLibraryAchievementCatalog>>;
     FScanAchievementROMs, FAchievementsEnabled: Boolean;
     FAchievementAccount: IRAAccount;
     FAchievementCatalog, FAchievementDefinitions: TArray<TRAAchievementDefinition>;
@@ -263,9 +280,13 @@ type
     FOnPlay, FOnSettings, FOnOpen, FOnPresentationChanged: TNotifyEvent;
     FOnOpenOpticalDisc: TNotifyEvent;
     procedure OpenOpticalDiscClick(Sender: TObject);
+    procedure StartScraping;
+    procedure ScrapingTick(Sender: TObject);
     procedure ClearCards;
+    procedure ScheduleAchievementScan;
     procedure StartAchievementScan;
-    procedure ApplyAchievementStatus(const Supported: TArray<TPair<string, string>>);
+    procedure ResetAchievementScan;
+    procedure ApplyAchievementStatus(const Games: TArray<TLibraryGame>; const Digests: TArray<string>);
     procedure RefreshAchievementDetails;
     procedure ResetAchievementDetails;
     procedure RenderAchievementPreviews;
@@ -301,15 +322,13 @@ type
     procedure UpdateViewIcons;
     procedure GridResize(Sender: TObject);
     procedure BodyResize(Sender: TObject);
-    {$IFDEF ISMOBILE}
     procedure ScrollViewportChanged(Sender: TObject; const OldPosition, NewPosition: TPointF; const ContentSizeChanged: Boolean);
-    {$ENDIF}
     procedure InspectorColumnsResized(Sender: TObject);
     procedure ArrangeInspector;
     procedure ArrangeInspectorDescription(Width: Single);
     procedure UpdateInspector;
     procedure SelectContinueGame;
-    procedure UpdateContinue;
+    procedure UpdateContinue(FindRecent: Boolean = True);
     procedure LoadContinueGamePreview;
     procedure ArrangeContinuePreview;
     procedure OpenClick(Sender: TObject);
@@ -336,6 +355,7 @@ type
     procedure MoreClick(Sender: TObject);
   protected
     procedure Resize; override;
+    procedure VisibleChanged; override;
   public
     constructor CreateLibrary(AOwner: TComponent; const Storage: IStorage; const AchievementAccount: IRAAccount = nil);
     destructor Destroy; override;
@@ -345,6 +365,7 @@ type
     procedure ApplyOrientationPresentation(Landscape: Boolean);
     procedure Reload;
     procedure ApplyPreferences;
+    procedure ApplyScrapingPreferences;
     procedure RefreshAchievementPreferences;
     procedure RecordAchievementUnlock(const Location, UserName: string; AchievementId: Cardinal);
     procedure ApplyLanguage(const PreviousLanguage: string);
@@ -557,6 +578,12 @@ begin
   FPadGames := TList<TLibraryGame>.Create;
   FGames := TObjectList<TLibraryGame>.Create;
   FCards := TList<TLibraryCard>.Create;
+  FScrapeGames := TDictionary<string, TLibraryGame>.Create;
+  FScrapeAttempted := THashSet<string>.Create;
+  FTimerScraping := TTimer.Create(Self);
+  FTimerScraping.Name := 'TimerScraping';
+  FTimerScraping.Interval := 12000;
+  FTimerScraping.OnTimer := ScrapingTick;
   FLetterButtons := TList<TButton>.Create;
   FPlatformButtons := TList<TButton>.Create;
   FConfiguredPlatforms := TList<string>.Create;
@@ -758,8 +785,8 @@ begin
   LayoutInspectorColumns.OnResized := InspectorColumnsResized;
   {$IFDEF ISMOBILE}
   FContinue.ClipChildren := True;
-  VertScrollBoxScroll.OnViewportPositionChange := ScrollViewportChanged;
   {$ENDIF}
+  VertScrollBoxScroll.OnViewportPositionChange := ScrollViewportChanged;
   InitializePadView;
   {$IFDEF ISMOBILE}
   FPadMode := True;
@@ -784,10 +811,16 @@ destructor TLibraryView.Destroy;
 
 begin
   FClosing := True;
+  if FTimerScraping <> nil then
+    FTimerScraping.Enabled := False;
+  if FScraper <> nil then
+    FScraper.Terminate;
+  FreeAndNil(FScraper);
+  FScrapeGames.Free;
+  FScrapeAttempted.Free;
   if Assigned(FStopAchievementDetails) then
     FStopAchievementDetails();
-  if Assigned(FStopAchievementScan) then
-    FStopAchievementScan();
+  ResetAchievementScan;
   FBuilding := True;
   for var Timer in [TimerPadTransition, TimerPadPlatforms, TimerPadLayout, TimerPadBackdrop] do
     if Timer <> nil then
@@ -925,7 +958,7 @@ var
     if Relative = '' then
       Exit;
     if not Folder.StartsWith('content://', True) then
-      Exit(TPath.Combine(Folder, Relative));
+      Exit(ScraperNativePath(Folder, Relative));
     // SAF identifiers are opaque. Cache names only for this scan so a reload
     // picks up additions, removals and changed provider permissions.
     Result := Folder;
@@ -1061,7 +1094,7 @@ begin
           Item.InLibrary := True;
           Item.SystemId := platform.Id;
           Item.Title := TPath.GetFileNameWithoutExtension(FileInfo.Name);
-          var Entry: TGame;
+          var Entry: TGame := nil;
           var Key: string;
           if DocumentFolder then
             Key := RelativeMetadataKey(FileInfo.RelativePath)
@@ -1089,6 +1122,24 @@ begin
             Item.Genre := Entry.Genre;
             Item.Players := Entry.Players;
             Item.Favorite := Entry.Favorite;
+          end
+          else if not DocumentFolder and (Folder <> '') then
+          begin
+            var ScreenSystem := ScreenScraperSystem(platform.Id, FileInfo.Name);
+            if ScreenSystem <> '' then
+            begin
+              Item.ScrapeJob.Key := platform.Id + '|' + FileInfo.Location;
+              Item.ScrapeJob.Folder := Folder;
+              Item.ScrapeJob.XMLFile := XML;
+              if XML = '' then
+                Item.ScrapeJob.XMLFile := TPath.Combine(Folder, 'gamelist.xml');
+              Item.ScrapeJob.SystemId := platform.Id;
+              Item.ScrapeJob.ScreenSystemId := ScreenSystem;
+              Item.ScrapeJob.Location := FileInfo.Location;
+              Item.ScrapeJob.Name := FileInfo.Name;
+              Item.ScrapeJob.RelativePath := FileInfo.RelativePath;
+              Item.ScrapeJob.Size := FileInfo.Size;
+            end;
           end;
           Item.Favorite := FState.ReadBool('Favorites', Item.Key, Item.Favorite);
           Item.LastPlayed := FState.ReadFloat('Recent', Item.Key, 0);
@@ -1169,8 +1220,11 @@ begin
     FReloadPending := True;
     Exit;
   end;
-  if Assigned(FStopAchievementScan) then
-    FStopAchievementScan();
+  ResetAchievementScan;
+  if FScraper <> nil then
+    FScraper.Terminate;
+  FScrapePending := FScraperOptions.Enabled;
+  FScrapeGames.Clear;
   FInspectorOpen := False;
   FLoadThread := TLibraryLoader.Create(FStorage, FState, FinishReload);
   FNavigation.Reset;
@@ -1213,11 +1267,15 @@ begin
     Exit;
   end;
   SetLoading(False);
+  for var Game in FGames do
+    if Game.ScrapeJob.Key <> '' then
+      FScrapeGames.AddOrSetValue(Game.ScrapeJob.Key, Game);
+  StartScraping;
   UpdateConfiguredPlatforms;
   UpdateContinue;
   BuildCards;
   Resize;
-  StartAchievementScan;
+  ScheduleAchievementScan;
   {$IFDEF RETROMUL_LIBRARY_TRACE}
   TFile.AppendAllText(TPath.Combine(FStorage.Root, 'library-load-timing.txt'),
     Format('UI total: %d ms', [TThread.GetTickCount64 - FinishStarted]) + sLineBreak, TEncoding.UTF8);
@@ -1249,10 +1307,146 @@ begin
   finally
     Ini.Free;
   end;
+  ApplyScrapingPreferences;
   UpdateViewIcons;
   (FindComponent('ButtonGamepadView') as TButton).Hint := Translate('Gamepad');
   if FCards <> nil then
     BuildCards;
+end;
+
+procedure TLibraryView.ApplyScrapingPreferences;
+begin
+  var Ini := FStorage.ReadConfig(FStorage.ConfigFile('config'));
+  try
+    var Options := TScraperOptions.Read(Ini);
+    if not FScraperOptions.SameSettings(Options) then
+    begin
+      if not FScraperOptions.SameAccount(Options) or not Options.Enabled then
+        FScrapeAttempted.Clear;
+      FScraperOptions := Options;
+      FScrapePending := Options.Enabled;
+      FScrapeRetryAt := 0;
+      if FScraper <> nil then
+        FScraper.Terminate;
+      StartScraping;
+    end;
+  finally
+    Ini.Free;
+  end;
+end;
+
+procedure TLibraryView.StartScraping;
+begin
+  if not FScrapePending or not FScraperOptions.Enabled or (FScraper <> nil) or
+    (FLoadThread <> nil) or (TThread.GetTickCount64 < FScrapeRetryAt) then
+    Exit;
+  var Jobs := TList<TScraperJob>.Create;
+  try
+    for var Game in FScrapeGames.Values do
+      if not FScrapeAttempted.Contains(Game.ScrapeJob.Key) then
+        Jobs.Add(Game.ScrapeJob);
+    FScrapePending := False;
+    if Jobs.Count = 0 then
+      Exit;
+    Jobs.Sort(TComparer<TScraperJob>.Construct(
+      function(const Left, Right: TScraperJob): Integer
+      begin
+        Result := CompareText(Left.XMLFile, Right.XMLFile);
+        if Result = 0 then
+          Result := CompareText(Left.Location, Right.Location);
+      end));
+    FScraper := TScreenScraperWorker.Create(FStorage, FScraperOptions, Jobs.ToArray);
+    FScraper.Start;
+  finally
+    Jobs.Free;
+  end;
+end;
+
+procedure TLibraryView.ScrapingTick(Sender: TObject);
+begin
+  if FClosing then
+    Exit;
+  var TitlesChanged := False;
+  var SelectedChanged := False;
+  var RecentChanged := False;
+  var Changed := THashSet<TLibraryGame>.Create;
+  try
+    if FScraper <> nil then
+    begin
+      var Finished := FScraper.Finished;
+      for var Update in FScraper.TakeUpdates do
+      begin
+        var Game: TLibraryGame;
+        if (FLoadThread <> nil) or not FScrapeGames.TryGetValue(Update.Job.Key, Game) or
+          (Game.ScrapeJob.XMLFile <> Update.Job.XMLFile) then
+          Continue;
+        FScrapeAttempted.Add(Update.Job.Key);
+        if not Update.Found then
+          Continue;
+        TitlesChanged := TitlesChanged or (Game.Title <> Update.Title);
+        Game.Title := Update.Title;
+        Game.Description := Update.Description;
+        Game.Developer := Update.Developer;
+        Game.Genre := Update.Genre;
+        Game.Players := Update.Players;
+        Game.BoxCover := Update.Thumbnail;
+        if Game.BoxCover = '' then
+          Game.BoxCover := Update.Box;
+        Game.Cover := Update.Image;
+        if Game.Cover = '' then
+          Game.Cover := Game.BoxCover;
+        Changed.Add(Game);
+        SelectedChanged := SelectedChanged or (Game = FSelected);
+        RecentChanged := RecentChanged or (Game = FRecent);
+      end;
+      if Finished then
+      begin
+        if not FScraper.Cancelled and (FScraper.RetryAfter > 0) then
+        begin
+          FScrapeRetryAt := TThread.GetTickCount64 + FScraper.RetryAfter;
+          FScrapePending := True;
+        end;
+        FreeAndNil(FScraper);
+      end;
+    end;
+    if Changed.Count > 0 then
+    begin
+      if TitlesChanged then
+        FGames.Sort(TComparer<TLibraryGame>.Construct(
+          function(const Left, Right: TLibraryGame): Integer
+          begin
+            Result := CompareText(Left.Title, Right.Title);
+          end));
+      if FPadMode then
+      begin
+        FPadScrollFirst := -1;
+        UpdatePadView(TitlesChanged);
+        if SelectedChanged then
+          UpdatePadGamePage;
+      end
+      else
+      begin
+        for var Card in FCards do
+        begin
+          var Game := TLibraryGame(Card.TagObject);
+          if Changed.Contains(Game) then
+          begin
+            Card.TitleLabel.Text := Game.Title;
+            LoadImage(Card.Cover, Game.Cover);
+          end;
+        end;
+        if TitlesChanged then
+          BuildCards(True);
+        if SelectedChanged then
+          UpdateInspector;
+      end;
+      if RecentChanged then
+        UpdateContinue(False);
+    end;
+  finally
+    Changed.Free;
+  end;
+  StartScraping;
 end;
 
 procedure TLibraryView.RefreshAchievementPreferences;
@@ -1261,9 +1455,10 @@ begin
   var ScanChanged: Boolean;
   try
     var Scan := Ini.ReadBool(RAAchievementsSection, RAScanLibraryROMsKey, RAScanLibraryROMsDefault);
-    ScanChanged := Scan <> FScanAchievementROMs;
+    var Enabled := Ini.ReadBool(RAAchievementsSection, 'Enabled', False);
+    ScanChanged := (Scan <> FScanAchievementROMs) or (Enabled <> FAchievementsEnabled);
     FScanAchievementROMs := Scan;
-    FAchievementsEnabled := Ini.ReadBool(RAAchievementsSection, 'Enabled', False);
+    FAchievementsEnabled := Enabled;
     FLastAchievementUser := ReadRALastProgressUser(Ini);
   finally
     Ini.Free;
@@ -1273,8 +1468,13 @@ begin
   for var Slot in FPadSlots do
     UpdatePadCardStatus(Slot);
   RefreshAchievementDetails;
-  if ScanChanged and (FLoadThread = nil) then
-    StartAchievementScan;
+  if ScanChanged then
+  begin
+    ResetAchievementScan;
+    for var Game in FGames do
+      Game.AchievementChecked := False;
+    ScheduleAchievementScan;
+  end;
 end;
 
 procedure TLibraryView.ApplyLanguage(const PreviousLanguage: string);
@@ -1391,7 +1591,7 @@ begin
   if FLoadThread <> nil then
     FReloadPending := True
   else if NewGame and (PlatformAchievementMedia(Game.SystemId) <> nil) then
-    StartAchievementScan;
+    ScheduleAchievementScan;
   UpdateContinue;
   BuildCards;
 end;
@@ -1522,44 +1722,6 @@ begin
   Result := 'Achievements ' + UIntToStr(ConsoleId);
 end;
 
-function LibraryAchievementStamp(const Storage: IStorage; const Location: string): string;
-begin
-  Result := '';
-  try
-    var Modified := Storage.ModifiedTime(Location);
-    if Modified <= 0 then
-      Exit;
-    var Size := Storage.Describe(Location).Size;
-    if Size > 0 then
-      Result := IntToStr(Size) + ':' + FloatToStrF(Modified, ffGeneral, 17, 0, TFormatSettings.Invariant) + ':';
-  except
-    // Providers can omit file metadata. In that case use the ROM contents.
-  end;
-end;
-
-function LibraryAchievementHash(const Storage: IStorage; Cache: TMemIniFile; const ROM: TLibraryAchievementROM; ScanROMs: Boolean): string;
-begin
-  Result := '';
-  var Section := 'ROM hashes';
-  if ROM.ConsoleId <> LegacyGBAConsoleId then
-    Section := Section + ' ' + UIntToStr(ROM.ConsoleId);
-  var Key := THashSHA2.GetHashString(ROM.Location);
-  var Stamp := LibraryAchievementStamp(Storage, ROM.Location);
-  if Stamp <> '' then
-  begin
-    var Entry := Cache.ReadString(Section, Key, '');
-    if (Length(Entry) = Length(Stamp) + 32) and Entry.StartsWith(Stamp) then
-      Exit(Entry.Substring(Length(Stamp)));
-  end;
-  if not ScanROMs or not TryHashRAFile(Storage, ROM.SystemId, ROM.Location, ROM.Media, Result) then
-    Exit('');
-  if Stamp = '' then
-    Exit;
-  if Stamp <> LibraryAchievementStamp(Storage, ROM.Location) then
-    Exit('');
-  Cache.WriteString(Section, Key, Stamp + Result);
-end;
-
 function ReadLibraryAchievementCatalog(ConsoleId: Cardinal; Hashes: THashSet<string>): Boolean;
 begin
   Result := False;
@@ -1584,18 +1746,12 @@ begin
   end;
 end;
 
-procedure TLibraryView.ApplyAchievementStatus(const Supported: TArray<TPair<string, string>>);
+function NewAchievementDetailsActivity(out Stop: TProc): TFunc<Boolean>; forward;
+
+procedure TLibraryView.ApplyAchievementStatus(const Games: TArray<TLibraryGame>; const Digests: TArray<string>);
 begin
-  var Digests := TDictionary<string, string>.Create;
-  try
-    for var Pair in Supported do
-      Digests.AddOrSetValue(Pair.Key, Pair.Value);
-    for var Game in FGames do
-      if not Digests.TryGetValue(Game.SystemId + ':' + Game.FileInfo.Location, Game.AchievementHash) then
-        Game.AchievementHash := '';
-  finally
-    Digests.Free;
-  end;
+  for var Index := 0 to High(Games) do
+    Games[Index].AchievementHash := Digests[Index];
   for var Card in FCards do
     UpdateCardStatus(Card.TitleLayout, TLibraryGame(Card.TagObject));
   for var Slot in FPadSlots do
@@ -1603,42 +1759,94 @@ begin
   RefreshAchievementDetails;
 end;
 
-procedure TLibraryView.StartAchievementScan;
+procedure TLibraryView.ResetAchievementScan;
 begin
+  if Assigned(FStopAchievementSchedule) then
+    FStopAchievementSchedule();
+  FStopAchievementSchedule := nil;
   if Assigned(FStopAchievementScan) then
     FStopAchievementScan();
   FStopAchievementScan := nil;
+  FVisibleAchievementCatalogs := nil;
+end;
 
-  var Candidates := TList<TLibraryAchievementROM>.Create;
-  var ROMs: TArray<TLibraryAchievementROM>;
-  try
-    for var Game in FGames do
-    begin
-      var ROM: TLibraryAchievementROM;
-      ROM.Media := PlatformAchievementMedia(Game.SystemId);
-      if ROM.Media = nil then
-        Continue;
-      ROM.ConsoleId := ROM.Media.ConsoleId;
-      ROM.Location := Game.FileInfo.Location;
-      ROM.SystemId := Game.SystemId;
-      ROM.Digest := '';
-      Candidates.Add(ROM);
-    end;
-    ROMs := Candidates.ToArray;
-  finally
-    Candidates.Free;
-  end;
-  if Length(ROMs) = 0 then
+procedure TLibraryView.ScheduleAchievementScan;
+begin
+  if FClosing or not FAchievementsEnabled or (FLoadThread <> nil) or not ParentedVisible or
+    Assigned(FStopAchievementSchedule) or Assigned(FStopAchievementScan) then
     Exit;
-
-  var Storage := FStorage;
-  var ScanROMs := FScanAchievementROMs;
-  var Cancelled: Integer := 0;
-  FStopAchievementScan :=
+  var Active := NewAchievementDetailsActivity(FStopAchievementSchedule);
+  TThread.ForceQueue(nil,
     procedure
     begin
-      TInterlocked.Exchange(Cancelled, 1);
+      if not Active() then
+        Exit;
+      FStopAchievementSchedule := nil;
+      StartAchievementScan;
+    end, 50);
+end;
+
+procedure TLibraryView.StartAchievementScan;
+var
+  Games: TArray<TLibraryGame>;
+  ROMs: TArray<TLibraryAchievementROM>;
+
+  procedure Add(Game: TLibraryGame);
+  begin
+    if (Game = nil) or Game.AchievementChecked then
+      Exit;
+    // A game can be visible in both a card and the inspector or Continue section.
+    Game.AchievementChecked := True;
+    var ROM: TLibraryAchievementROM;
+    ROM.Media := PlatformAchievementMedia(Game.SystemId);
+    if ROM.Media = nil then
+      Exit;
+    ROM.ConsoleId := ROM.Media.ConsoleId;
+    ROM.Location := Game.FileInfo.Location;
+    ROM.SystemId := Game.SystemId;
+    ROM.Digest := '';
+    Games := Games + [Game];
+    ROMs := ROMs + [ROM];
+  end;
+
+begin
+  if FClosing or not FAchievementsEnabled or (FLoadThread <> nil) or not ParentedVisible or
+    Assigned(FStopAchievementScan) then
+    Exit;
+
+  if FPadMode then
+  begin
+    Add(FSelected);
+    if not FPadPageOpen then
+    begin
+      var Viewport := LayoutPadTouchSurface.AbsoluteRect;
+      for var Slot in FPadSlots do
+        if Slot.ParentedVisible and Slot.AbsoluteRect.IntersectsWith(Viewport) and
+          (Slot.Tag >= 0) and (Slot.Tag < FPadGames.Count) then
+          Add(FPadGames[Slot.Tag]);
     end;
+  end
+  else
+  begin
+    if PanelInspector.ParentedVisible then
+      Add(FSelected);
+    if not TLayout(FindComponent('LayoutInspectorOverlay')).Visible then
+    begin
+      if FContinue.ParentedVisible and (FContinue.Height > 0) then
+        Add(FRecent);
+      var Viewport := VertScrollBoxScroll.AbsoluteRect;
+      for var Card in FCards do
+        if Card.ParentedVisible and Card.AbsoluteRect.IntersectsWith(Viewport) then
+          Add(TLibraryGame(Card.TagObject));
+    end;
+  end;
+
+  if Length(ROMs) = 0 then
+    Exit;
+  var Storage := FStorage;
+  var ScanROMs := FScanAchievementROMs;
+  var PreviousCatalogs := FVisibleAchievementCatalogs;
+  var Active := NewAchievementDetailsActivity(FStopAchievementScan);
   TThread.CreateAnonymousThread(
     procedure
     begin
@@ -1649,105 +1857,105 @@ begin
       except
         Cache := TMemIniFile.Create('');
       end;
+      var Catalogs := TDictionary<Cardinal, TLibraryAchievementCatalog>.Create;
+      var Hashes := THashSet<string>.Create;
+      var Digests: TArray<string>;
+      SetLength(Digests, Length(ROMs));
       try
-        var Consoles := THashSet<Cardinal>.Create;
-        var Available := TList<TPair<string, string>>.Create;
-        try
-          var Cancellation := TStorage.BeginReadCancellation(
+        for var Pair in PreviousCatalogs do
+          Catalogs.Add(Pair.Key, Pair.Value);
+        var Cancellation := TStorage.BeginReadCancellation(
+          procedure
+          begin
+            if not Active() then
+              Abort;
+          end);
+        var HasHash := False;
+        for var Index := 0 to High(ROMs) do
+        begin
+          if not Active() then
+            Exit;
+          var ROM := ROMs[Index];
+          try
+            ROM.Digest := CachedRAFileHash(Storage, Cache, ROM.SystemId, ROM.Location, ROM.Media, ScanROMs);
+          except
+            // Individual ROMs may be unavailable or unreadable.
+          end;
+          ROMs[Index].Digest := ROM.Digest;
+          if ROM.Digest <> '' then
+          begin
+            HasHash := True;
+            if Cache.ReadBool(LibraryAchievementStatusSection(ROM.ConsoleId), ROM.Digest, False) then
+              Digests[Index] := ROM.Digest;
+          end;
+        end;
+
+        var CacheData: TBytes := nil;
+        if ScanROMs and HasHash and Active() then
+        begin
+          var Cached := Copy(Digests);
+          TThread.ForceQueue(nil,
             procedure
             begin
-              if TInterlocked.CompareExchange(Cancelled, 0, 0) <> 0 then
-                Abort;
+              if Active() then
+                ApplyAchievementStatus(Games, Cached);
             end);
           for var Index := 0 to High(ROMs) do
           begin
-            if TInterlocked.CompareExchange(Cancelled, 0, 0) <> 0 then
+            if not Active() then
               Exit;
-            try
-              var Digest := LibraryAchievementHash(Storage, Cache, ROMs[Index], ScanROMs);
-              if Digest = '' then
-                Continue;
-              ROMs[Index].Digest := Digest;
-              var ConsoleId := ROMs[Index].ConsoleId;
-              Consoles.Add(ConsoleId);
-              if Cache.ReadBool(LibraryAchievementStatusSection(ConsoleId), Digest, False) then
-                Available.Add(TPair<string, string>.Create(ROMs[Index].SystemId + ':' + ROMs[Index].Location, Digest));
-            except
-              // Individual ROMs may be unavailable or unreadable.
-            end;
-          end;
-
-          var Cached := Available.ToArray;
-          var RefreshCatalog := ScanROMs and (Consoles.Count > 0);
-          TThread.Queue(nil,
-            procedure
+            var ROM := ROMs[Index];
+            if ROM.Digest = '' then
+              Continue;
+            var Catalog: TLibraryAchievementCatalog;
+            if not Catalogs.TryGetValue(ROM.ConsoleId, Catalog) then
             begin
-              if TInterlocked.CompareExchange(Cancelled, 0, 0) <> 0 then
-                Exit;
-              if not RefreshCatalog then
-                FStopAchievementScan := nil;
-              ApplyAchievementStatus(Cached);
-            end);
-          if not RefreshCatalog or (TInterlocked.CompareExchange(Cancelled, 0, 0) <> 0) then
-            Exit;
-
-          var Hashes := THashSet<string>.Create;
-          var CacheData: TBytes := nil;
-          var Supported: TArray<TPair<string, string>>;
-          try
-            var Updated := False;
-            for var ConsoleId in Consoles do
-            begin
-              if TInterlocked.CompareExchange(Cancelled, 0, 0) <> 0 then
-                Exit;
               Hashes.Clear;
-              if not ReadLibraryAchievementCatalog(ConsoleId, Hashes) then
-                Continue;
-              var Section := LibraryAchievementStatusSection(ConsoleId);
-              for var ROM in ROMs do
-                if (ROM.ConsoleId = ConsoleId) and (ROM.Digest <> '') then
-                  Cache.WriteBool(Section, ROM.Digest, Hashes.Contains(ROM.Digest));
-              Updated := True;
+              Catalog.Loaded := ReadLibraryAchievementCatalog(ROM.ConsoleId, Hashes);
+              Catalog.Hashes := Hashes.ToArray;
+              TArray.Sort<string>(Catalog.Hashes);
+              Catalogs.Add(ROM.ConsoleId, Catalog);
             end;
-            if Updated then
+            if Catalog.Loaded then
             begin
-              Available.Clear;
-              for var ROM in ROMs do
-                if (ROM.Digest <> '') and
-                  Cache.ReadBool(LibraryAchievementStatusSection(ROM.ConsoleId), ROM.Digest, False) then
-                  Available.Add(TPair<string, string>.Create(ROM.SystemId + ':' + ROM.Location, ROM.Digest));
-              Supported := Available.ToArray;
-              var Lines := TStringList.Create;
-              try
-                Cache.GetStrings(Lines);
-                CacheData := TEncoding.UTF8.GetBytes(Lines.Text);
-              finally
-                Lines.Free;
-              end;
+              var Match: Integer;
+              var Supported := TArray.BinarySearch<string>(Catalog.Hashes, ROM.Digest, Match);
+              Cache.WriteBool(LibraryAchievementStatusSection(ROM.ConsoleId), ROM.Digest, Supported);
+              if Supported then
+                Digests[Index] := ROM.Digest
+              else
+                Digests[Index] := '';
             end;
-          finally
-            Hashes.Free;
           end;
-          TThread.Queue(nil,
-            procedure
-            begin
-              if TInterlocked.CompareExchange(Cancelled, 0, 0) <> 0 then
-                Exit;
-              FStopAchievementScan := nil;
-              if CacheData = nil then
-                Exit;
-              try
-                Storage.WriteBytes(CacheLocation, CacheData);
-              except
-                // A read-only profile still supports current-session results.
-              end;
-              ApplyAchievementStatus(Supported);
-            end);
-        finally
-          Available.Free;
-          Consoles.Free;
+          var Lines := TStringList.Create;
+          try
+            Cache.GetStrings(Lines);
+            CacheData := TEncoding.UTF8.GetBytes(Lines.Text);
+          finally
+            Lines.Free;
+          end;
         end;
+        var UpdatedCatalogs := Catalogs.ToArray;
+        TThread.ForceQueue(nil,
+          procedure
+          begin
+            if not Active() then
+              Exit;
+            if CacheData <> nil then
+            try
+              Storage.WriteBytes(CacheLocation, CacheData);
+            except
+              // Read-only profiles still support current-session results.
+            end;
+            FVisibleAchievementCatalogs := UpdatedCatalogs;
+            FStopAchievementScan := nil;
+            ApplyAchievementStatus(Games, Digests);
+            // The viewport may have moved while the previous batch was running.
+            ScheduleAchievementScan;
+          end);
       finally
+        Hashes.Free;
+        Catalogs.Free;
         Cache.Free;
       end;
     end).Start;
@@ -1808,8 +2016,7 @@ begin
     else
       ProgressUser := FLastAchievementUser;
   end;
-  if (Key = FAchievementDetailsKey) and (ProgressUser = FAchievementUser) and
-    (Credentials.Token = FAchievementToken) then
+  if (Key = FAchievementDetailsKey) and (ProgressUser = FAchievementUser) and (Credentials.Token = FAchievementToken) then
   begin
     RenderAchievementPreviews;
     Exit;
@@ -2586,6 +2793,7 @@ begin
         Card.TitleLayout.HitTest := False;
         UpdateCardStatus(Card.TitleLayout, Game);
         var Title := TextLabel(Card, Card.TitleLayout, Game.Title, 14);
+        Card.TitleLabel := Title;
         Title.Align := TAlignLayout.Client;
         Title.TextSettings.Font.Style := [TFontStyle.fsBold];
         var platform := TextLabel(Card, Card.TextLayout, LibrarySystemName(Game.SystemId), 12);
@@ -2815,12 +3023,20 @@ begin
   finally
     FArranging := False;
   end;
+  ScheduleAchievementScan;
+end;
+
+procedure TLibraryView.VisibleChanged;
+begin
+  inherited;
+  ScheduleAchievementScan;
 end;
 
 procedure TLibraryView.Resize;
 begin
   if (csLoading in ComponentState) or FBuilding or FLayouting or (LayoutBody = nil) then
     Exit;
+  ScheduleAchievementScan;
   LayoutGamepadLibrary.Visible := FPadMode;
   if FPadMode then
   begin
@@ -3032,9 +3248,10 @@ begin
   Resize;
 end;
 
-{$IFDEF ISMOBILE}
 procedure TLibraryView.ScrollViewportChanged(Sender: TObject; const OldPosition, NewPosition: TPointF; const ContentSizeChanged: Boolean);
 begin
+  ScheduleAchievementScan;
+  {$IFDEF ISMOBILE}
   if FBuilding or FLayouting or not FContinue.Visible or (FContinueExtent <= 0) then
     Exit;
   var Collapse := EnsureRange(NewPosition.Y, 0, FContinueExtent);
@@ -3053,9 +3270,8 @@ begin
   finally
     FLayouting := False;
   end;
+  {$ENDIF}
 end;
-
-{$ENDIF}
 
 procedure TLibraryView.UpdateInspector;
 begin
@@ -3130,6 +3346,7 @@ begin
     LayoutInspectorColumns.EndUpdate;
   end;
   ArrangeInspector;
+  ScheduleAchievementScan;
   RefreshAchievementDetails;
 end;
 
@@ -3291,11 +3508,12 @@ begin
   end;
 end;
 
-procedure TLibraryView.UpdateContinue;
+procedure TLibraryView.UpdateContinue(FindRecent: Boolean);
 begin
   if FLoadThread <> nil then
     Exit;
-  SelectContinueGame;
+  if FindRecent then
+    SelectContinueGame;
   var Bitmap := FContinueCover.Fill.Bitmap.Bitmap;
   Bitmap.RemoveCallback(FContinueCover);
   FContinueGamePreview.Bitmap.RemoveCallback(FContinueGamePreview);
@@ -4438,6 +4656,7 @@ begin
   end;
   // Complete rounding after parent alignment, including newly visible styles.
   RoundPadTextSizes(LayoutPadCarousel);
+  ScheduleAchievementScan;
 end;
 
 procedure TLibraryView.SetPadScrollPosition(Value: Double);
@@ -4614,6 +4833,7 @@ begin
     ButtonPadPlay.Enabled := False;
     Exit;
   end;
+  ScheduleAchievementScan;
   if FPadStartPending then
   begin
     SelectPadStartPage;
@@ -5210,6 +5430,7 @@ procedure TLibraryView.UpdatePadGamePage;
 begin
   if not FPadPageOpen or (FSelected = nil) then
     Exit;
+  ScheduleAchievementScan;
   RefreshAchievementDetails;
   (FindComponent('LabelPadPageTitle') as TLabel).Text := FSelected.Title;
   var Metadata := LibrarySystemFullName(FSelected.SystemId);

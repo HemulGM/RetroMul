@@ -49,6 +49,7 @@ type
     class function ZPortRead(User: Pointer; Address: Cardinal): Cardinal; static;
     class procedure ZPortWrite(User: Pointer; Address, Value: Cardinal); static;
   public
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const ROM, BIOS: TBytes; Color: Boolean);
     destructor Destroy; override;
     procedure Reset;
@@ -693,6 +694,11 @@ begin
 
     FSampleFrames := 0;
   end;
+end;
+
+function TNGPConsole.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  Result := ReadAchievementMemoryBlock(Address, Buffer, Count, @FRAM, SizeOf(FRAM));
 end;
 
 end.

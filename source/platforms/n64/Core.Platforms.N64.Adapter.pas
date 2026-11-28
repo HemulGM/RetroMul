@@ -3,9 +3,9 @@
 interface
 
 uses
-  Core.InputConfig, System.SysUtils, System.Classes, System.IniFiles,
-  System.SyncObjs, Core.Storage, Core.Emulation, Core.Snapshots, N64.Console,
-  Core.Platforms.N64.Playback;
+  Core.Emulation.Types, Core.InputConfig, System.SysUtils, System.Classes,
+  System.IniFiles, System.SyncObjs, Core.Storage, Core.Emulation, Core.Snapshots,
+  N64.Console, Core.Platforms.N64.Playback;
 
 type
   TN64KeyMap = array[0..3, TEmulatorButton] of UInt32;
@@ -39,7 +39,7 @@ type
     procedure SetN64Controller(Port: Integer; const Pad: TN64Pad; IndependentStick: Boolean = False);
   end;
 
-  TN64Worker = class(TThread)
+  TN64Worker = class(TAchievementWorker)
   private
     FLock: TCriticalSection;
     FWake: TEvent;
@@ -69,7 +69,7 @@ type
     procedure Snapshot(const Name: string; Loading: Boolean);
   end;
 
-  TN64CoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IN64ControllerInput)
+  TN64CoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, IN64ControllerInput, IEmulationAchievements)
   private
     FStorage: IStorage;
     FConfig: IEmulatorConfig;
@@ -85,6 +85,8 @@ type
     FSavePath, FSnapshotDirectory, FError: string;
     procedure Configure;
   public
+    function AchievementROM: TBytes;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     procedure ApplyLiveSettings;
     constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string);
     destructor Destroy; override;
@@ -118,8 +120,8 @@ type
 implementation
 
 uses
-  RM.Platforms.N64, System.Math, System.Diagnostics, System.UITypes, N64.RomFormat,
-  Core.SavePaths, Core.PerformanceHints;
+  RM.Platforms.N64, System.Math, System.Diagnostics, System.UITypes,
+  N64.RomFormat, Core.SavePaths, Core.PerformanceHints;
 
 const
   KeyNames: array[TEmulatorButton] of string =
@@ -438,6 +440,11 @@ var
   end;
 
 begin
+  var ReadAchievementMemory: TEmulationAchievementRead :=
+    function(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal
+    begin
+      Result := Console.ReadAchievementRAM(Address, Buffer, Count);
+    end;
   Console := nil;
   Audio := nil;
   AudioFailed := False;
@@ -475,7 +482,8 @@ begin
                 LoadCoreSnapshot(Path, 'N64', FData,
                   procedure(State: TStateArchive)
                   begin
-                    Candidate.SerializeState(State)
+                    Candidate.SerializeState(State);
+                    TransferAchievementProgress(State)
                   end, FStorage);
                 Console.Free;
                 Console := Candidate;
@@ -498,7 +506,8 @@ begin
               SaveCoreSnapshot(Path, 'N64', FData,
                 procedure(State: TStateArchive)
                 begin
-                  Console.SerializeState(State)
+                  Console.SerializeState(State);
+                  TransferAchievementProgress(State)
                 end, FStorage);
               var Preview := Console.GetFrame;
               SaveSnapshotPreview(Path, Preview.Width, Preview.Height, Preview.Width, @Preview.Pixels[0], FStorage);
@@ -530,6 +539,7 @@ begin
         begin
           SaveBattery(Console);
           Console.Reset;
+          ResetAchievements;
           ClearAudio;
           Deadline := TStopwatch.GetTimeStamp;
           ClockGuest := Console.GuestTick;
@@ -603,6 +613,8 @@ begin
         if Terminated then
           Break;
 
+        if Console.FrameNumber <> StartFrame then
+          AchievementFrame(ReadAchievementMemory);
         FlushAudio(Enabled, Volume);
         PublishFrame;
         Console.AdaptRDPThreads;
@@ -939,6 +951,17 @@ end;
 function TN64CoreAdapter.IsPaused: Boolean;
 begin
   Result := FPaused
+end;
+
+function TN64CoreAdapter.AchievementROM: TBytes;
+begin
+  Result := FData;
+end;
+
+procedure TN64CoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  if FWorker <> nil then
+    FWorker.SetAchievementObserver(Observer);
 end;
 
 end.

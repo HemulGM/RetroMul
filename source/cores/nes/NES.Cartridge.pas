@@ -58,7 +58,7 @@ type
     function LoadStudyBoxBios(const RomName: string): TByteArray;
     function LoadFcnsFirmware(const RomName: string; const Names: array of string; Size: Integer): TBytes;
     procedure DescribeStudyBox;
-    function ReadFdsMedia(Stream: TStream; const FileName: string): TFdsMedia;
+    function ReadFdsMedia(Stream: TStream; const FileName: string; out Data: TBytes): TFdsMedia;
     procedure LoadDisk(Stream: TStream; const RomName: string);
     procedure LoadBufferedRom(Stream: TStream; const RomName: string; Mmc3IrqRevision: TMmc3IrqRevision);
   public
@@ -1637,7 +1637,7 @@ end;
 procedure TCartridge.LoadDisk(Stream: TStream; const RomName: string);
 begin
   var Bios := LoadFdsBios(RomName);
-  var Media := ReadFdsMedia(Stream, RomName);
+  var Media := ReadFdsMedia(Stream, RomName, FAchievementROM);
   try
     FMapper := TMapperFds.Create(Media, Bios);
     FRomIdentity := Media.Identity;
@@ -1686,7 +1686,8 @@ begin
   var Stream := FStorage.OpenRead(FileName);
   var Media: TFdsMedia := nil;
   try
-    Media := ReadFdsMedia(Stream, FileName);
+    var Data: TBytes;
+    Media := ReadFdsMedia(Stream, FileName, Data);
     SaveBattery;
     // Validate the replacement save before touching the running session.
     var Path := FStorage.GamePath(SaveDirectory, FileName, Media.Identity, '.sav');
@@ -1705,9 +1706,9 @@ begin
   end;
 end;
 
-function TCartridge.ReadFdsMedia(Stream: TStream; const FileName: string): TFdsMedia;
+function TCartridge.ReadFdsMedia(Stream: TStream; const FileName: string; out Data: TBytes): TFdsMedia;
 begin
-  var Data := ReadRomData(Stream);
+  Data := ReadRomData(Stream);
   // The main registry may already have extracted the image while retaining
   // its archive filename. Media replacement also accepts the archive itself.
   var Probe := TBytesStream.Create(Data);

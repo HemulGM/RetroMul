@@ -24,6 +24,7 @@ type
     procedure RTCWrite(Value: Byte);
     procedure UpdateClock;
   public
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const Data: TBytes);
     destructor Destroy; override;
     class function Recognize(const Data: TBytes): Boolean; static;
@@ -44,6 +45,9 @@ type
   end;
 
 implementation
+
+uses
+  Core.Emulation.Types;
 
 {$Q-}{$R-}
 
@@ -477,6 +481,11 @@ begin
       raise EReadError.Create('Invalid WonderSwan RTC state');
     FDirty := True;
   end;
+end;
+
+function TWSCartridge.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  Result := ReadAchievementMemoryBlock(Address, Buffer, Count, FRAM);
 end;
 
 end.

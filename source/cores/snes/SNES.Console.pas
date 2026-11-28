@@ -92,6 +92,7 @@ type
     function GetFrameNumber: UInt64;
     function GetBatteryDirty: Boolean;
   public
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const Data: TBytes; const Extension: string = ''; const Firmware: TBytes = nil; const SufamiSlotA: TBytes = nil);
     destructor Destroy; override;
     procedure Reset;
@@ -120,6 +121,9 @@ type
   end;
 
 implementation
+
+uses
+  Core.Emulation.Types;
 
 const
   DMALength: array[0..7] of Integer = (1, 2, 2, 4, 4, 4, 2, 4);
@@ -1211,6 +1215,13 @@ begin
     FInDMA := False;
     MarkBatteryDirty;
   end;
+end;
+
+function TSnesConsole.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  if Address < $20000 then
+    Exit(ReadAchievementMemoryBlock(Address, Buffer, Count, @FState.RAM, SizeOf(FState.RAM)));
+  Result := FCartridge.ReadAchievementRAM(Address - $20000, Buffer, Count);
 end;
 
 end.

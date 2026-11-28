@@ -38,6 +38,7 @@ type
     FProgram: TPSPProgram;
     FDiscStream: TStream;
     FDisc: TPSPDisc;
+    FSnapshotAchievementProgress: TBytes;
     FInput: TEmulatorInput;
     FAudioSamples: TArray<SmallInt>;
     FAudioOutputEnabled: Boolean;
@@ -78,16 +79,18 @@ type
     procedure MountDisc;
     procedure Boot(const Executable: TBytes; const Path: string; const Arguments: TBytes = nil; UseArguments: Boolean = False);
   public
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const ProgramData: TPSPProgram; const Storage: IStorage = nil; const HostRoot: string = ''; const MemstickRoot: string = ''; const FontDirectory: string = ''; TrackSnapshots: Boolean = False; Seed: TPSPReplayState = nil; BootProgram: Boolean = True);
     destructor Destroy; override;
     procedure Reset;
     procedure RunFrame(out Frame: TEmulatorFrame);
     // Runs until the guest time reaches At (ns) or the program exits.
     procedure RunUntil(At: Int64);
-    procedure SaveSnapshot(const Path: string; const Progress: TPSPStateProgress = nil);
-    procedure SaveDirectSnapshot(const Path: string; const Progress: TPSPStateProgress = nil);
+    procedure SaveSnapshot(const Path: string; const Progress: TPSPStateProgress = nil; const AchievementProgress: TBytes = nil);
+    procedure SaveDirectSnapshot(const Path: string; const Progress: TPSPStateProgress = nil; const AchievementProgress: TBytes = nil);
     // Returns a fully checked replacement; Self remains usable on failure/cancel.
     function RestoreSnapshot(const Path: string; const Progress: TPSPStateProgress = nil): TPSPConsole;
+    property SnapshotAchievementProgress: TBytes read FSnapshotAchievementProgress;
     function TakeOutput: string;
     function TakeLog: string;
     property Input: TEmulatorInput read FInput write FInput;
@@ -557,9 +560,9 @@ begin
   Result := FMediaDigest;
 end;
 
-procedure TPSPConsole.SaveSnapshot(const Path: string; const Progress: TPSPStateProgress);
+procedure TPSPConsole.SaveSnapshot(const Path: string; const Progress: TPSPStateProgress; const AchievementProgress: TBytes);
 begin
-  SaveDirectSnapshot(Path, Progress);
+  SaveDirectSnapshot(Path, Progress, AchievementProgress);
 end;
 
 function TPSPConsole.RestoreSnapshot(const Path: string; const Progress: TPSPStateProgress): TPSPConsole;
@@ -569,11 +572,13 @@ begin
   var Seed: TPSPReplayState := nil;
   var Candidate: TPSPConsole := nil;
   var Settings := PSPSettings;
+  var AchievementProgress: TBytes;
   try
     LoadCoreSnapshot(Path, 'PSP', FProgram.Executable,
       procedure(State: TStateArchive)
       begin
         FileData.Transfer(State);
+        State.OptionalBytes(AchievementProgress, 16 * 1024 * 1024);
       end, FStorage);
     if FileData.Kind = 2 then
     begin
@@ -628,7 +633,10 @@ begin
     Candidate := nil;
   finally
     if Result <> nil then
-      PSPSettings := Result.FSettings
+    begin
+      Result.FSnapshotAchievementProgress := AchievementProgress;
+      PSPSettings := Result.FSettings;
+    end
     else
       PSPSettings := Settings;
     Candidate.Free;
@@ -723,7 +731,7 @@ begin
   end;
 end;
 
-procedure TPSPConsole.SaveDirectSnapshot(const Path: string; const Progress: TPSPStateProgress);
+procedure TPSPConsole.SaveDirectSnapshot(const Path: string; const Progress: TPSPStateProgress; const AchievementProgress: TBytes);
 begin
   TPSPGE(FSystem.Find(TPSPGE)).Engine.Synchronize;
   FDirectMediaBanks := True;
@@ -777,6 +785,8 @@ begin
       procedure(State: TStateArchive)
       begin
         Data.Transfer(State);
+        var ProgressData := AchievementProgress;
+        State.OptionalBytes(ProgressData, 16 * 1024 * 1024);
       end, FStorage);
     FLastSnapshotFormat := 'direct';
   finally
@@ -852,6 +862,11 @@ begin
   finally
     Candidate.Free;
   end;
+end;
+
+function TPSPConsole.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  Result := ReadAchievementMemoryBlock(Address, Buffer, Count, FMemory.RAM);
 end;
 
 end.

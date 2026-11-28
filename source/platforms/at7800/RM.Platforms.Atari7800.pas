@@ -21,12 +21,12 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads, System.SysUtils, System.Classes, System.UITypes,
-  Core.Emulation, Core.Platforms, Core.Platforms.Atari7800.Adapter,
-  A7800.Cartridge, Core.Snapshots, RM.Settings.Catalog,
-  RM.Platforms.Atari7800.Settings, RM.Platforms.Atari7800.Gamepads,
-  RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Input.Runtime,
-  RM.Session.Runtime, RM.Settings.Runtime, RM.Window.Layout,
+  RA.Console, Core.PlatformServices, RM.Input.Gamepads, System.SysUtils,
+  System.Classes, System.UITypes, Core.Emulation, Core.Platforms,
+  Core.Platforms.Atari7800.Adapter, A7800.Cartridge, Core.Snapshots,
+  RM.Settings.Catalog, RM.Platforms.Atari7800.Settings,
+  RM.Platforms.Atari7800.Gamepads, RM.Platforms.Presentation, RM.Gamepad.Factory,
+  RM.Input.Runtime, RM.Session.Runtime, RM.Settings.Runtime, RM.Window.Layout,
   RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices;
 
 const
@@ -156,6 +156,7 @@ begin
   Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('at7800', Definition);
   FRegistered := True;
+  RegisterPlatformAchievementMedia('at7800', RAConsoleAtari7800, TPlatformRegistry.Require('at7800').Extensions);
 end;
 
 end.

@@ -101,6 +101,7 @@ type
   public
     Video: TNeoGeoVideo;
     Sound: TNeoGeoSound;
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(Cartridge: TNeoGeoCartridge);
     destructor Destroy; override;
     procedure Reset;
@@ -2070,6 +2071,15 @@ end;
 procedure TNeoGeoConsole.MarkBatteryDirty;
 begin
   FBatteryDirty := True;
+end;
+
+function TNeoGeoConsole.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  // FBNeo exports cartridge 68K RAM in host word order. Neo Geo CD uses its own map.
+  if FCart.Disc = nil then
+    Result := ReadAchievementMemoryBlock(Address, Buffer, Count, @FRAM, SizeOf(FRAM), 1)
+  else
+    Result := ReadAchievementMemoryBlock(Address, Buffer, Count, @FRAM, SizeOf(FRAM));
 end;
 
 end.

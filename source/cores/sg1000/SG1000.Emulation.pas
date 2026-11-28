@@ -7,7 +7,7 @@ uses
   Core.Emulation.Types, Core.InputConfig, Core.Snapshots, SG1000.Console;
 
 type
-  TSGWorker = class(TThread)
+  TSGWorker = class(TAchievementWorker)
   private
     FInputPortsCommand: TInputPortsCommand;
     function GetInputPorts: TCoreInputPorts;
@@ -246,6 +246,11 @@ var
   Deadline: Double;
   CoreId: string;
 begin
+  var ReadAchievementMemory: TEmulationAchievementRead :=
+    function(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal
+    begin
+      Result := Console.ReadAchievementRAM(Address, Buffer, Count);
+    end;
   Console := nil;
   Audio := nil;
   Hints := nil;
@@ -308,6 +313,7 @@ begin
               procedure(State: TStateArchive)
               begin
                 Console.SerializeState(State);
+                TransferAchievementProgress(State);
               end;
             if Loading then
             begin
@@ -349,6 +355,7 @@ begin
         begin
           Hints.Pause;
           Console.Reset;
+          ResetAchievements;
           if Audio <> nil then
             Audio.Clear;
           Deadline := TStopwatch.GetTimeStamp;
@@ -372,6 +379,7 @@ begin
         Hints.BeginWork;
         Console.SetInput(Input, Keys);
         Console.RunFrame;
+        AchievementFrame(ReadAchievementMemory);
 
         if Terminated then
           Break;

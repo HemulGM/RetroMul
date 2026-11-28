@@ -33,13 +33,31 @@ type
     procedure WorkRAMWritten(Offset: Cardinal);
     procedure VBlank;
     procedure SerializeState(State: TStateArchive);
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
   end;
 
 implementation
 
+uses
+  Core.Emulation.Types;
+
 const
   // Read back from a working 317-0217 by Charles MacDonald; s32tech.txt.
   DBZ_READBACK: array[0..15] of Byte = ($0A, $40, $03, $94, $02, $22, $93, $02, $00, $00, $20, $0C, $C8, $80, $00, $00);
+
+function TS32BusProtection.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  // FBNeo reuses DrvV25RAM for these two devices. Read the backing storage
+  // directly because a CPU read of Air Rescue's mailbox can acknowledge a command.
+  case FKind of
+    bpAirRescue:
+      Result := ReadAchievementMemoryBlock(Address, Buffer, Count, @FMailbox, SizeOf(FMailbox));
+    bpBrival:
+      Result := ReadAchievementMemoryBlock(Address, Buffer, Count, @FResult, SizeOf(FResult));
+  else
+    Result := 0;
+  end;
+end;
 
 constructor TS32BusProtection.Create(Kind: TS32BusProtectionKind; RAM: PS32WorkRAM; const ROM: TBytes);
 begin

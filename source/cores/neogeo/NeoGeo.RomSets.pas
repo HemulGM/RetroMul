@@ -9,9 +9,49 @@ function NeoGeoSet(const Name: string): string;
 
 function SelectNeoGeoSet(const Name: string; const CRCs: TArray<string>): string;
 
+function NeoGeoAchievementSetName(const Description: string): string;
+
 function IdentifyNeoGeoSet(const Files: TArray<string>): string;
 
 implementation
+
+{$I NeoGeo.FBNeoSets.inc}
+
+function NeoGeoAchievementSetName(const Description: string): string;
+begin
+  Result := '';
+  var Parts := Description.Split(['|']);
+  if (Length(Parts) <= 9) or (Parts[2] <> '1') then
+    Exit;
+  var Name := Parts[0];
+  var Prefix := '|' + Name + ':';
+  var Start := Pos(Prefix, FBNeoVariantChips);
+  if Start <> 0 then
+  begin
+    Inc(Start, Length(Prefix));
+    var Finish := Pos('|', FBNeoVariantChips, Start);
+    var Requirements := Copy(FBNeoVariantChips, Start, Finish - Start - 1).Split([';']);
+    var Rows := Parts[9].Split([';']);
+    for var Requirement in Requirements do
+    begin
+      var Chip := Requirement.Split([',']);
+      var Size := 0;
+      for var Row in Rows do
+      begin
+        var Fields := Row.Split([',']);
+        if (Length(Fields) = 7) and SameText(Fields[6], Chip[0]) then
+        begin
+          var Extent := StrToInt(Fields[3]) + StrToInt(Fields[4]);
+          if Extent > Size then
+            Size := Extent;
+        end;
+      end;
+      if Size <> StrToInt(Chip[1]) then
+        Exit;
+    end;
+  end;
+  Result := Name;
+end;
 
 const
   Sets: array[0..566] of string = (

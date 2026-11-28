@@ -3,9 +3,9 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.SyncObjs, System.IniFiles,
-  Core.Storage, Core.Emulation, CPS.Cartridge, CPS.RomSets, Core.Snapshots,
-  Core.CD.Disc, PCM.Audio;
+  Core.Emulation.Types, System.SysUtils, System.Classes, System.SyncObjs,
+  System.IniFiles, Core.Storage, Core.Emulation, CPS.Cartridge, CPS.RomSets,
+  Core.Snapshots, Core.CD.Disc, PCM.Audio;
 
 type
   TCPSKeys = array[TEmulatorButton] of UInt32;
@@ -35,7 +35,7 @@ type
     procedure Submit(Audio: TPCMAudio; const Samples: TArray<SmallInt>; const Format: TPCMAudioFormat);
   end;
 
-  TCPSWorker = class(TThread)
+  TCPSWorker = class(TAchievementWorker)
   private
     FDisc: TCDDisc;
     FCart: TCPSCartridge;
@@ -70,13 +70,14 @@ type
     function TakeError: string;
   end;
 
-  TCPSCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationVirtualControls, IEmulationAudioDiagnostics, IEmulationSnapshotLocation)
+  TCPSCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationVirtualControls, IEmulationAudioDiagnostics, IEmulationSnapshotLocation, IEmulationAchievements, IEmulationArcadeAchievements)
   private
     FDisc: TCDDisc;
     FCart: TCPSCartridge;
     FStorage: IStorage;
     FIdentity: TBytes;
     FSavePath, FSnapshotDirectory: string;
+    FVerifiedCDSet: string;
     FWorker: TCPSWorker;
     FConfig: IEmulatorConfig;
     FOptions: TCPSConfig;
@@ -85,10 +86,14 @@ type
     FError, FAudioError: string;
     procedure Configure;
   public
+    class procedure PrepareArcadeAchievements(const Storage: IStorage; const RomName: string; out Companions: TArray<string>; out ResolveSet: TFunc<string>); static;
     procedure ApplyLiveSettings;
     constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string);
     destructor Destroy; override;
     function GetSystemId: string;
+    function AchievementROM: TBytes;
+    function AchievementSetName: string;
+    procedure SetAchievementObserver(const Observer: IEmulationAchievementObserver);
     function GetName: string;
     function GetSupportsSnapshots: Boolean;
     function GetSnapshotDirectory: string;
@@ -119,7 +124,7 @@ implementation
 uses
   System.UITypes, System.Diagnostics, System.Math, CPS1.Console, CPS1.QSound,
   CPS1.Multigame, CPS2.Console, CPS3.Console, CPS.Video, Core.SavePaths,
-  System.IOUtils;
+  System.IOUtils, Core.MediaArchive;
 
 const
   KeyNames: array[TEmulatorButton] of string = ('Up', 'Down', 'Left', 'Right', 'A', 'B', 'Select', 'Start', 'C', 'X', 'Y', 'Z', 'Mode');
@@ -404,6 +409,14 @@ begin
   AudioFailed := False;
   AudioBuffer := Default(TCPSAudioBuffer);
   LastBatteryRevision := 0;
+  var ReadMemory: TEmulationAchievementRead :=
+    function(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal
+    begin
+      if C12 <> nil then
+        Result := C12.ReadAchievementRAM(Address, Buffer, Count)
+      else
+        Result := C3.ReadAchievementRAM(Address, Buffer, Count);
+    end;
   try
     try
       case FCart.RomSet.Generation of
@@ -472,6 +485,7 @@ begin
                   C12.SerializeState(State)
                 else
                   C3.SerializeState(State);
+                TransferAchievementProgress(State);
               end;
             if Loading then
             begin
@@ -533,6 +547,7 @@ begin
             C12.Reset
           else
             C3.Reset;
+          ResetAchievements;
           AudioBuffer.Clear(Audio);
         end;
         if C12 <> nil then
@@ -576,6 +591,7 @@ begin
           Frame.Pixels := Copy(C3.Pixels);
           Frame.FrameNumber := C3.FrameNumber;
         end;
+        AchievementFrame(ReadMemory);
         OrientFrame(Frame);
         FLock.Acquire;
         try
@@ -667,6 +683,132 @@ begin
   end;
 end;
 
+function ResolveCPS3Disc(const Storage: IStorage; const RomName: string; const RomSet: TCPSRomSet; const OverrideLocation: string): string;
+begin
+  var DiscName := RomSet.DiscName;
+  Result := OverrideLocation;
+  if Result = '' then
+  begin
+    var NativeName := RomName.Replace('/', PathDelim);
+    var Parent := ExtractFilePath(NativeName);
+    var Folder := TPath.Combine(Parent, ChangeFileExt(ExtractFileName(NativeName), ''));
+    for var Extension in ['.chd', '.cue', '.iso'] do
+    begin
+      var Candidate := TPath.Combine(Folder, DiscName + Extension);
+      if Storage.Exists(Candidate) then
+      begin
+        Result := Candidate;
+        Break;
+      end;
+
+      Candidate := TPath.Combine(Parent, DiscName + Extension);
+      if Storage.Exists(Candidate) then
+      begin
+        Result := Candidate;
+        Break;
+      end;
+
+      // A regional clone can share its disc with the parent set.
+      var SetName := RomSet.Parent;
+      for var Depth := 1 to 16 do
+      begin
+        var Ancestor: TCPSRomSet;
+        if (SetName = '') or not TCPSRomSet.Find(SetName, Ancestor) then
+          Break;
+        Candidate := TPath.Combine(TPath.Combine(Parent, Ancestor.Name), DiscName + Extension);
+        if Storage.Exists(Candidate) then
+        begin
+          Result := Candidate;
+          Break;
+        end;
+        SetName := Ancestor.Parent;
+      end;
+      if Result <> '' then
+        Break;
+    end;
+  end;
+end;
+
+function OpenCPS3Disc(const Storage: IStorage; const Location: string; DeferIdentity: Boolean): TCDDisc;
+begin
+  var Input := Storage.OpenRead(Location);
+  try
+    Result := TCDDisc.Create(Input, Storage, Location, DeferIdentity);
+  finally
+    Input.Free;
+  end;
+end;
+
+class procedure TCPSCoreAdapter.PrepareArcadeAchievements(const Storage: IStorage; const RomName: string; out Companions: TArray<string>; out ResolveSet: TFunc<string>);
+begin
+  Companions := nil;
+  ResolveSet := nil;
+  if not IsMediaArchive(RomName) then
+    Exit;
+  var Input := Storage.OpenRead(RomName);
+  var RomSet: TCPSRomSet;
+  try
+    if not TCPSRomSet.Identify(OpenMediaArchive(Input, RomName, Storage), RomName, RomSet) or
+      (RomSet.Generation <> TCPSGeneration.CPS3) or not RomSet.ArchiveProgramMatched then
+      Exit;
+  finally
+    Input.Free;
+  end;
+  if RomSet.DiscName = '' then
+  begin
+    ResolveSet :=
+      function: string
+      begin
+        Result := RomSet.AchievementSetName;
+      end;
+    Exit;
+  end;
+
+  var GameSettings := TStorage.BeginGameSettings(Storage, RomName);
+  var Ini := Storage.ReadConfig(Storage.ConfigFile('cps3'));
+  var DiscLocation: string;
+  try
+    DiscLocation := ResolveCPS3Disc(Storage, RomName, RomSet, Ini.ReadString('CPS3', 'DiscImage', ''));
+  finally
+    Ini.Free;
+  end;
+  if (DiscLocation = '') or not Storage.Exists(DiscLocation) then
+    Exit;
+  Companions := [DiscLocation];
+  if SameText(ExtractFileExt(DiscLocation), '.cue') then
+  begin
+    // A CUE can stay unchanged while its underlying track file is replaced.
+    var Layout := OpenCPS3Disc(Storage, DiscLocation, True);
+    try
+      if Layout.TrackCount <> 1 then
+        Exit;
+      Companions := Companions + [CDSibling(Storage, DiscLocation, Layout.Track(1).SourceName)];
+    finally
+      Layout.Free;
+    end;
+  end;
+  ResolveSet :=
+    function: string
+    begin
+      var BIOSStream := Storage.OpenRead(RomName);
+      try
+        var Cart := TCPSCartridge.Create(BIOSStream, RomName, Storage);
+        try
+          var Disc := OpenCPS3Disc(Storage, DiscLocation, True);
+          try
+            Result := VerifiedCPS3CDSet(Cart.RomSet, Cart['bios'], Disc);
+          finally
+            Disc.Free;
+          end;
+        finally
+          Cart.Free;
+        end;
+      finally
+        BIOSStream.Free;
+      end;
+    end;
+end;
+
 constructor TCPSCoreAdapter.Create(Stream: TStream; const Storage: IStorage; const RomName: string);
 begin
   inherited Create;
@@ -686,56 +828,17 @@ begin
     var DiscName := FCart.RomSet.DiscName;
     if DiscName = '' then
       raise ECPSRom.Create('CPS3 disc metadata missing for ' + FCart.RomSet.Name);
-
-    var Location := FOptions.DiscImage;
-    if Location = '' then
-    begin
-      var NativeName := RomName.Replace('/', PathDelim);
-      var Parent := ExtractFilePath(NativeName);
-      var Folder := TPath.Combine(Parent, ChangeFileExt(ExtractFileName(NativeName), ''));
-      for var Extension in ['.chd', '.cue', '.iso'] do
-      begin
-        var Candidate := TPath.Combine(Folder, DiscName + Extension);
-        if S.Exists(Candidate) then
-        begin
-          Location := Candidate;
-          Break;
-        end;
-
-        Candidate := TPath.Combine(Parent, DiscName + Extension);
-        if S.Exists(Candidate) then
-        begin
-          Location := Candidate;
-          Break;
-        end;
-
-        // A regional clone can share its disc with the parent set.
-        var SetName := FCart.RomSet.Parent;
-        for var Depth := 1 to 16 do
-        begin
-          var Ancestor: TCPSRomSet;
-          if (SetName = '') or not TCPSRomSet.Find(SetName, Ancestor) then
-            Break;
-          Candidate := TPath.Combine(TPath.Combine(Parent, Ancestor.Name), DiscName + Extension);
-          if S.Exists(Candidate) then
-          begin
-            Location := Candidate;
-            Break;
-          end;
-          SetName := Ancestor.Parent;
-        end;
-        if Location <> '' then
-          Break;
-      end;
-    end;
+    var Location := ResolveCPS3Disc(S, RomName, FCart.RomSet, FOptions.DiscImage);
     if Location = '' then
       raise ECPSRom.Create('CPS3 CD image missing: place ' + DiscName + '.chd beside the BIOS archive or in the game or parent set subfolder, or set [CPS3] DiscImage in the CPS3 configuration.');
-
-    var CDStream := S.OpenRead(Location);
+    FDisc := OpenCPS3Disc(S, Location, False);
     try
-      FDisc := TCDDisc.Create(CDStream, S, Location);
-    finally
-      CDStream.Free;
+      FVerifiedCDSet := VerifiedCPS3CDSet(FCart.RomSet, FCart['bios'], FDisc);
+    except
+      on E: EAbort do
+        raise;
+      on E: Exception do
+        FVerifiedCDSet := '';
     end;
     var DiscIdentity := FDisc.Identity;
     var Offset := Length(FIdentity);
@@ -868,6 +971,25 @@ begin
   Result.Buttons2 := Result.Buttons2 + FKeyboard.Buttons2;
   Result.Buttons3 := Result.Buttons3 + FKeyboard.Buttons3;
   Result.Buttons4 := Result.Buttons4 + FKeyboard.Buttons4;
+end;
+
+function TCPSCoreAdapter.AchievementROM: TBytes;
+begin
+  Result := nil;
+end;
+
+function TCPSCoreAdapter.AchievementSetName: string;
+begin
+  if FDisc <> nil then
+    Result := FVerifiedCDSet
+  else
+    Result := FCart.RomSet.AchievementSetName;
+end;
+
+procedure TCPSCoreAdapter.SetAchievementObserver(const Observer: IEmulationAchievementObserver);
+begin
+  if FWorker <> nil then
+    FWorker.SetAchievementObserver(Observer);
 end;
 
 function TCPSCoreAdapter.GetSystemId: string;

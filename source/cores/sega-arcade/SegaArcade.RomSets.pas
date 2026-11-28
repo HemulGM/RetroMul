@@ -28,6 +28,7 @@ type
     DIPs: array[0..1] of Byte;
     Regions: TArray<TSegaArcadeRegion>;
     Files: TArray<TSegaArcadeRomFile>;
+    ArchiveProgramMatched: Boolean;
     class function Parse(const Data: string): TSegaArcadeRomSet; static;
     class function FindIn(const Catalog: array of string; const Name: string; out RomSet: TSegaArcadeRomSet): Boolean; static;
     class function IdentifyIn(const Catalog: array of string; const Archive: IArchiveContainer; const Hint: string; out RomSet: TSegaArcadeRomSet): Boolean; static;
@@ -124,7 +125,10 @@ begin
     end;
   end;
   if Best >= 0 then
+  begin
+    RomSet.ArchiveProgramMatched := True;
     Exit(True);
+  end;
   // A named split or incomplete set gets a precise missing-ROM diagnostic.
   Result := FindIn(Catalog, Name, RomSet);
 end;

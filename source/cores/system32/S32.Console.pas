@@ -70,6 +70,7 @@ type
     destructor Destroy; override;
     procedure Reset;
     procedure RunFrame;
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     function ReadMemoryWord(Address: Cardinal): Word;
     procedure WriteMemoryWord(Address: Cardinal; Value: Word);
     function ReadMemory(Address: Cardinal): Byte;
@@ -96,7 +97,7 @@ type
 implementation
 
 uses
-  System.Classes, System.Math;
+  Core.Emulation.Types, System.Classes, System.Math;
 
 function Pad(const Input: TEmulatorInput; Index: Integer): TEmulatorButtons;
 begin
@@ -157,9 +158,9 @@ begin
   FBusProtection := TS32BusProtection.Create(Kind, @FRAM, FROM);
   if Name.StartsWith('jpark') and (Length(Cart['cpu2']) <> 0) then
     FDrive := TS32DriveBoard.Create(Cart['cpu2']);
+  SetLength(FLinkRAM, $1000);
   if (BoardIndex = 0) and (Length(Cart['subpcb:maincpu']) <> 0) then
   begin
-    SetLength(FLinkRAM, $1000);
     FSubBoard := TS32Console.Create(Cart, 1);
     FSubBoard.FLinkRAM := FLinkRAM;
   end;
@@ -239,9 +240,9 @@ begin
   FFrameWidth := FVideo.Width;
   FFramePixels := Copy(FVideo.Pixels);
   FAudioSamples := nil;
+  FillChar(FLinkRAM[0], Length(FLinkRAM), 0);
   if FSubBoard <> nil then
   begin
-    FillChar(FLinkRAM[0], Length(FLinkRAM), 0);
     FSubBoard.Reset;
     ComposeFrame;
   end;
@@ -545,16 +546,13 @@ begin
     7:
       Result := FSound.Shared[Address and $1FFF];
     8:
-      if Length(FLinkRAM) <> 0 then
-      begin
-        if (Address >= $810000) and (Address < $811000) then
-          Result := FLinkRAM[Address and $FFF]
-        else if (Address >= $818000) and (Address < $818004) then
-          if Address and 1 = 0 then
-            Result := FBoardIndex
-          else
-            Result := 0;
-      end;
+      if (Address >= $810000) and (Address < $811000) then
+        Result := FLinkRAM[Address and $FFF]
+      else if (Address >= $818000) and (Address < $818004) then
+        if Address and 1 = 0 then
+          Result := FBoardIndex
+        else
+          Result := 0;
     10:
       if (FProtection <> nil) and (Address < $A80000) and (Address and 1 = 0) then
         Result := FProtection.Shared[(Address shr 1) and $7FF];
@@ -692,7 +690,7 @@ begin
     7:
       FSound.Shared[Address and $1FFF] := Value;
     8:
-      if (Length(FLinkRAM) <> 0) and (Address >= $810000) and (Address < $811000) then
+      if (Address >= $810000) and (Address < $811000) then
         FLinkRAM[Address and $FFF] := Value;
     10:
       if (FProtection <> nil) and (Address < $A80000) and (Address and 1 = 0) then
@@ -1202,9 +1200,66 @@ begin
     FSteeringPhysicalValue := $80;
     FSteeringPhysicalValid := False;
   end;
+  if (FBoardIndex = 0) and (FSubBoard = nil) then
+  begin
+    // Twin cabinets already serialize shared comms RAM before the sub-board.
+    if (State.Version = 0) or (State.Version >= 11) then
+      State.Field(FLinkRAM[0], Length(FLinkRAM))
+    else if State.Loading then
+      FillChar(FLinkRAM[0], Length(FLinkRAM), 0);
+  end;
   ComposeFrame;
   if (FFrame < 0) or (FTime < 0) then
     raise EReadError.Create('Invalid System 32 scheduler state');
+end;
+
+function TS32Console.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+
+  procedure Advance(Read: Cardinal);
+  begin
+    Inc(Address, Read);
+    Inc(Buffer, Read);
+    Dec(Count, Read);
+    Inc(Result, Read);
+  end;
+
+  procedure ReadBlock(Base: Cardinal; Memory: PByte; Size: Cardinal; ByteXor: Cardinal = 0);
+  begin
+    if (Address < Base) or (Address - Base >= Size) or (Count = 0) then
+      Exit;
+    if Memory <> nil then
+      Advance(ReadAchievementMemoryBlock(Address - Base, Buffer, Count, Memory, Size, ByteXor))
+    else
+    begin
+      var Read := Min(Count, Size - (Address - Base));
+      FillChar(Buffer^, Read, 0);
+      Advance(Read);
+    end;
+  end;
+
+begin
+  Result := 0;
+  if (Buffer = nil) or (Count = 0) then
+    Exit;
+  // FBNeo allocates both V60/V70 and palette banks in AllRam. The supported
+  // V60 boards leave the upper work RAM and second palette slot zero-filled.
+  ReadBlock($00000, @FRAM, SizeOf(FRAM));
+  ReadBlock($10000, nil, $10000);
+  ReadBlock($20000, @FVideo.Palette, SizeOf(FVideo.Palette));
+  ReadBlock($28000, nil, $8000);
+  ReadBlock($30000, @FVideo.RAM, SizeOf(FVideo.RAM));
+  ReadBlock($50000, @FVideo.SpriteRAM, SizeOf(FVideo.SpriteRAM));
+  ReadBlock($70000, @FVideo.SpriteRAM, SizeOf(FVideo.SpriteRAM), 3);
+  ReadBlock($90000, @FSound.Shared, SizeOf(FSound.Shared));
+  ReadBlock($92000, Pointer(FLinkRAM), Length(FLinkRAM));
+  if (Address >= $93000) and (Count <> 0) then
+  begin
+    if FProtection <> nil then
+      ReadBlock($93000, @FProtection.Shared, SizeOf(FProtection.Shared))
+    else
+      Advance(FBusProtection.ReadAchievementRAM(Address - $93000, Buffer, Count));
+    ReadBlock($93000, nil, $10000);
+  end;
 end;
 
 end.

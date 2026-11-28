@@ -18,9 +18,9 @@ type
 implementation
 
 uses
-  System.Classes, Core.Emulation, Core.Platforms, Core.Snapshots, S18.RomSets,
-  Core.Platforms.System18.Adapter, RM.Platforms.SegaArcade, SegaArcade.RomSets,
-  Core.PlatformServices;
+  RA.Console, System.Classes, Core.Emulation, Core.Platforms, Core.Snapshots,
+  S18.RomSets, Core.Platforms.System18.Adapter, RM.Platforms.SegaArcade,
+  SegaArcade.RomSets, Core.PlatformServices;
 
 type
   TSystem18Settings = class(TSegaArcadeSettings)
@@ -46,6 +46,8 @@ begin
         Result := TS18CoreAdapter.Create(Context.Stream, Context.Storage, Context.RomName);
       end);
     Result.Format.SystemId := 'system18';
+    if RomSet.ArchiveProgramMatched then
+      Result.AchievementSetName := RomSet.Name;
   end;
 end;
 
@@ -69,6 +71,7 @@ begin
       Result.ExitKey := $1B;
     end;
   RegisterPlatformServices('system18', Services);
+  RegisterPlatformAchievementMedia('system18', RAConsoleArcade, ['.zip', '.7z']);
   FRegistered := True;
 end;
 

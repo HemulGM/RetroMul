@@ -527,6 +527,7 @@ type
   protected
     procedure WaitRDP(List: UInt64); override;
   public
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const Data: TBytes);
     destructor Destroy; override;
     procedure Reset;
@@ -4833,6 +4834,11 @@ begin
   FRSP.ExecuteCycles(FSPPC, FReg[0, 4], IRQ, 1);
   if IRQ <> BeforeIRQ then
     SetInterrupts(IRQ);
+end;
+
+function TN64Console.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  Result := ReadAchievementMemoryBlock(Address, Buffer, Count, @FRAM, SizeOf(FRAM));
 end;
 
 end.

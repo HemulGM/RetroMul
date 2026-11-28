@@ -109,6 +109,7 @@ type
     function SRAMAddress(Address: Cardinal): Integer;
     function Obc1Address(Address: Cardinal): Integer;
   public
+    function ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
     constructor Create(const Data: TBytes; const Firmware: TBytes = nil; const SufamiSlotA: TBytes = nil);
     destructor Destroy; override;
     procedure Reset;
@@ -145,7 +146,7 @@ implementation
 {$R 'SNES.Firmware.res' 'SNES.Firmware.rc'}
 
 uses
-  SNES.RomHashes, System.DateUtils;
+  Core.Emulation.Types, SNES.RomHashes, System.DateUtils;
 
 function SnesResourceFirmware(const Name: string): TBytes;
 begin
@@ -1328,6 +1329,19 @@ begin
     FSPC7110.SerializeState(State);
   if FST018 <> nil then
     FST018.SerializeState(State);
+end;
+
+function TSnesCartridge.ReadAchievementRAM(Address: Cardinal; Buffer: PByte; Count: Cardinal): Cardinal;
+begin
+  if FSA1 <> nil then
+  begin
+    if Address >= $80000 then
+      Exit(ReadAchievementMemoryBlock(Address - $80000, Buffer, Count, @FSA1.IRAM, SizeOf(FSA1.IRAM)));
+    Exit(ReadAchievementMemoryBlock(Address, Buffer, Count, FSA1.BWRAM));
+  end;
+  if FGSU <> nil then
+    Exit(ReadAchievementMemoryBlock(Address, Buffer, Count, FGSU.RAM));
+  Result := ReadAchievementMemoryBlock(Address, Buffer, Count, FSRAM);
 end;
 
 end.
